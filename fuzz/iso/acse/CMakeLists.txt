@@ -1,0 +1,1 @@
+openiec61850_add_fuzzer(fuzz_acse_apdu fuzz_acse_apdu.cpp)
