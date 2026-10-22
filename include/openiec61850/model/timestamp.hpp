@@ -5,6 +5,9 @@
 #include <optional>
 
 #include "openiec61850/core/result.hpp"
+// Declares basic_type::entry_time before the model::entry_time alias below; the reverse order
+// trips -Wshadow.
+#include "openiec61850/model/basic_type.hpp"
 #include "openiec61850/mms/data.hpp"
 
 // TimeStamp (IEC 61850-7-2 §6.1.2.9, IEC 61850-8-1 §8.1.3.7): MMS UtcTime, 8 octets.

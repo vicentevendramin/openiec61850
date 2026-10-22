@@ -13,5 +13,6 @@ add_subdirectory(mms)
 add_subdirectory(transport)
 add_subdirectory(association)
 add_subdirectory(model)
+add_subdirectory(client)
 
 catch_discover_tests(openiec61850_tests)
