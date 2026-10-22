@@ -1,0 +1,1 @@
+openiec61850_add_fuzzer(fuzz_association fuzz_association.cpp)
