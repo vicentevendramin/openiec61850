@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <string_view>
 
+// basic_type.hpp declares enumerators (basic_type::quality, ::tcmd, ...) named like the types in
+// this header; GCC -Wshadow fires when the enumerators come second, so include it first.
+#include "openiec61850/model/basic_type.hpp"
 #include "openiec61850/core/result.hpp"
 #include "openiec61850/mms/data.hpp"
 
