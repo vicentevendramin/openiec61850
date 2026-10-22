@@ -7,6 +7,10 @@ function(openiec61850_set_warnings target)
   else()
     set(warnings -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
                  -Wnon-virtual-dtor -Wold-style-cast -Wimplicit-fallthrough)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      # False positive on Asio's coroutine frame allocator (aligned_new/operator delete pair).
+      list(APPEND warnings -Wno-mismatched-new-delete)
+    endif()
     if(OPENIEC61850_WARNINGS_AS_ERRORS)
       list(APPEND warnings -Werror)
     endif()

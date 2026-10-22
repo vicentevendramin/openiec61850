@@ -163,7 +163,10 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     if (out.empty()) {
       out = std::move(bytes);
     } else {
-      out.insert(out.end(), bytes.begin(), bytes.end());
+      // resize + copy instead of insert: GCC 13 emits a false -Wstringop-overflow for insert at -O2.
+      const auto offset = out.size();
+      out.resize(offset + bytes.size());
+      std::copy(bytes.begin(), bytes.end(), out.begin() + static_cast<std::ptrdiff_t>(offset));
     }
     if (!writer_active) {
       writer_active = true;
