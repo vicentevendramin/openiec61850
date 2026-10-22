@@ -1,0 +1,2 @@
+openiec61850_add_fuzzer(fuzz_presentation_ppdu fuzz_presentation_ppdu.cpp)
+openiec61850_add_fuzzer(fuzz_presentation_connection fuzz_presentation_connection.cpp)
