@@ -7,5 +7,6 @@ openiec61850_set_warnings(openiec61850_tests)
 
 # Each component adds its tests to the openiec61850_tests target from its own CMakeLists.txt.
 add_subdirectory(core)
+add_subdirectory(ber)
 
 catch_discover_tests(openiec61850_tests)

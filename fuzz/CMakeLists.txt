@@ -11,3 +11,5 @@ function(openiec61850_add_fuzzer name)
 endfunction()
 
 # Each component registers its fuzzers and corpus from its own subdirectory.
+
+add_subdirectory(ber)

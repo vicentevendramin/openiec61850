@@ -19,6 +19,8 @@ class category final : public std::error_category {
       case errc::protocol_violation: return "protocol violation";
       case errc::buffer_too_small: return "buffer too small";
       case errc::nesting_too_deep: return "nesting too deep";
+      case errc::value_out_of_range: return "value out of range";
+      case errc::invalid_state: return "operation not allowed in the current state";
     }
     return "unknown error";
   }

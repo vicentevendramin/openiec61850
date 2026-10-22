@@ -1,0 +1,1 @@
+openiec61850_add_fuzzer(fuzz_ber_decode fuzz_ber_decode.cpp)

@@ -15,3 +15,4 @@ openiec61850_set_warnings(openiec61850)
 
 # Each component adds its sources to the openiec61850 target from its own CMakeLists.txt.
 add_subdirectory(core)
+add_subdirectory(ber)
