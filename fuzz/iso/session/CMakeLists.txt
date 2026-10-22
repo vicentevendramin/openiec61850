@@ -1,0 +1,2 @@
+openiec61850_add_fuzzer(fuzz_session_spdu fuzz_session_spdu.cpp)
+openiec61850_add_fuzzer(fuzz_session_connection fuzz_session_connection.cpp)
