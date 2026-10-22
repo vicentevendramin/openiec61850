@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "openiec61850",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "builtin-baseline": "a073c28e52d920cb2465a17512324b3b6684d03a",
+  "dependencies": [
+    "asio"
+  ],
+  "features": {
+    "tests": {
+      "description": "C++ tests",
+      "dependencies": ["catch2"]
+    },
+    "tls": {
+      "description": "TLS (IEC 62351) via OpenSSL 3",
+      "dependencies": ["openssl"]
+    }
+  }
+}

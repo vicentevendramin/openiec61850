@@ -1,0 +1,78 @@
+# Main CI pipeline (ADR 0006). Runs on the homelab GitLab instance.
+stages: [build, test, analysis, package]
+
+variables:
+  VCPKG_ROOT: /opt/vcpkg
+  VCPKG_COMMIT: a073c28e52d920cb2465a17512324b3b6684d03a
+  VCPKG_DEFAULT_BINARY_CACHE: $CI_PROJECT_DIR/.cache/vcpkg
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+default:
+  image: ubuntu:24.04
+  cache:
+    key: vcpkg-$VCPKG_COMMIT
+    paths: [.cache/vcpkg]
+  before_script:
+    - apt-get update -qq
+    - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq
+        build-essential clang lld cmake ninja-build git curl zip unzip tar pkg-config
+        python3 python3-venv python3-dev > /dev/null
+    - mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+    - git clone -q https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+    - git -C "$VCPKG_ROOT" checkout -q "$VCPKG_COMMIT"
+    - "$VCPKG_ROOT/bootstrap-vcpkg.sh -disableMetrics"
+
+build:gcc:
+  stage: build
+  script:
+    - cmake --preset release -DOPENIEC61850_WARNINGS_AS_ERRORS=ON
+    - cmake --build --preset release
+    - ctest --preset release
+  artifacts:
+    when: always
+    reports:
+      junit: build/release/junit.xml
+
+test:asan-ubsan:
+  stage: test
+  variables:
+    CXX: clang++
+    ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+    UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+  script:
+    - cmake --preset asan
+    - cmake --build --preset asan
+    - ctest --preset asan
+
+test:python:
+  stage: test
+  script:
+    - python3 -m venv .venv
+    - .venv/bin/pip install -q ".[test]"
+    - .venv/bin/pytest
+
+analysis:fuzz-smoke:
+  stage: analysis
+  variables:
+    FUZZ_SECONDS: "60"
+  script:
+    - cmake --preset fuzz
+    - cmake --build --preset fuzz
+    - |
+      for f in $(find build/fuzz -maxdepth 3 -type f -executable -name 'fuzz_*'); do
+        name=$(basename "$f"); corpus="fuzz/corpus/${name#fuzz_}"
+        mkdir -p "$corpus"
+        echo "== $name"; "$f" -max_total_time="$FUZZ_SECONDS" "$corpus"
+      done
+
+package:wheels:
+  stage: package
+  rules:
+    - if: $CI_COMMIT_TAG
+    - when: manual
+      allow_failure: true
+  script:
+    - python3 -m venv .venv && .venv/bin/pip install -q cibuildwheel
+    - .venv/bin/cibuildwheel --platform linux --output-dir wheelhouse
+  artifacts:
+    paths: [wheelhouse/]

@@ -1,0 +1,9 @@
+#include "openiec61850/core/version.hpp"
+
+namespace openiec61850 {
+
+version_info version() noexcept {
+  return {@PROJECT_VERSION_MAJOR@, @PROJECT_VERSION_MINOR@, @PROJECT_VERSION_PATCH@, "@PROJECT_VERSION@"};
+}
+
+}  // namespace openiec61850

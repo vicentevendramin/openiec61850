@@ -1,0 +1,14 @@
+/build*/
+/out/
+/.venv/
+/vcpkg_installed/
+/dist/
+/wheelhouse/
+__pycache__/
+*.egg-info/
+*.so
+*.pyd
+.pytest_cache/
+/CMakeUserPresets.json
+.vscode/
+.idea/
