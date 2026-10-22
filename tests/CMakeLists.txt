@@ -11,5 +11,6 @@ add_subdirectory(ber)
 add_subdirectory(iso)
 add_subdirectory(mms)
 add_subdirectory(transport)
+add_subdirectory(model)
 
 catch_discover_tests(openiec61850_tests)
