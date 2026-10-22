@@ -1,0 +1,2 @@
+openiec61850_add_fuzzer(fuzz_cotp_decode fuzz_cotp_decode.cpp)
+openiec61850_add_fuzzer(fuzz_cotp_connection fuzz_cotp_connection.cpp)

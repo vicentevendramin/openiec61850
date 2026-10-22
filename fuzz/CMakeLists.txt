@@ -13,3 +13,4 @@ endfunction()
 # Each component registers its fuzzers and corpus from its own subdirectory.
 
 add_subdirectory(ber)
+add_subdirectory(iso)
