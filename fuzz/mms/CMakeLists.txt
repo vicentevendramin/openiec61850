@@ -1,0 +1,2 @@
+openiec61850_add_fuzzer(fuzz_mms_pdu fuzz_mms_pdu.cpp)
+openiec61850_add_fuzzer(fuzz_mms_data fuzz_mms_data.cpp)

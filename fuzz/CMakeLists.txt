@@ -14,4 +14,5 @@ endfunction()
 
 add_subdirectory(ber)
 add_subdirectory(iso)
+add_subdirectory(mms)
 add_subdirectory(transport)

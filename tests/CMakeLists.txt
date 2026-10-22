@@ -9,6 +9,7 @@ openiec61850_set_warnings(openiec61850_tests)
 add_subdirectory(core)
 add_subdirectory(ber)
 add_subdirectory(iso)
+add_subdirectory(mms)
 add_subdirectory(transport)
 
 catch_discover_tests(openiec61850_tests)
