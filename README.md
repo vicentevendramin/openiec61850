@@ -22,8 +22,38 @@ ctest --preset dev
 Python:
 
 ```bash
-pip install ".[test]"
+# The test-only fake-server extension (openiec61850._testing) is opt-in and never shipped in wheels.
+pip install ".[test]" -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON
 pytest
+```
+
+## Python
+
+The `asyncio` API is the primary one; `openiec61850.sync.Client` is a thin blocking facade with the
+same method names.
+
+```python
+import asyncio
+import openiec61850 as iec
+
+async def main():
+    async with await iec.Client.connect("10.0.0.5", recovery=True) as client:
+        print(await client.server_directory())
+        print(await client.read("IED1LD0/MMXU1.TotW.mag.f[MX]"))        # 1.5
+        # Plain values are typed from the server's data definition (fetched once);
+        # typed wrappers such as iec.Float32 / iec.Int32 need no round trip.
+        await client.write("IED1LD0/MMXU1.TotW.db[CF]", 100)
+
+        async with await client.enable_reporting(
+            "IED1LD0/LLN0.urcb01[RP]",
+            opt_flds=iec.OptFlds.SEQUENCE_NUMBER | iec.OptFlds.REASON_FOR_INCLUSION,
+            gi=True,
+        ) as reports:
+            async for report in reports:
+                for entry in report.entries:
+                    print(report.seq_num, entry.reference, entry.value, entry.reason)
+
+asyncio.run(main())
 ```
 
 ## Documentation

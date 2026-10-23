@@ -30,6 +30,9 @@ wheel.packages = ["python/openiec61850"]
 [tool.scikit-build.cmake.define]
 OPENIEC61850_BUILD_PYTHON = "ON"
 OPENIEC61850_BUILD_TESTS = "OFF"
+# The test-only openiec61850._testing extension is never part of a release wheel. Local and CI
+# test runs enable it with: pip install . -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON
+OPENIEC61850_BUILD_PYTHON_TESTING = "OFF"
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

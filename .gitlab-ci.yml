@@ -46,9 +46,12 @@ test:asan-ubsan:
 
 test:python:
   stage: test
+  variables:
+    # Fail instead of skipping when the fake-server extension is missing.
+    OPENIEC61850_REQUIRE_TESTING: "1"
   script:
     - python3 -m venv .venv
-    - .venv/bin/pip install -q ".[test]"
+    - .venv/bin/pip install -q ".[test]" -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON
     - .venv/bin/pytest
 
 analysis:fuzz-smoke:
