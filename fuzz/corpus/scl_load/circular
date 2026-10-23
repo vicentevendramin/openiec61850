@@ -1,0 +1,5 @@
+<SCL><IED name="D"><AccessPoint name="A"><Server><LDevice inst="LD"><LN0 lnClass="LLN0" inst="" lnType="L"/></LDevice></Server></AccessPoint></IED>
+<DataTypeTemplates><LNodeType id="L" lnClass="LLN0"><DO name="X" type="A"/><DO name="Y" type="S"/></LNodeType>
+<DOType id="A" cdc="X"><SDO name="b" type="B"/></DOType><DOType id="B" cdc="X"><SDO name="a" type="A"/></DOType>
+<DOType id="S" cdc="X"><DA name="r" bType="Struct" type="R" fc="ST"/></DOType><DAType id="R"><BDA name="r" bType="Struct" type="R"/><BDA name="z" bType="FLOAT99"/></DAType>
+<DOType id="A" cdc="dup"/></DataTypeTemplates></SCL>

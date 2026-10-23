@@ -5,16 +5,21 @@
   "license": "Apache-2.0",
   "builtin-baseline": "a073c28e52d920cb2465a17512324b3b6684d03a",
   "dependencies": [
-    "asio"
+    "asio",
+    "pugixml"
   ],
   "features": {
     "tests": {
       "description": "C++ tests",
-      "dependencies": ["catch2"]
+      "dependencies": [
+        "catch2"
+      ]
     },
     "tls": {
       "description": "TLS (IEC 62351) via OpenSSL 3",
-      "dependencies": ["openssl"]
+      "dependencies": [
+        "openssl"
+      ]
     }
   }
 }

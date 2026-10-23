@@ -14,5 +14,6 @@ add_subdirectory(transport)
 add_subdirectory(association)
 add_subdirectory(model)
 add_subdirectory(client)
+add_subdirectory(scl)
 
 catch_discover_tests(openiec61850_tests)

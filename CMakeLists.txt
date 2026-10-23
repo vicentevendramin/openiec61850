@@ -32,6 +32,7 @@ include(CompilerWarnings)
 include(Sanitizers)
 
 find_package(asio CONFIG REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
 if(OPENIEC61850_ENABLE_TLS)
   find_package(OpenSSL 3 REQUIRED)
 endif()

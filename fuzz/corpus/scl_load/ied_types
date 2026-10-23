@@ -1,0 +1,18 @@
+<SCL version="2007" revision="B"><Header id="t"/>
+<Communication><SubNetwork name="N"><ConnectedAP iedName="D" apName="A"><Address><P type="IP">10.0.0.1</P><P type="OSI-AP-Title">1,3,9999,23</P><P type="OSI-PSEL">00000001</P></Address>
+<GSE ldInst="LD" cbName="g"><Address><P type="MAC-Address">01-0C-CD-01-00-01</P><P type="APPID">0001</P></Address></GSE></ConnectedAP></SubNetwork></Communication>
+<IED name="D"><AccessPoint name="A"><Server><LDevice inst="LD">
+<LN0 lnClass="LLN0" inst="" lnType="L0"><DataSet name="ds"><FCDA ldInst="LD" lnClass="GGIO" lnInst="1" doName="Ind" daName="stVal" fc="ST"/><FCDA ldInst="LD" lnClass="GGIO" lnInst="1" doName="Arr" daName="v" fc="MX" ix="1"/></DataSet>
+<ReportControl name="rc" datSet="ds" buffered="true"><TrgOps dchg="true"/><OptFields seqNum="true"/><RptEnabled max="2"/></ReportControl>
+<GSEControl name="g" datSet="ds" appID="G"/><SettingControl numOfSGs="2"/></LN0>
+<LN lnClass="GGIO" inst="1" lnType="G"><DOI name="Ind"><DAI name="stVal"><Val>true</Val></DAI></DOI><DOI name="Arr"><SDI name="v" ix="0"><DAI name="f"><Val>1.5</Val></DAI></SDI></DOI></LN>
+</LDevice></Server></AccessPoint><AccessPoint name="B"><ServerAt apName="A"/></AccessPoint></IED>
+<DataTypeTemplates>
+<LNodeType id="L0" lnClass="LLN0"><DO name="Beh" type="E"/></LNodeType>
+<LNodeType id="G" lnClass="GGIO"><DO name="Ind" type="S"/><DO name="Arr" type="M"/></LNodeType>
+<DOType id="E" cdc="ENS"><DA name="stVal" bType="Enum" type="K" fc="ST"><Val>on</Val></DA></DOType>
+<DOType id="S" cdc="SPS"><DA name="stVal" bType="BOOLEAN" fc="ST" dchg="true"/><DA name="q" bType="Quality" fc="ST"/></DOType>
+<DOType id="M" cdc="X"><DA name="v" bType="Struct" type="AV" fc="MX" count="3"/></DOType>
+<DAType id="AV"><BDA name="f" bType="FLOAT32"/></DAType>
+<EnumType id="K"><EnumVal ord="1">on</EnumVal><EnumVal ord="5">off</EnumVal></EnumType>
+</DataTypeTemplates></SCL>

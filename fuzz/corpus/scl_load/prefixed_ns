@@ -1,0 +1,3 @@
+<s:SCL xmlns:s="http://www.iec.ch/61850/2003/SCL" xmlns:v="urn:v"><s:Header id="p"/>
+<s:IED name="I"><s:AccessPoint name="A"><s:Server><s:LDevice inst="L" ldName="Named"><s:LN0 lnClass="LLN0" inst="" lnType="T"><v:X><s:DOI name="Q"/></v:X></s:LN0></s:LDevice></s:Server></s:AccessPoint></s:IED>
+<s:DataTypeTemplates><s:LNodeType id="T" lnClass="LLN0"><s:DO name="W" type="D"/></s:LNodeType><s:DOType id="D" cdc="WYE"><s:SDO name="phsA" type="C"/></s:DOType><s:DOType id="C" cdc="CMV"><s:DA name="q" bType="Quality" fc="MX"/></s:DOType></s:DataTypeTemplates></s:SCL>

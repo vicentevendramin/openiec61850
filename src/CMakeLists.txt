@@ -5,7 +5,7 @@ target_include_directories(openiec61850 PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_compile_features(openiec61850 PUBLIC cxx_std_20)
-target_link_libraries(openiec61850 PUBLIC asio::asio)
+target_link_libraries(openiec61850 PUBLIC asio::asio PRIVATE pugixml::pugixml)
 target_compile_definitions(openiec61850 PUBLIC ASIO_NO_DEPRECATED)
 if(OPENIEC61850_ENABLE_TLS)
   target_link_libraries(openiec61850 PUBLIC OpenSSL::SSL OpenSSL::Crypto)
@@ -22,3 +22,4 @@ add_subdirectory(transport)
 add_subdirectory(association)
 add_subdirectory(model)
 add_subdirectory(client)
+add_subdirectory(scl)

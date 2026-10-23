@@ -1,0 +1,1 @@
+openiec61850_add_fuzzer(fuzz_scl_load fuzz_scl_load.cpp)
