@@ -83,9 +83,15 @@ void client_state::on_unconfirmed(const association::unconfirmed_message& m) {
   lost_reports += m.lost_before();
   dropped.fetch_add(m.lost_before());
   const auto* ir = m.information_report();
-  // Other unconfirmed services and InformationReports that are not reports (e.g. LastApplError
-  // of the control services) are not handled yet.
-  if (ir == nullptr || !is_report(*ir)) return;
+  if (ir == nullptr) return;  // other unconfirmed services are not used by IEC 61850
+  if (is_control_message(*ir)) {
+    auto msg = parse_control_message(*ir);
+    if (!msg) return;
+    const auto it = controls.find(control_key(msg->control_object));
+    if (it != controls.end()) it->second.push(std::move(*msg));
+    return;
+  }
+  if (!is_report(*ir)) return;
   auto r = parse_report(*ir, {}, parse);
   if (!r) {
     ++lost_reports;
@@ -110,12 +116,19 @@ void client_state::on_unconfirmed(const association::unconfirmed_message& m) {
 
 void client_state::emit(connection_event e) { (void)events.push(std::move(e)); }
 
+void client_state::notify_controls() {
+  for (auto& [key, ch] : controls) {
+    if (ch.consumer != nullptr) ch.consumer->notify();
+  }
+}
+
 void client_state::finish(std::error_code reason) {
   if (closed()) return;
   close_error = reason;
   state.store(connection_state::closed);
   if (backoff) backoff->cancel();
   assoc.reset();
+  notify_controls();
   if (reports.consumer != nullptr) reports.consumer->notify();
   if (events.consumer != nullptr) events.consumer->notify();
   for (auto* w : closed_waiters) w->notify();
@@ -131,6 +144,7 @@ awaitable<void> client_state::supervise(std::shared_ptr<client_state> self) {
       co_return;
     }
     self->assoc.reset();
+    self->notify_controls();
     if (!self->options.recovery.enabled) {
       self->emit({connection_event::kind::lost, ec, 0, {}});
       self->finish(ec);
@@ -431,6 +445,17 @@ asio::awaitable<result<void>> client::disable_reporting(model::object_reference 
 
 asio::awaitable<result<void>> client::trigger_gi(model::object_reference rcb) {
   return invoke(state_, &detail::trigger_gi_op, std::move(rcb));
+}
+
+asio::awaitable<result<control>> client::get_control(model::object_reference object,
+                                                     control_config config) {
+  return invoke(state_, &detail::get_control_op, std::move(object), std::move(config));
+}
+
+asio::awaitable<result<void>> client::operate(model::object_reference object, mms::data value,
+                                              control_options options) {
+  return invoke(state_, &detail::operate_once_op, std::move(object), std::move(value),
+                std::move(options));
 }
 
 std::optional<model::entry_id> client::last_entry_id(const model::object_reference& rcb) const {

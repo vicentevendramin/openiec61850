@@ -37,6 +37,10 @@ enum class errc {
   type_mismatch,            // a value has an MMS type other than the one expected
   not_deleted,              // DeleteDataSet matched the data set but the server kept it
   recovery_failed,          // association recovery gave up (see connection_event::failed)
+  // Control services (client/control.hpp):
+  select_failed,            // Select (Read of SBO) returned "" without a LastApplError
+  termination_timeout,      // no CommandTermination within control_options::termination_timeout
+  control_model_mismatch,   // the service does not exist in the object's ctlModel
 };
 
 [[nodiscard]] const std::error_category& error_category() noexcept;

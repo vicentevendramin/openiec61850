@@ -13,6 +13,7 @@
 #include <asio/strand.hpp>
 
 #include "openiec61850/association/types.hpp"
+#include "openiec61850/client/control.hpp"
 #include "openiec61850/client/error.hpp"
 #include "openiec61850/client/report.hpp"
 #include "openiec61850/client/types.hpp"
@@ -49,10 +50,13 @@ struct client_state;
 // association is established (recovery in progress, or closed) and with the association's
 // closing error for requests that were pending when it was lost.
 //
-// Not implemented yet (extension points): control (SBO/operate, 7-2 §20), setting groups (§16),
-// logs (§17.3), files (§23), GOOSE/SV control blocks beyond their names in the LN directory.
-// They will be further members using the same request path; unsolicited InformationReports that
-// are not reports (e.g. LastApplError for control) are currently discarded.
+// Control (7-2 §20): get_control() / operate(), see client/control.hpp. LastApplError and
+// CommandTermination InformationReports are routed to the control handles of this client; those
+// for objects without a handle are discarded.
+//
+// Not implemented yet (extension points): setting groups (§16), logs (§17.3), files (§23),
+// GOOSE/SV control blocks beyond their names in the LN directory. They will be further members
+// using the same request path.
 class client {
  public:
   using executor_type = asio::strand<asio::any_io_executor>;
@@ -148,6 +152,21 @@ class client {
   // RptEna = false (and Resv = false for a URCB this client reserved); forgets the RCB.
   [[nodiscard]] asio::awaitable<result<void>> disable_reporting(model::object_reference rcb);
   [[nodiscard]] asio::awaitable<result<void>> trigger_gi(model::object_reference rcb);
+  // --- control (7-2 §20, 8-1 §20; see client/control.hpp)
+
+  // A handle on the controllable data object `object` ("LD/LN.DO", an FC is ignored): reads
+  // CF.ctlModel, CF.sboTimeout and the CO structure as `config` says. Fails with the read error
+  // of ctlModel (e.g. errc::object_not_found), or openiec61850::errc::invalid_state for a
+  // reference that is not a data object.
+  [[nodiscard]] asio::awaitable<result<control>> get_control(model::object_reference object,
+                                                             control_config config = {});
+  // One-shot control: get_control(object), then, by ctlModel, operate (direct), select + operate
+  // (sbo-with-normal-security) or select_with_value + operate (sbo-with-enhanced-security,
+  // which also waits for the CommandTermination). Errors as for control.
+  [[nodiscard]] asio::awaitable<result<void>> operate(model::object_reference object,
+                                                      mms::data value,
+                                                      control_options options = {});
+
   // The EntryID of the last report received for a BRCB enabled with enable_reporting().
   [[nodiscard]] std::optional<model::entry_id> last_entry_id(
       const model::object_reference& rcb) const;

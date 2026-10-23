@@ -1,6 +1,7 @@
 #include "fake_server.hpp"
 
 #include "openiec61850/model/enums.hpp"
+#include "openiec61850/model/mms_mapping.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -27,6 +28,7 @@ using td = mms::type_description;
 using dae = mms::data_access_error;
 
 constexpr std::string_view ld0 = "IED1LD0";
+constexpr std::string_view ld1 = "IED1LD1";
 
 td structure(std::initializer_list<std::pair<const char*, td>> components) {
   std::vector<mms::type_component> v;
@@ -43,6 +45,45 @@ td cmv() {
   return structure({{"cVal", structure({{"mag", structure({{"f", td::float32()}})}})},
                     {"q", quality()},
                     {"t", td::utc_time()}});
+}
+
+// SBOw / Oper (with Check) and Cancel (without) of 8-1 §20.
+td control_request(const td& ctl_val, bool oper_tm, bool check) {
+  std::vector<mms::type_component> v;
+  v.push_back({"ctlVal", ctl_val});
+  if (oper_tm) v.push_back({"operTm", td::utc_time()});
+  v.push_back({"origin", structure({{"orCat", td::integer(8)}, {"orIdent", td::octet_string(-64)}})});
+  v.push_back({"ctlNum", td::unsigned_integer(8)});
+  v.push_back({"T", td::utc_time()});
+  v.push_back({"Test", td::boolean()});
+  if (check) v.push_back({"Check", td::bit_string(2)});
+  return td::structure(std::move(v));
+}
+
+template <typename T>
+T or_default(const result<T>& r, T fallback) {
+  return r ? *r : fallback;
+}
+
+// Deep shape check of a written value against its type.
+bool conforms(const mms::data& v, const td& t) {
+  if (v.type() != t.type) return false;
+  if (t.type != mms::data_type::structure) return true;
+  const auto e = v.elements();
+  if (e.size() != t.components.size()) return false;
+  for (std::size_t i = 0; i < e.size(); ++i) {
+    if (!conforms(e[i], t.components[i].type)) return false;
+  }
+  return true;
+}
+
+const mms::data* field(const mms::data& v, const td& t, std::string_view name) {
+  if (t.type != mms::data_type::structure || v.type() != mms::data_type::structure) return nullptr;
+  const auto e = v.elements();
+  for (std::size_t i = 0; i < t.components.size() && i < e.size(); ++i) {
+    if (t.components[i].name == name) return &e[i];
+  }
+  return nullptr;
 }
 
 td brcb() {
@@ -140,6 +181,31 @@ struct entry {
 
 struct session;
 
+// An InformationReport to send: on "RPT" when `names` is empty, else on these variables.
+struct outgoing {
+  std::vector<model::mms_name> names;
+  std::vector<mms::data> values;
+};
+
+struct control_runtime {
+  std::string ln;    // "XCBR1"
+  std::string dobj;  // "Pos"
+  session* selected_by = nullptr;
+  std::chrono::steady_clock::time_point expiry;
+  std::optional<mms::data> sbow;
+  bool interlocked = false;
+  bool synchro_blocked = false;
+  fake_server::termination_mode termination = fake_server::termination_mode::positive;
+  std::int16_t termination_cause = 16;
+  std::chrono::milliseconds termination_delay{5};
+  std::size_t operations = 0;
+  std::size_t cancels = 0;
+  std::optional<mms::data> last_request;
+
+  [[nodiscard]] std::string name() const { return ln + "." + dobj; }
+  [[nodiscard]] std::string co_prefix() const { return ln + "$CO$" + dobj; }
+};
+
 struct rcb_runtime {
   std::string item;  // "LLN0$BR$brcb01"
   bool buffered = false;
@@ -156,7 +222,7 @@ struct session {
       : assoc(std::move(a)), wake(ex, std::chrono::steady_clock::time_point::max()) {}
   server_association assoc;
   std::map<std::string, variable_list> aa_lists;
-  std::deque<std::vector<mms::data>> outbox;
+  std::deque<outgoing> outbox;
   asio::steady_timer wake;
   bool alive = true;
 };
@@ -211,6 +277,7 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
   std::vector<domain> domains;
   std::map<std::string, variable_list> lists;  // "LD/LN$DS"
   std::vector<rcb_runtime> rcbs;
+  std::vector<control_runtime> controls;
   std::vector<std::shared_ptr<session>> sessions;
   std::size_t accepted = 0;
   std::vector<std::string> write_log;
@@ -238,9 +305,38 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
                                                                      {"t", td::utc_time()}})}})},
                                  {"CF", structure({{"Pos", structure({{"ctlModel", td::integer(8)}})}})}}),
                       {}});
-    domain d1{"IED1LD1", {}};
+    domain d1{std::string(ld1), {}};
     d1.lns.push_back({"LLN0", structure({{"ST", structure({{"Mod", mod()}})}}), {}});
-    d1.lns.push_back({"GGIO1", structure({{"ST", structure({{"Ind1", status_bool()}})}}), {}});
+    const auto boolean = td::boolean();
+    const auto oper = control_request(boolean, false, true);
+    const auto cancel = control_request(boolean, false, false);
+    const auto sbo_cf = structure({{"ctlModel", td::integer(8)},
+                                   {"sboTimeout", td::unsigned_integer(32)},
+                                   {"sboClass", td::integer(8)}});
+    const auto direct_cf = structure({{"ctlModel", td::integer(8)}});
+    d1.lns.push_back(
+        {"GGIO1",
+         structure({{"ST", structure({{"Ind1", status_bool()},
+                                      {"SPCSO1", status_bool()},
+                                      {"SPCSO2", status_bool()},
+                                      {"SPCSO3", status_bool()}})},
+                    {"CO", structure({{"SPCSO1", structure({{"Oper", oper}})},
+                                      {"SPCSO2", structure({{"SBO", visible129()},
+                                                            {"Oper", oper},
+                                                            {"Cancel", cancel}})},
+                                      {"SPCSO3", structure({{"Oper", control_request(boolean, true, true)},
+                                                            {"Cancel", control_request(boolean, true, false)}})}})},
+                    {"CF", structure({{"SPCSO1", direct_cf}, {"SPCSO2", sbo_cf}, {"SPCSO3", direct_cf}})}}),
+         {}});
+    d1.lns.push_back(
+        {"XCBR1",
+         structure({{"ST", structure({{"Pos", structure({{"stVal", td::bit_string(2)},
+                                                         {"q", quality()},
+                                                         {"t", td::utc_time()},
+                                                         {"stSeld", td::boolean()}})}})},
+                    {"CO", structure({{"Pos", structure({{"SBOw", oper}, {"Oper", oper}, {"Cancel", cancel}})}})},
+                    {"CF", structure({{"Pos", sbo_cf}})}}),
+         {}});
     for (auto* d : {&d0, &d1}) {
       for (auto& ln : d->lns) ln.value = default_value(ln.type);
     }
@@ -268,6 +364,19 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
     }
     set("XCBR1$ST$Pos$stVal", model::to_mms(model::dbpos::off));
     set("MMXU1$MX$TotW$mag$f", mms::data::floating_point(1.5F));
+
+    const std::pair<const char*, const char*> objects[] = {
+        {"GGIO1", "SPCSO1"}, {"GGIO1", "SPCSO2"}, {"GGIO1", "SPCSO3"}, {"XCBR1", "Pos"}};
+    const std::int64_t models[] = {1, 2, 3, 4};
+    for (std::size_t i = 0; i < 4; ++i) {
+      control_runtime c;
+      c.ln = objects[i].first;
+      c.dobj = objects[i].second;
+      set_in(ld1, c.ln + "$CF$" + c.dobj + "$ctlModel", mms::data::integer(models[i]));
+      set_in(ld1, c.ln + "$CF$" + c.dobj + "$sboTimeout", mms::data::unsigned_integer(30000));
+      controls.push_back(std::move(c));
+    }
+    set_in(ld1, "XCBR1$ST$Pos$stVal", model::to_mms(model::dbpos::off));
   }
 
   // --- model
@@ -303,8 +412,10 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
     return n;
   }
 
-  void set(const std::string& item, mms::data v) {
-    auto n = find(ld0, item);
+  void set(const std::string& item, mms::data v) { set_in(ld0, item, std::move(v)); }
+
+  void set_in(std::string_view dom, const std::string& item, mms::data v) {
+    auto n = find(dom, item);
     if (n.value != nullptr) *n.value = std::move(v);
   }
 
@@ -334,9 +445,11 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
 
   // --- reports
 
-  void enqueue(session& s, std::vector<mms::data> values) {
+  void enqueue(session& s, std::vector<mms::data> values) { send(s, {{}, std::move(values)}); }
+
+  void send(session& s, outgoing o) {
     if (!s.alive) return;
-    s.outbox.push_back(std::move(values));
+    s.outbox.push_back(std::move(o));
     s.wake.cancel();
   }
 
@@ -492,18 +605,203 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
   }
 
   std::optional<dae> write_variable(session& s, std::string_view dom, std::string_view item,
-                                    const mms::data& v) {
+                                    const mms::data& v, std::vector<outgoing>& notes) {
     auto n = find(dom, item);
     if (n.value == nullptr) return dae::object_non_existent;
     if (n.value->type() != v.type()) return dae::type_inconsistent;
     std::string_view attr;
-    if (auto* rc = rcb_of(dom, item, attr)) {
+    if (auto* c = control_of(dom, item, attr)) {
+      if (!conforms(v, *n.type)) return dae::type_inconsistent;
+      c->last_request = v;
+      if (auto refused = control_write(s, *c, attr, *n.type, v)) {
+        if (refused->second >= 0) notes.push_back(last_appl_error(*c, attr, *n.type, v, refused->second));
+        return refused->first;
+      }
+    } else if (auto* rc = rcb_of(dom, item, attr)) {
       if (auto e = write_rcb(s, *rc, attr, n, v)) return e;
     } else {
       *n.value = v;
     }
     write_log.push_back(std::string(dom) + "/" + std::string(item));
     return std::nullopt;
+  }
+
+  // --- control (8-1 §20)
+
+  control_runtime* control_of(std::string_view dom, std::string_view item, std::string_view& attr) {
+    if (dom != ld1) return nullptr;
+    for (auto& c : controls) {
+      const auto prefix = c.co_prefix();
+      if (item.size() > prefix.size() + 1 && item.starts_with(prefix) && item[prefix.size()] == '$') {
+        attr = item.substr(prefix.size() + 1);
+        if (attr.find('$') != std::string_view::npos) return nullptr;
+        return &c;
+      }
+    }
+    return nullptr;
+  }
+
+  control_runtime* control_named(std::string_view name) {
+    for (auto& c : controls) {
+      if (c.name() == name) return &c;
+    }
+    return nullptr;
+  }
+
+  std::int64_t ctl_model_of(const control_runtime& c) {
+    auto n = find(ld1, c.ln + "$CF$" + c.dobj + "$ctlModel");
+    return n.value != nullptr ? or_default(n.value->as_int64(), std::int64_t{0}) : 0;
+  }
+
+  void select(control_runtime& c, session& s) {
+    auto n = find(ld1, c.ln + "$CF$" + c.dobj + "$sboTimeout");
+    const auto ms =
+        n.value != nullptr ? or_default(n.value->as_uint64(), std::uint64_t{30000}) : 30000;
+    c.selected_by = &s;
+    c.expiry = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    set_in(ld1, c.ln + "$ST$" + c.dobj + "$stSeld", mms::data::boolean(true));
+  }
+
+  void deselect(control_runtime& c) {
+    c.selected_by = nullptr;
+    c.sbow.reset();
+    set_in(ld1, c.ln + "$ST$" + c.dobj + "$stSeld", mms::data::boolean(false));
+  }
+
+  void expire(control_runtime& c) {
+    if (c.selected_by != nullptr && std::chrono::steady_clock::now() >= c.expiry) deselect(c);
+  }
+
+  // Read of SBO (sbo-with-normal-security).
+  std::optional<mms::data> sbo_read(session& s, std::string_view dom, std::string_view item) {
+    std::string_view attr;
+    auto* c = control_of(dom, item, attr);
+    if (c == nullptr || attr != "SBO") return std::nullopt;
+    expire(*c);
+    if (ctl_model_of(*c) != 2 || (c->selected_by != nullptr && c->selected_by != &s)) {
+      return mms::data::visible_string("");
+    }
+    select(*c, s);
+    return mms::data::visible_string(std::string(ld1) + "/" + c->co_prefix());
+  }
+
+  // Applies a control request; on refusal the DataAccessError and the AddCause (-1: none).
+  std::optional<std::pair<dae, int>> control_write(session& s, control_runtime& c,
+                                                   std::string_view attr, const td& type,
+                                                   const mms::data& v) {
+    if (attr != "SBOw" && attr != "Oper" && attr != "Cancel") {
+      return std::pair{dae::object_access_denied, -1};
+    }
+    expire(c);
+    const auto ctl_model = ctl_model_of(c);
+    const bool sbo = ctl_model == 2 || ctl_model == 4;
+    const auto check = [&] {
+      const auto* f = field(v, type, "Check");
+      return f != nullptr ? or_default(model::check_conditions::from_mms(*f), model::check_conditions{})
+                          : model::check_conditions{};
+    }();
+    if (ctl_model == 0) return std::pair{dae::object_access_denied, 1};
+    if (attr == "SBOw") {
+      if (ctl_model != 4) return std::pair{dae::object_access_denied, 1};
+      if (c.selected_by != nullptr && c.selected_by != &s) {
+        return std::pair{dae::temporarily_unavailable, 19};
+      }
+      if (check.interlock_check() && c.interlocked) return std::pair{dae::object_access_denied, 10};
+      select(c, s);
+      c.sbow = v;
+      return std::nullopt;
+    }
+    if (attr == "Cancel") {
+      if (ctl_model == 1) return std::pair{dae::object_access_denied, 1};
+      if (sbo) {
+        if (c.selected_by != &s) return std::pair{dae::object_access_denied, 18};
+        deselect(c);
+      }
+      ++c.cancels;
+      return std::nullopt;
+    }
+    // Oper
+    if (sbo) {
+      if (c.selected_by != &s) return std::pair{dae::object_access_denied, 18};
+      if (ctl_model == 4 && c.sbow) {
+        for (const char* name : {"ctlVal", "origin", "ctlNum"}) {
+          const auto* a = field(*c.sbow, type, name);
+          const auto* b = field(v, type, name);
+          if (a == nullptr || b == nullptr || !(*a == *b)) {
+            return std::pair{dae::object_value_invalid, 26};
+          }
+        }
+      }
+    }
+    if (check.interlock_check() && c.interlocked) return std::pair{dae::object_access_denied, 10};
+    if (check.synchrocheck() && c.synchro_blocked) return std::pair{dae::object_access_denied, 11};
+    const auto* ctl_val = field(v, type, "ctlVal");
+    const bool on = ctl_val != nullptr && or_default(ctl_val->as_boolean(), false);
+    if (c.ln == "XCBR1") {
+      set_in(ld1, "XCBR1$ST$Pos$stVal", model::to_mms(on ? model::dbpos::on : model::dbpos::off));
+    } else {
+      set_in(ld1, c.ln + "$ST$" + c.dobj + "$stVal", mms::data::boolean(on));
+    }
+    ++c.operations;
+    if (sbo) deselect(c);
+    if (ctl_model == 3 || ctl_model == 4) schedule_termination(s, c, type, v);
+    return std::nullopt;
+  }
+
+  outgoing last_appl_error(const control_runtime& c, std::string_view attr, const td& type,
+                           const mms::data& v, int cause) {
+    const auto* origin = field(v, type, "origin");
+    const auto* num = field(v, type, "ctlNum");
+    std::vector<mms::data> value{
+        mms::data::visible_string(std::string(ld1) + "/" + c.co_prefix() + "$" + std::string(attr)),
+        mms::data::integer(1),  // Error: unknown
+        origin != nullptr ? *origin
+                          : mms::data::structure({mms::data::integer(0), mms::data::octet_string({})}),
+        num != nullptr ? *num : mms::data::unsigned_integer(0), mms::data::integer(cause)};
+    outgoing o;
+    o.names.push_back({mms::object_scope::vmd_specific, {}, "LastApplError"});
+    o.values.push_back(mms::data::structure(std::move(value)));
+    return o;
+  }
+
+  void schedule_termination(session& s, control_runtime& c, const td& type, const mms::data& oper) {
+    if (c.termination == fake_server::termination_mode::none) return;
+    outgoing o;
+    if (c.termination == fake_server::termination_mode::negative) {
+      o = last_appl_error(c, "Oper", type, oper, c.termination_cause);
+    }
+    o.names.push_back({mms::object_scope::domain_specific, std::string(ld1), c.co_prefix() + "$Oper"});
+    o.values.push_back(oper);
+    for (const auto& p : sessions) {
+      if (p.get() == &s) {
+        asio::co_spawn(ex, deliver_later(shared_from_this(), p, std::move(o), c.termination_delay),
+                       asio::detached);
+        return;
+      }
+    }
+  }
+
+  static awaitable<void> deliver_later(std::shared_ptr<state> self, std::shared_ptr<session> s,
+                                       outgoing o, std::chrono::milliseconds delay) {
+    asio::steady_timer t(self->ex, delay);
+    (void)co_await t.async_wait(asio::as_tuple(asio::use_awaitable));
+    self->send(*s, std::move(o));
+  }
+
+  void release_controls(const session* s) {
+    for (auto& c : controls) {
+      if (c.selected_by == s) deselect(c);
+    }
+  }
+
+  static mms::information_report report_of(const outgoing& o, std::vector<mms::variable_spec>& specs,
+                                           std::vector<mms::access_result>& results) {
+    for (const auto& v : o.values) results.emplace_back(mms::data_ref(v));
+    if (o.names.empty()) {
+      return {mms::variable_access_specification::named(mms::object_name::vmd("RPT")), results};
+    }
+    for (const auto& n : o.names) specs.emplace_back(n.view());
+    return {mms::variable_access_specification::list(specs), results};
   }
 
   // --- requests
@@ -612,6 +910,10 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
     }
     std::vector<std::optional<mms::data>> values;
     for (const auto& t : targets) {
+      if (auto sel = sbo_read(s, t.domain, t.item)) {
+        values.push_back(std::move(sel));
+        continue;
+      }
       auto n = find(t.domain, t.item);
       values.push_back(n.value != nullptr ? std::optional<mms::data>(*n.value) : std::nullopt);
     }
@@ -644,9 +946,17 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
       co_return;
     }
     std::vector<mms::write_result> results;
+    std::vector<outgoing> notes;
     for (std::size_t i = 0; i < targets.size(); ++i) {
-      const auto e = write_variable(s, targets[i].domain, targets[i].item, values[i]);
+      const auto e = write_variable(s, targets[i].domain, targets[i].item, values[i], notes);
       results.push_back(e ? mms::write_result(*e) : mms::write_result());
+    }
+    // 8-1 §20: the LastApplError precedes the negative Write response.
+    for (const auto& o : notes) {
+      std::vector<mms::variable_spec> specs;
+      std::vector<mms::access_result> ars;
+      const auto ir = report_of(o, specs, ars);
+      (void)co_await s.assoc.send_unconfirmed(ir);
     }
     (void)co_await r.respond(mms::write_response{results});
   }
@@ -680,6 +990,7 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
     if (!s->alive) return;
     s->alive = false;
     release_rcbs(s.get());
+    release_controls(s.get());
     std::erase(sessions, s);
     s->wake.cancel();
   }
@@ -706,12 +1017,11 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
         (void)co_await s->wake.async_wait(asio::as_tuple(asio::use_awaitable));
         continue;
       }
-      const auto values = std::move(s->outbox.front());
+      const auto o = std::move(s->outbox.front());
       s->outbox.pop_front();
+      std::vector<mms::variable_spec> specs;
       std::vector<mms::access_result> results;
-      for (const auto& v : values) results.emplace_back(mms::data_ref(v));
-      const mms::information_report ir{
-          mms::variable_access_specification::named(mms::object_name::vmd("RPT")), results};
+      const auto ir = report_of(o, specs, results);
       auto sent = co_await s->assoc.send_unconfirmed(ir);
       if (!sent) break;
     }
@@ -767,6 +1077,7 @@ void fake_server::stop() {
 void fake_server::drop_connections() {
   for (auto& s : state_->sessions) {
     state_->release_rcbs(s.get());
+    state_->release_controls(s.get());
     s->assoc.close();
   }
   state_->held.clear();
@@ -825,6 +1136,52 @@ bool fake_server::update(std::string_view item, mms::data v, model::trigger_cond
 
 void fake_server::send_report(std::vector<mms::data> access_results) {
   for (auto& s : state_->sessions) state_->enqueue(*s, access_results);
+}
+
+bool fake_server::set_interlocked(std::string_view object, bool blocked) {
+  auto* c = state_->control_named(object);
+  if (c == nullptr) return false;
+  c->interlocked = blocked;
+  return true;
+}
+
+bool fake_server::set_synchrocheck_blocked(std::string_view object, bool blocked) {
+  auto* c = state_->control_named(object);
+  if (c == nullptr) return false;
+  c->synchro_blocked = blocked;
+  return true;
+}
+
+bool fake_server::set_command_termination(std::string_view object, termination_mode mode,
+                                          std::int16_t add_cause, std::chrono::milliseconds delay) {
+  auto* c = state_->control_named(object);
+  if (c == nullptr) return false;
+  c->termination = mode;
+  c->termination_cause = add_cause;
+  c->termination_delay = delay;
+  return true;
+}
+
+std::size_t fake_server::operations(std::string_view object) const {
+  const auto* c = state_->control_named(object);
+  return c != nullptr ? c->operations : 0;
+}
+
+std::size_t fake_server::cancellations(std::string_view object) const {
+  const auto* c = state_->control_named(object);
+  return c != nullptr ? c->cancels : 0;
+}
+
+std::optional<mms::data> fake_server::last_control_request(std::string_view object) const {
+  const auto* c = state_->control_named(object);
+  return c != nullptr ? c->last_request : std::nullopt;
+}
+
+bool fake_server::selected(std::string_view object) const {
+  auto* c = state_->control_named(object);
+  if (c == nullptr) return false;
+  state_->expire(*c);
+  return c->selected_by != nullptr;
 }
 
 std::size_t fake_server::buffered_entries(std::string_view brcb) const {

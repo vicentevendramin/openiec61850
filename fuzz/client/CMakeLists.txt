@@ -1,1 +1,2 @@
 openiec61850_add_fuzzer(fuzz_client_report fuzz_client_report.cpp)
+openiec61850_add_fuzzer(fuzz_client_control fuzz_client_control.cpp)

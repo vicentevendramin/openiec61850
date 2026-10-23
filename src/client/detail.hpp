@@ -119,6 +119,26 @@ struct subscription {
   bool reserved = false;
 };
 
+// Control InformationReports (LastApplError, CommandTermination) for one controllable object,
+// key "LD/LN$CO$DO". Created by get_control(); messages for objects without a channel are
+// dropped.
+struct control_channel {
+  static constexpr std::size_t capacity = 16;
+  std::deque<control_message> messages;
+  waiter* consumer = nullptr;
+  bool busy = false;  // an operation is in progress
+
+  void push(control_message m) {
+    if (messages.size() >= capacity) messages.pop_front();
+    messages.push_back(std::move(m));
+    if (consumer != nullptr) consumer->notify();
+  }
+};
+
+// "LD/LN$CO$DO" from a CntrlObj or termination variable ("LD/LN$CO$DO$Oper", "...$SBOw",
+// "...$Cancel", "...$SBO"; an ACSI "LD/LN.DO" is mapped too).
+[[nodiscard]] std::string control_key(std::string_view control_object);
+
 struct client_state : std::enable_shared_from_this<client_state> {
   client_state(asio::any_io_executor ex, client_options o);
 
@@ -136,6 +156,7 @@ struct client_state : std::enable_shared_from_this<client_state> {
   std::optional<asio::steady_timer> backoff;
 
   std::map<std::string, subscription> subscriptions;  // key: rcb.to_string()
+  std::map<std::string, control_channel> controls;    // key: control_key()
 
   mutable std::mutex mutex;  // guards info and entry_ids (read from any thread)
   association::association_info info;
@@ -153,6 +174,8 @@ struct client_state : std::enable_shared_from_this<client_state> {
   void adopt(association::client_association a);
   void on_unconfirmed(const association::unconfirmed_message& m);
   void emit(connection_event e);
+  // Wakes the operations waiting for a CommandTermination (association lost or closed).
+  void notify_controls();
   void finish(std::error_code reason);
 
   static asio::awaitable<void> supervise(std::shared_ptr<client_state> self);
@@ -210,6 +233,24 @@ asio::awaitable<result<void>> disable_reporting_op(std::shared_ptr<client_state>
                                                    model::object_reference rcb);
 asio::awaitable<result<void>> trigger_gi_op(std::shared_ptr<client_state> s,
                                             model::object_reference rcb);
+
+// Request helpers on a given association (services.cpp).
+asio::awaitable<result<std::vector<result<mms::data>>>> read_variables_on(
+    assoc_ptr a, std::vector<model::mms_variable> vars);
+asio::awaitable<result<void>> write_variable_on(assoc_ptr a, model::mms_variable var,
+                                                mms::data value);
+asio::awaitable<result<mms::type_description>> type_description_on(assoc_ptr a,
+                                                                   std::string domain,
+                                                                   std::string item);
+
+// --- control (control.cpp)
+
+asio::awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s,
+                                               model::object_reference object,
+                                               control_config config);
+asio::awaitable<result<void>> operate_once_op(std::shared_ptr<client_state> s,
+                                              model::object_reference object, mms::data value,
+                                              control_options options);
 
 // Re-enables every subscription on `a` (recovery); returns the RCBs that failed.
 asio::awaitable<std::vector<rcb_error>> restore_on(std::shared_ptr<client_state> s, assoc_ptr a);

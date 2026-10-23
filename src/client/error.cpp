@@ -28,6 +28,9 @@ class category final : public std::error_category {
       case errc::type_mismatch: return "unexpected value type";
       case errc::not_deleted: return "object not deleted";
       case errc::recovery_failed: return "association recovery failed";
+      case errc::select_failed: return "select failed";
+      case errc::termination_timeout: return "command termination timed out";
+      case errc::control_model_mismatch: return "service not available in the control model";
     }
     return "unknown error";
   }

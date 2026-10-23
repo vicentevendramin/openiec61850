@@ -788,6 +788,23 @@ awaitable<result<void>> trigger_gi_op(std::shared_ptr<client_state> s,
   co_return co_await write_attribute(s, *a, std::move(rcb), "GI", mms::data::boolean(true));
 }
 
+// --- helpers for control.cpp
+
+awaitable<result<std::vector<result<mms::data>>>> read_variables_on(
+    assoc_ptr a, std::vector<model::mms_variable> vars) {
+  const auto specs = specs_of(vars);
+  co_return co_await read_on(a, mms::variable_access_specification::list(specs), vars.size());
+}
+
+awaitable<result<void>> write_variable_on(assoc_ptr a, model::mms_variable var, mms::data value) {
+  co_return co_await write_one(a, var, std::move(value));
+}
+
+awaitable<result<mms::type_description>> type_description_on(assoc_ptr a, std::string domain,
+                                                             std::string item) {
+  co_return co_await type_on(a, std::move(domain), std::move(item));
+}
+
 awaitable<std::vector<rcb_error>> restore_on(std::shared_ptr<client_state> s, assoc_ptr a) {
   std::vector<rcb_error> errors;
   std::vector<std::string> keys;
