@@ -187,10 +187,48 @@ struct assignment {
   mms::data value;
 };
 
+// The fields of a control request that the next request of the sequence must repeat.
+struct control_params {
+  mms::data ctl_val;
+  std::optional<model::orcat> or_cat;
+  byte_buffer or_ident;
+  std::uint64_t ctl_num = 0;
+  bool test = false;
+};
+
 struct selection {
   std::uint64_t session = 0;
   std::uint64_t gen = 0;
   std::unique_ptr<asio::steady_timer> timer;
+  std::optional<control_params> sbow;  // sbo-with-enhanced-security: the SelectWithValue
+};
+
+struct server_state;
+
+// Shared by an execution and the control_completion handles given to the application.
+struct completion_state {
+  std::weak_ptr<server_state> state;
+  node_id object = no_node;
+  std::uint64_t gen = 0;
+  std::atomic<bool> done{false};
+
+  static control_completion make(std::shared_ptr<completion_state> s) {
+    return control_completion(std::move(s));
+  }
+};
+
+// An accepted Operate not finished yet: waiting for its activation time (operTm) or for the
+// application's completion.
+struct execution {
+  std::uint64_t session = 0;
+  std::uint64_t gen = 0;
+  bool enhanced = false;
+  bool waiting_activation = false;
+  control_request req;
+  mms::data oper;              // the Oper value as written (echoed by CommandTermination)
+  node_id oper_node = no_node;  // the Oper attribute
+  std::unique_ptr<asio::steady_timer> timer;  // activation or operate_timeout
+  std::shared_ptr<completion_state> completion;
 };
 
 struct server_state : std::enable_shared_from_this<server_state> {
@@ -222,6 +260,8 @@ struct server_state : std::enable_shared_from_this<server_state> {
   std::uint64_t tick = 0;
   std::uint64_t next_entry = 0;
   std::map<node_id, selection> selections;  // controllable DO -> sbo selection
+  std::map<node_id, execution> executions;  // controllable DO -> operation in progress
+  std::uint64_t next_control_gen = 0;
 
   // --- setup (server.cpp)
   result<void> init();
@@ -273,6 +313,11 @@ struct server_state : std::enable_shared_from_this<server_state> {
   bool control_read(session& s, const target& t, mms::data& out);
   std::optional<dae> control_write(session& s, const target& t, const mms::data& v);
   void control_session_closed(session& s);
+  // Ends an execution (on the strand): the CommandTermination of enhanced security.
+  void finish_execution(node_id object, std::uint64_t gen, control_result r);
+  // Runs a time-activated Operate whose activation time has come.
+  void activate(node_id object, std::uint64_t gen);
+  void control_shutdown();
 
   // --- sessions (server.cpp)
   [[nodiscard]] session* find_session(std::uint64_t id) const;

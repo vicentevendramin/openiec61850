@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <variant>
 
 #include <asio/io_context.hpp>
@@ -44,6 +45,24 @@ srv::data_model make_model() {
   auto oper = pos.structure("Oper", fc::CO);
   oper.attribute("ctlVal", basic_type::boolean);
   oper.attribute("ctlNum", basic_type::int8u);
+  // sbo-with-enhanced-security with time-activated control (SBOw, Oper, Cancel).
+  auto pos2 = ggio.data_object("Pos2");
+  pos2.attribute("ctlModel", fc::CF, basic_type::enumerated,
+                 srv::attribute_options{}.with_value(mms::data::integer(4)));
+  pos2.attribute("sboTimeout", fc::CF, basic_type::int32u,
+                 srv::attribute_options{}.with_value(mms::data::unsigned_integer(10)));
+  for (const char* name : {"SBOw", "Oper", "Cancel"}) {
+    auto o = pos2.structure(name, fc::CO);
+    o.attribute("ctlVal", basic_type::boolean);
+    o.attribute("operTm", basic_type::timestamp);
+    auto origin = o.structure("origin");
+    origin.attribute("orCat", basic_type::enumerated);
+    origin.attribute("orIdent", basic_type::octet_string);
+    o.attribute("ctlNum", basic_type::int8u);
+    o.attribute("T", basic_type::timestamp);
+    o.attribute("Test", basic_type::boolean);
+    if (std::string_view(name) != "Cancel") o.attribute("Check", basic_type::check);
+  }
   lln0.data_set("DS1", {ref("LD0/GGIO1.Ind1[ST]"), ref("LD0/GGIO1.Cfg.arr(1)[SP]")});
   srv::report_control_settings b1;
   b1.name = "brcb01";
@@ -70,7 +89,17 @@ const srv::data_model& shared_model() {
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
   asio::io_context ctx;
   srv::server_options opts;
-  opts.on_control = [](const srv::control_request&) { return srv::control_result::ok(); };
+  // Accept, refuse or leave pending depending on ctlNum, completing some at once.
+  opts.on_control = [](const srv::control_request& r) {
+    switch (r.ctl_num % 4) {
+      case 1: return srv::control_result::refused(srv::add_cause::blocked_by_interlocking);
+      case 2: return srv::control_result::pending();
+      case 3:
+        (void)r.completion.complete(srv::control_result::refused(srv::add_cause::step_limit));
+        return srv::control_result::pending();
+      default: return srv::control_result::ok();
+    }
+  };
   auto st = detail::make_offline_state(ctx.get_executor(), shared_model(), opts);
   if (!st) return 0;
   detail::session s((*st)->strand);

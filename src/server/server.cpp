@@ -139,7 +139,7 @@ void server_state::shutdown() {
     r->intg_timer.cancel();
     r->resv_timer.cancel();
   }
-  selections.clear();
+  control_shutdown();
   for (auto* w : stop_waiters) w->cancel();
 }
 

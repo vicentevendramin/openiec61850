@@ -5,4 +5,5 @@ target_sources(openiec61850 PRIVATE
   reporting.cpp
   server.cpp
   services.cpp
+  scl_model.cpp
   values.cpp)

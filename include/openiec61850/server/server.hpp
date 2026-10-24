@@ -34,8 +34,9 @@
 // continuation); Read / Write of any variable (an LN, an FC of an LN, a DO, a DA or an RCB, array
 // elements through AlternateAccess); GetVariableAccessAttributes; data sets (Define / Delete /
 // GetNamedVariableListAttributes, Read / Write of a list, association-specific "@" lists);
-// reporting (BRCB and URCB, 7-2 §17.2 / 8-1 §17.2); control with direct-normal and sbo-normal
-// security (7-2 §20 / 8-1 §20) through an application handler.
+// reporting (BRCB and URCB, 7-2 §17.2 / 8-1 §17.2); control with the four control models
+// (direct / sbo, normal / enhanced security, 7-2 §20 / 8-1 §20) through an application handler,
+// with asynchronous completion of enhanced-security operations (CommandTermination).
 //
 // Threading (ADR 0004): all the server state lives on one strand on the given executor
 // (typically a transport::io_runtime). update() and stop() may be called from any thread; the
@@ -88,31 +89,79 @@ enum class add_cause : std::uint8_t {
   locked_by_other_client = 27,
 };
 
+// Select: a Read of SBO (sbo-with-normal-security) or a Write of SBOw (SelectWithValue,
+// sbo-with-enhanced-security; the request then carries the SBOw fields). Operate: a Write of Oper
+// (with operTm: TimeActivatedOperate, reported when the activation time is reached). Cancel: a
+// Write of Cancel.
 enum class control_action : std::uint8_t { select, operate, cancel };
 
-// A control service on a controllable DO (7-2 §20): Select (read of SBO), Operate (write of Oper),
-// Cancel (write of Cancel).
+struct control_result;
+
+namespace detail {
+struct completion_state;
+}
+
+// Completes an Operate the application accepted as pending (control_result::pending()), typically
+// once the physical action has ended. Copyable; any thread; only the first complete() counts, and
+// it does nothing once the operation was abandoned (server stopped, operate_timeout elapsed).
+// With enhanced security, complete(ok()) sends the positive CommandTermination and
+// complete(refused(cause)) the negative one (LastApplError with the AddCause, then
+// CommandTermination-), unless the client's association has closed meanwhile (the operation
+// still ends). With normal security there is no termination: complete(ok()) only ends the
+// execution (until then further Operates on the object are refused with
+// command-already-in-execution) and complete(refused(cause)) sends a LastApplError report.
+class control_completion {
+ public:
+  control_completion() = default;
+
+  // False for a default-constructed handle (requests other than Operate).
+  [[nodiscard]] bool valid() const noexcept { return state_ != nullptr; }
+  // Returns false when the operation was already completed or abandoned, or the handle is empty.
+  bool complete(const control_result& result) const;
+
+ private:
+  friend struct detail::completion_state;
+  explicit control_completion(std::shared_ptr<detail::completion_state> s) noexcept
+      : state_(std::move(s)) {}
+  std::shared_ptr<detail::completion_state> state_;
+};
+
+// A control service on a controllable DO (7-2 §20).
 struct control_request {
   std::uint64_t association = 0;
   control_action action = control_action::operate;
   model::object_reference object;  // the DO, without FC, e.g. "LD/CSWI1.Pos"
   model::ctl_model ctl_model = model::ctl_model::direct_with_normal_security;
-  // Fields of the Oper / Cancel structure (unset for a Select).
+  // Fields of the SBOw / Oper / Cancel structure (unset for a Select by Read of SBO).
   mms::data ctl_val;
+  std::optional<model::timestamp> oper_time;  // operTm, when present and not zero
   std::optional<model::orcat> or_cat;
   byte_buffer or_ident;
   std::uint64_t ctl_num = 0;
   std::optional<model::timestamp> t;
   bool test = false;
   model::check_conditions check;
+  // Operate only: completes an operation answered with control_result::pending().
+  control_completion completion;
 };
 
 struct control_result {
-  bool accepted = true;
-  add_cause cause = add_cause::unknown;
+  enum class kind : std::uint8_t { accepted, refused, pending };
 
+  kind outcome = kind::accepted;
+  add_cause cause = add_cause::unknown;  // refused
+
+  [[nodiscard]] bool accepted() const noexcept { return outcome != kind::refused; }
+
+  // Accepted; for an enhanced-security Operate the operation is also complete (the positive
+  // CommandTermination follows the Write response).
   [[nodiscard]] static control_result ok() noexcept { return {}; }
-  [[nodiscard]] static control_result refused(add_cause c) noexcept { return {false, c}; }
+  // Refused: negative response preceded by a LastApplError with `c` (or, from complete(), a
+  // negative CommandTermination).
+  [[nodiscard]] static control_result refused(add_cause c) noexcept { return {kind::refused, c}; }
+  // Operate only (treated as ok() otherwise): accepted, positive Write response, the operation
+  // runs until request.completion.complete() is called.
+  [[nodiscard]] static control_result pending() noexcept { return {kind::pending, add_cause::unknown}; }
 };
 
 struct server_options {
@@ -137,12 +186,25 @@ struct server_options {
   // Set the DO's `t` (same FC) to the current time when update() changes a data attribute with a
   // dchg/qchg trigger and no timestamp is given.
   bool auto_timestamp = true;
-  // sbo-normal selection timeout when the DO has no CF sboTimeout.
+  // Selection timeout (sbo-normal and sbo-enhanced) when the DO has no CF sboTimeout (or zero).
   std::chrono::milliseconds default_sbo_timeout{30000};
+  // Pending operations (control_result::pending()) not completed within this time end as refused
+  // with time-limit-over. Zero: no limit.
+  std::chrono::milliseconds operate_timeout{0};
+  // Test flag of control requests against the behaviour of the LN (IEC 61850-7-4 Annex A): Beh of
+  // the LN, else Beh or Mod of LLN0 of its LD. Beh off refuses every command except on Mod;
+  // on / on-blocked refuse Test = true; test / test-blocked refuse Test = false (AddCause
+  // blocked-by-mode). No check when the LN has no such status or this is false.
+  bool check_test_mode = true;
   // Called before a client's write to SP, SV, CF, DC, BL, SG or SE is applied; returning a
   // DataAccessError refuses it. Unset: such writes are accepted.
   std::function<std::optional<mms::data_access_error>(const write_event&)> on_write;
-  // Control services. Unset: every Select / Operate / Cancel is refused with not_supported.
+  // Control services, on the strand: return ok(), refused(cause) or, for an Operate, pending()
+  // and complete it later through request.completion. The server checks the control model
+  // before calling it: selection by the same association (sbo), consistency of Oper / Cancel
+  // with the SBOw (ctlVal, origin, ctlNum: inconsistent-parameters), one execution at a time
+  // (command-already-in-execution), the Test flag (check_test_mode). Unset: every Select /
+  // Operate / Cancel is refused with not_supported.
   std::function<control_result(const control_request&)> on_control;
 };
 

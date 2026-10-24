@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ed.1 ICD written for the openiec61850 tests. -->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Header id="ed1_relay" version="1" revision="0" toolID="handwritten" nameStructure="IEDName"/>
+  <Communication>
+    <SubNetwork name="StationBus" type="8-MMS">
+      <ConnectedAP iedName="TEMPLATE" apName="S1">
+        <Address>
+          <P type="IP">192.168.0.10</P>
+          <P type="IP-SUBNET">255.255.255.0</P>
+          <P type="OSI-TSEL">0001</P>
+          <P type="OSI-SSEL">0001</P>
+          <P type="OSI-PSEL">00000001</P>
+          <P type="OSI-AP-Title">1,3,9999,33</P>
+          <P type="OSI-AE-Qualifier">33</P>
+        </Address>
+        <GSE ldInst="CTRL" cbName="gcbPos">
+          <Address>
+            <P type="MAC-Address">01-0C-CD-01-00-01</P>
+            <P type="APPID">0001</P>
+            <P type="VLAN-ID">000</P>
+            <P type="VLAN-PRIORITY">4</P>
+          </Address>
+          <MinTime unit="s" multiplier="m">4</MinTime>
+          <MaxTime unit="s" multiplier="m">1000</MaxTime>
+        </GSE>
+      </ConnectedAP>
+    </SubNetwork>
+  </Communication>
+  <IED name="TEMPLATE" type="Relay" manufacturer="openiec61850" configVersion="1.0">
+    <Services>
+      <DynAssociation/>
+      <GetDirectory/>
+      <GetDataObjectDefinition/>
+      <GetDataSetValue/>
+      <DataSetDirectory/>
+      <ConfDataSet max="4" maxAttributes="20"/>
+      <ReadWrite/>
+      <ConfReportControl max="8"/>
+      <GetCBValues/>
+      <ReportSettings cbName="Conf" datSet="Conf" rptID="Dyn" optFields="Dyn" bufTime="Dyn" trgOps="Dyn" intgPd="Dyn"/>
+      <GOOSE max="2"/>
+    </Services>
+    <AccessPoint name="S1">
+      <Server>
+        <Authentication none="true"/>
+        <LDevice inst="CTRL">
+          <LN0 lnClass="LLN0" inst="" lnType="LLN0_T">
+            <DataSet name="Positions">
+              <FCDA ldInst="CTRL" lnClass="XCBR" lnInst="1" doName="Pos" daName="stVal" fc="ST"/>
+              <FCDA ldInst="CTRL" lnClass="XCBR" lnInst="1" doName="Pos" daName="q" fc="ST"/>
+              <FCDA ldInst="CTRL" prefix="Q0" lnClass="CSWI" lnInst="1" doName="Pos" fc="ST"/>
+              <FCDA ldInst="MEAS" lnClass="MMXU" lnInst="1" doName="TotW" fc="MX"/>
+            </DataSet>
+            <ReportControl name="urcbPos" rptID="TEMPLATECTRL/LLN0$RP$urcbPos" datSet="Positions" confRev="1" buffered="false" intgPd="0">
+              <TrgOps dchg="true" qchg="true" period="false"/>
+              <OptFields seqNum="true" timeStamp="true" reasonCode="true" dataSet="true"/>
+              <RptEnabled max="3"/>
+            </ReportControl>
+            <ReportControl name="brcbPos" rptID="brcbPos" datSet="Positions" confRev="2" buffered="true" bufTime="100" intgPd="5000">
+              <TrgOps dchg="true" period="true"/>
+              <OptFields seqNum="true" entryID="true" configRef="true" dataRef="true"/>
+              <RptEnabled max="1"/>
+            </ReportControl>
+            <GSEControl name="gcbPos" datSet="Positions" appID="TEMPLATE_GOOSE" confRev="1"/>
+            <DOI name="Mod">
+              <DAI name="ctlModel"><Val>status-only</Val></DAI>
+            </DOI>
+          </LN0>
+          <LN lnClass="LPHD" inst="1" lnType="LPHD_T"/>
+          <LN lnClass="XCBR" inst="1" lnType="XCBR_T">
+            <DOI name="Pos">
+              <DAI name="ctlModel" valKind="RO"><Val>status-only</Val></DAI>
+            </DOI>
+          </LN>
+          <LN prefix="Q0" lnClass="CSWI" inst="1" lnType="CSWI_T">
+            <DOI name="Pos">
+              <DAI name="ctlModel"><Val>direct-with-normal-security</Val></DAI>
+              <DAI name="sboTimeout"><Val>30000</Val></DAI>
+            </DOI>
+          </LN>
+          <LN lnClass="GGIO" inst="1" lnType="GGIO_T">
+            <DOI name="Ind1" desc="Spare input 1">
+              <DAI name="stVal" sAddr="di:1"><Val>true</Val></DAI>
+            </DOI>
+          </LN>
+        </LDevice>
+        <LDevice inst="MEAS">
+          <LN0 lnClass="LLN0" inst="" lnType="LLN0_T"/>
+          <LN lnClass="MMXU" inst="1" lnType="MMXU_T">
+            <DOI name="A">
+              <SDI name="phsA">
+                <SDI name="cVal">
+                  <SDI name="mag"><DAI name="f" sAddr="ai:ia"/></SDI>
+                </SDI>
+              </SDI>
+            </DOI>
+            <DOI name="TotW">
+              <SDI name="units"><DAI name="SIUnit"><Val>W</Val></DAI></SDI>
+            </DOI>
+          </LN>
+        </LDevice>
+      </Server>
+    </AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="LLN0_T" lnClass="LLN0">
+      <DO name="Mod" type="ENC_Mod"/>
+      <DO name="Beh" type="ENS_Beh"/>
+      <DO name="Health" type="ENS_Health"/>
+      <DO name="NamPlt" type="LPL_T"/>
+    </LNodeType>
+    <LNodeType id="LPHD_T" lnClass="LPHD">
+      <DO name="PhyNam" type="DPL_T"/>
+      <DO name="PhyHealth" type="ENS_Health"/>
+      <DO name="Proxy" type="SPS_T"/>
+    </LNodeType>
+    <LNodeType id="XCBR_T" lnClass="XCBR">
+      <DO name="Mod" type="ENC_Mod"/>
+      <DO name="Beh" type="ENS_Beh"/>
+      <DO name="Health" type="ENS_Health"/>
+      <DO name="NamPlt" type="LPL_T"/>
+      <DO name="Loc" type="SPS_T"/>
+      <DO name="OpCnt" type="INS_T"/>
+      <DO name="Pos" type="DPC_Status"/>
+      <DO name="BlkOpn" type="SPC_T"/>
+      <DO name="BlkCls" type="SPC_T"/>
+    </LNodeType>
+    <LNodeType id="CSWI_T" lnClass="CSWI">
+      <DO name="Mod" type="ENC_Mod"/>
+      <DO name="Beh" type="ENS_Beh"/>
+      <DO name="Health" type="ENS_Health"/>
+      <DO name="NamPlt" type="LPL_T"/>
+      <DO name="Pos" type="DPC_Ctl"/>
+    </LNodeType>
+    <LNodeType id="GGIO_T" lnClass="GGIO">
+      <DO name="Mod" type="ENC_Mod"/>
+      <DO name="Beh" type="ENS_Beh"/>
+      <DO name="Health" type="ENS_Health"/>
+      <DO name="NamPlt" type="LPL_T"/>
+      <DO name="Ind1" type="SPS_T"/>
+      <DO name="Ind2" type="SPS_T"/>
+      <DO name="Hist" type="HST_T"/>
+    </LNodeType>
+    <LNodeType id="MMXU_T" lnClass="MMXU">
+      <DO name="Mod" type="ENC_Mod"/>
+      <DO name="Beh" type="ENS_Beh"/>
+      <DO name="Health" type="ENS_Health"/>
+      <DO name="NamPlt" type="LPL_T"/>
+      <DO name="TotW" type="MV_T"/>
+      <DO name="Hz" type="MV_T"/>
+      <DO name="A" type="WYE_T"/>
+    </LNodeType>
+    <DOType id="ENC_Mod" cdc="ENC">
+      <DA name="stVal" bType="Enum" type="Beh" fc="ST" dchg="true"/>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="ctlModel" bType="Enum" type="ctlModel" fc="CF"><Val>direct-with-normal-security</Val></DA>
+    </DOType>
+    <DOType id="ENS_Beh" cdc="ENS">
+      <DA name="stVal" bType="Enum" type="Beh" fc="ST" dchg="true"><Val>on</Val></DA>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+    </DOType>
+    <DOType id="ENS_Health" cdc="ENS">
+      <DA name="stVal" bType="Enum" type="Health" fc="ST" dchg="true"><Val>Ok</Val></DA>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+    </DOType>
+    <DOType id="LPL_T" cdc="LPL">
+      <DA name="vendor" bType="VisString255" fc="DC"><Val>openiec61850</Val></DA>
+      <DA name="swRev" bType="VisString255" fc="DC"><Val>0.1</Val></DA>
+      <DA name="d" bType="VisString255" fc="DC"/>
+      <DA name="configRev" bType="VisString255" fc="DC"/>
+      <DA name="ldNs" bType="VisString255" fc="EX"><Val>IEC 61850-7-4:2003</Val></DA>
+    </DOType>
+    <DOType id="DPL_T" cdc="DPL">
+      <DA name="vendor" bType="VisString255" fc="DC"/>
+      <DA name="serNum" bType="VisString255" fc="DC"/>
+    </DOType>
+    <DOType id="SPS_T" cdc="SPS">
+      <DA name="stVal" bType="BOOLEAN" fc="ST" dchg="true"/>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+    </DOType>
+    <DOType id="INS_T" cdc="INS">
+      <DA name="stVal" bType="INT32" fc="ST" dchg="true"><Val>0</Val></DA>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+    </DOType>
+    <DOType id="HST_T" cdc="HST">
+      <DA name="hstVal" bType="INT32U" fc="ST" dchg="true" count="8"><Val>0</Val></DA>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="numPts" bType="INT16U" fc="CF"><Val>8</Val></DA>
+    </DOType>
+    <DOType id="DPC_Status" cdc="DPC">
+      <DA name="stVal" bType="Dbpos" fc="ST" dchg="true"/>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="ctlModel" bType="Enum" type="ctlModel" fc="CF"/>
+    </DOType>
+    <DOType id="DPC_Ctl" cdc="DPC">
+      <DA name="Oper" bType="Struct" type="Oper_BOOL" fc="CO"/>
+      <DA name="stVal" bType="Dbpos" fc="ST" dchg="true"/>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="ctlModel" bType="Enum" type="ctlModel" fc="CF"/>
+      <DA name="sboTimeout" bType="INT32U" fc="CF"/>
+    </DOType>
+    <DOType id="SPC_T" cdc="SPC">
+      <DA name="Oper" bType="Struct" type="Oper_BOOL" fc="CO"/>
+      <DA name="stVal" bType="BOOLEAN" fc="ST" dchg="true"/>
+      <DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="ST"/>
+      <DA name="ctlModel" bType="Enum" type="ctlModel" fc="CF"><Val>status-only</Val></DA>
+    </DOType>
+    <DOType id="MV_T" cdc="MV">
+      <DA name="mag" bType="Struct" type="AnalogueValue_T" fc="MX" dchg="true"/>
+      <DA name="q" bType="Quality" fc="MX" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="MX"/>
+      <DA name="units" bType="Struct" type="Unit_T" fc="CF"/>
+      <DA name="db" bType="INT32U" fc="CF"><Val>500</Val></DA>
+    </DOType>
+    <DOType id="CMV_T" cdc="CMV">
+      <DA name="cVal" bType="Struct" type="Vector_T" fc="MX" dchg="true"/>
+      <DA name="q" bType="Quality" fc="MX" qchg="true"/>
+      <DA name="t" bType="Timestamp" fc="MX"/>
+    </DOType>
+    <DOType id="WYE_T" cdc="WYE">
+      <SDO name="phsA" type="CMV_T"/>
+      <SDO name="phsB" type="CMV_T"/>
+      <SDO name="phsC" type="CMV_T"/>
+    </DOType>
+    <DAType id="AnalogueValue_T">
+      <BDA name="f" bType="FLOAT32"/>
+    </DAType>
+    <DAType id="Vector_T">
+      <BDA name="mag" bType="Struct" type="AnalogueValue_T"/>
+      <BDA name="ang" bType="Struct" type="AnalogueValue_T"/>
+    </DAType>
+    <DAType id="Unit_T">
+      <BDA name="SIUnit" bType="Enum" type="SIUnit"/>
+      <BDA name="multiplier" bType="Enum" type="multiplier"><Val></Val></BDA>
+    </DAType>
+    <DAType id="Originator_T">
+      <BDA name="orCat" bType="Enum" type="orCategory"/>
+      <BDA name="orIdent" bType="Octet64"/>
+    </DAType>
+    <DAType id="Oper_BOOL">
+      <BDA name="ctlVal" bType="BOOLEAN"/>
+      <BDA name="origin" bType="Struct" type="Originator_T"/>
+      <BDA name="ctlNum" bType="INT8U"/>
+      <BDA name="T" bType="Timestamp"/>
+      <BDA name="Test" bType="BOOLEAN"/>
+      <BDA name="Check" bType="Check"/>
+    </DAType>
+    <EnumType id="Beh">
+      <EnumVal ord="1">on</EnumVal>
+      <EnumVal ord="2">blocked</EnumVal>
+      <EnumVal ord="3">test</EnumVal>
+      <EnumVal ord="4">test/blocked</EnumVal>
+      <EnumVal ord="5">off</EnumVal>
+    </EnumType>
+    <EnumType id="Health">
+      <EnumVal ord="1">Ok</EnumVal>
+      <EnumVal ord="2">Warning</EnumVal>
+      <EnumVal ord="3">Alarm</EnumVal>
+    </EnumType>
+    <EnumType id="ctlModel">
+      <EnumVal ord="0">status-only</EnumVal>
+      <EnumVal ord="1">direct-with-normal-security</EnumVal>
+      <EnumVal ord="2">sbo-with-normal-security</EnumVal>
+      <EnumVal ord="3">direct-with-enhanced-security</EnumVal>
+      <EnumVal ord="4">sbo-with-enhanced-security</EnumVal>
+    </EnumType>
+    <EnumType id="orCategory">
+      <EnumVal ord="0">not-supported</EnumVal>
+      <EnumVal ord="1">bay-control</EnumVal>
+      <EnumVal ord="2">station-control</EnumVal>
+      <EnumVal ord="3">remote-control</EnumVal>
+    </EnumType>
+    <EnumType id="SIUnit">
+      <EnumVal ord="1"></EnumVal>
+      <EnumVal ord="5">A</EnumVal>
+      <EnumVal ord="29">V</EnumVal>
+      <EnumVal ord="33">Hz</EnumVal>
+      <EnumVal ord="38">W</EnumVal>
+    </EnumType>
+    <EnumType id="multiplier">
+      <EnumVal ord="-3">m</EnumVal>
+      <EnumVal ord="0"></EnumVal>
+      <EnumVal ord="3">k</EnumVal>
+    </EnumType>
+  </DataTypeTemplates>
+</SCL>

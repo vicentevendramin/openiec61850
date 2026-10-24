@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ed.2 CID written for the openiec61850 tests: prefixed SCL namespace, vendor extensions. -->
+<scl:SCL xmlns:scl="http://www.iec.ch/61850/2003/SCL" xmlns:ext="urn:example:vendor"
+         version="2007" revision="A">
+  <scl:Header id="ed2_bay" version="3" revision="1" toolID="handwritten"/>
+  <scl:Private type="vendor-settings"><ext:Anything name="ignored"/></scl:Private>
+  <scl:Communication>
+    <scl:SubNetwork name="Station" type="8-MMS">
+      <scl:ConnectedAP iedName="BAY1" apName="P1">
+        <scl:Address>
+          <scl:P type="IP">10.0.0.21</scl:P>
+          <scl:P type="IP-SUBNET">255.255.0.0</scl:P>
+          <scl:P type="IP-GATEWAY">10.0.0.1</scl:P>
+          <scl:P type="OSI-TSEL">0001</scl:P>
+          <scl:P type="OSI-SSEL">0001</scl:P>
+          <scl:P type="OSI-PSEL">00000001</scl:P>
+          <scl:P type="OSI-AP-Title">1,3,9999,23</scl:P>
+          <scl:P type="OSI-AE-Qualifier">23</scl:P>
+        </scl:Address>
+        <scl:SMV ldInst="PROT" cbName="msvcb01">
+          <scl:Address>
+            <scl:P type="MAC-Address">01-0C-CD-04-00-01</scl:P>
+            <scl:P type="APPID">4000</scl:P>
+            <scl:P type="VLAN-ID">005</scl:P>
+            <scl:P type="VLAN-PRIORITY">4</scl:P>
+          </scl:Address>
+        </scl:SMV>
+      </scl:ConnectedAP>
+    </scl:SubNetwork>
+  </scl:Communication>
+  <scl:IED name="BAY1" manufacturer="openiec61850" originalSclVersion="2007" originalSclRevision="A">
+    <scl:Services nameLength="64">
+      <scl:DynAssociation max="5"/>
+      <scl:SettingGroups><scl:SGEdit resvTms="true"/><scl:ConfSG/></scl:SettingGroups>
+      <scl:ConfDataSet max="10" maxAttributes="100" modify="false"/>
+      <scl:ConfReportControl max="12" bufMode="both"/>
+      <scl:ConfLogControl max="2"/>
+      <scl:ClientServices goose="true"><scl:TimeSyncProt sntp="true"/></scl:ClientServices>
+    </scl:Services>
+    <scl:AccessPoint name="P1">
+      <scl:Server timeout="60">
+        <scl:Authentication none="true" password="true"/>
+        <scl:LDevice inst="PROT" ldName="Bay1Prot">
+          <scl:LN0 lnClass="LLN0" inst="" lnType="LLN0_2">
+            <scl:DataSet name="Meas">
+              <scl:FCDA ldInst="PROT" lnClass="MMXU" lnInst="1" doName="PhV.phsA" daName="cVal.mag.f" fc="MX"/>
+              <scl:FCDA ldInst="PROT" lnClass="MMXU" lnInst="1" doName="Hz" fc="MX"/>
+              <scl:FCDA ldInst="PROT" lnClass="GGIO" lnInst="1" doName="AnIn" daName="mag" fc="MX" ix="2"/>
+            </scl:DataSet>
+            <scl:DataSet name="Status">
+              <scl:FCDA ldInst="PROT" lnClass="XCBR" lnInst="1" doName="Pos" fc="ST"/>
+              <scl:FCDA ldInst="PROT" prefix="QA1" lnClass="CSWI" lnInst="1" doName="Pos" daName="stVal" fc="ST"/>
+            </scl:DataSet>
+            <scl:ReportControl name="brcbMeas" rptID="Bay1/Meas" datSet="Meas" confRev="10000" buffered="true" bufTime="50" intgPd="1000" indexed="true">
+              <scl:TrgOps dchg="true" qchg="true" dupd="true" period="true" gi="false"/>
+              <scl:OptFields seqNum="true" timeStamp="true" dataSet="true" reasonCode="true" dataRef="true" entryID="true" configRef="true" bufOvfl="false"/>
+              <scl:RptEnabled max="2">
+                <scl:ClientLN iedName="HMI" ldInst="LD0" lnClass="IHMI" lnInst="1" apRef="S1"/>
+              </scl:RptEnabled>
+            </scl:ReportControl>
+            <scl:ReportControl name="urcbStatus" datSet="Status" confRev="1" indexed="false">
+              <scl:TrgOps dchg="true"/>
+              <scl:OptFields/>
+            </scl:ReportControl>
+            <scl:LogControl name="logStatus" datSet="Status" logName="Bay1Log" bufTime="0" intgPd="0" reasonCode="true">
+              <scl:TrgOps dchg="true" qchg="true"/>
+            </scl:LogControl>
+            <scl:SampledValueControl name="msvcb01" datSet="Meas" smvID="Bay1MU01" confRev="1" smpRate="80" nofASDU="1" multicast="true">
+              <scl:SmvOpts refreshTime="true" sampleRate="true" dataSet="true"/>
+            </scl:SampledValueControl>
+            <scl:SettingControl numOfSGs="2" actSG="1"/>
+            <scl:DOI name="Mod">
+              <scl:DAI name="stVal"><scl:Val>on</scl:Val></scl:DAI>
+            </scl:DOI>
+            <ext:Extension name="must be skipped"><scl:DOI name="Bogus"/></ext:Extension>
+          </scl:LN0>
+          <scl:LN lnClass="MMXU" inst="1" lnType="MMXU_2">
+            <scl:DOI name="Hz">
+              <scl:DAI name="db"><scl:Val>200</scl:Val></scl:DAI>
+            </scl:DOI>
+            <scl:DOI name="PhV">
+              <scl:SDI name="phsA">
+                <scl:SDI name="cVal"><scl:SDI name="mag"><scl:DAI name="f" sAddr="ai:va"/></scl:SDI></scl:SDI>
+              </scl:SDI>
+            </scl:DOI>
+          </scl:LN>
+          <scl:LN lnClass="XCBR" inst="1" lnType="XCBR_2"/>
+          <scl:LN prefix="QA1" lnClass="CSWI" inst="1" lnType="CSWI_2">
+            <scl:DOI name="Pos">
+              <scl:DAI name="ctlModel"><scl:Val>sbo-with-enhanced-security</scl:Val></scl:DAI>
+            </scl:DOI>
+          </scl:LN>
+          <scl:LN lnClass="GGIO" inst="1" lnType="GGIO_2">
+            <scl:DOI name="AnIn">
+              <scl:SDI name="mag" ix="1"><scl:DAI name="f"><scl:Val>1.5</scl:Val></scl:DAI></scl:SDI>
+            </scl:DOI>
+          </scl:LN>
+          <scl:LN lnClass="PTOC" inst="1" lnType="PTOC_2">
+            <scl:DOI name="StrVal">
+              <scl:SDI name="setMag">
+                <scl:DAI name="f"><scl:Val sGroup="1">100</scl:Val><scl:Val sGroup="2">150.5</scl:Val></scl:DAI>
+              </scl:SDI>
+            </scl:DOI>
+          </scl:LN>
+        </scl:LDevice>
+      </scl:Server>
+    </scl:AccessPoint>
+  </scl:IED>
+  <scl:DataTypeTemplates>
+    <scl:LNodeType id="LLN0_2" lnClass="LLN0">
+      <scl:DO name="Mod" type="ENC_2"/>
+      <scl:DO name="Beh" type="ENS_Beh2"/>
+      <scl:DO name="NamPlt" type="LPL_2"/>
+    </scl:LNodeType>
+    <scl:LNodeType id="MMXU_2" lnClass="MMXU">
+      <scl:DO name="Beh" type="ENS_Beh2"/>
+      <scl:DO name="Hz" type="MV_2"/>
+      <scl:DO name="PhV" type="WYE_2"/>
+    </scl:LNodeType>
+    <scl:LNodeType id="XCBR_2" lnClass="XCBR">
+      <scl:DO name="Beh" type="ENS_Beh2"/>
+      <scl:DO name="Pos" type="DPC_2"/>
+    </scl:LNodeType>
+    <scl:LNodeType id="CSWI_2" lnClass="CSWI">
+      <scl:DO name="Beh" type="ENS_Beh2"/>
+      <scl:DO name="Pos" type="DPC_2"/>
+    </scl:LNodeType>
+    <scl:LNodeType id="GGIO_2" lnClass="GGIO">
+      <scl:DO name="Beh" type="ENS_Beh2"/>
+      <scl:DO name="AnIn" type="MVArr_2"/>
+    </scl:LNodeType>
+    <scl:LNodeType id="PTOC_2" lnClass="PTOC">
+      <scl:DO name="Beh" type="ENS_Beh2"/>
+      <scl:DO name="StrVal" type="ASG_2"/>
+    </scl:LNodeType>
+    <scl:DOType id="ENC_2" cdc="ENC">
+      <scl:DA name="stVal" bType="Enum" type="BehKind" fc="ST" dchg="true"/>
+      <scl:DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <scl:DA name="t" bType="Timestamp" fc="ST"/>
+      <scl:DA name="ctlModel" bType="Enum" type="CtlModelKind" fc="CF"><scl:Val>status-only</scl:Val></scl:DA>
+    </scl:DOType>
+    <scl:DOType id="ENS_Beh2" cdc="ENS">
+      <scl:DA name="stVal" bType="Enum" type="BehKind" fc="ST" dchg="true" dupd="true"><scl:Val>on</scl:Val></scl:DA>
+      <scl:DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <scl:DA name="t" bType="Timestamp" fc="ST"/>
+    </scl:DOType>
+    <scl:DOType id="LPL_2" cdc="LPL">
+      <scl:DA name="vendor" bType="VisString255" fc="DC"/>
+      <scl:DA name="swRev" bType="VisString255" fc="DC"/>
+      <scl:DA name="configRev" bType="VisString255" fc="DC"/>
+      <scl:DA name="ldNs" bType="VisString255" fc="EX"><scl:Val>IEC 61850-7-4:2007</scl:Val></scl:DA>
+    </scl:DOType>
+    <scl:DOType id="MV_2" cdc="MV">
+      <scl:DA name="mag" bType="Struct" type="AV_2" fc="MX" dchg="true" dupd="true"/>
+      <scl:DA name="q" bType="Quality" fc="MX" qchg="true"/>
+      <scl:DA name="t" bType="Timestamp" fc="MX"/>
+      <scl:DA name="db" bType="INT32U" fc="CF"><scl:Val>1000</scl:Val></scl:DA>
+    </scl:DOType>
+    <scl:DOType id="MVArr_2" cdc="MV">
+      <scl:DA name="mag" bType="Struct" type="AV_2" fc="MX" dchg="true" count="4"/>
+      <scl:DA name="q" bType="Quality" fc="MX" qchg="true"/>
+    </scl:DOType>
+    <scl:DOType id="CMV_2" cdc="CMV">
+      <scl:DA name="cVal" bType="Struct" type="Vec_2" fc="MX" dchg="true"/>
+      <scl:DA name="q" bType="Quality" fc="MX" qchg="true"/>
+      <scl:DA name="t" bType="Timestamp" fc="MX"/>
+    </scl:DOType>
+    <scl:DOType id="WYE_2" cdc="WYE">
+      <scl:SDO name="phsA" type="CMV_2"/>
+      <scl:DA name="q" bType="Quality" fc="MX" qchg="true"/>
+      <scl:SDO name="phsB" type="CMV_2"/>
+      <scl:SDO name="phsC" type="CMV_2"/>
+      <scl:SDO name="neut" type="CMV_2"/>
+    </scl:DOType>
+    <scl:DOType id="DPC_2" cdc="DPC">
+      <scl:DA name="SBOw" bType="Struct" type="Oper_2" fc="CO"/>
+      <scl:DA name="Oper" bType="Struct" type="Oper_2" fc="CO"/>
+      <scl:DA name="Cancel" bType="Struct" type="Cancel_2" fc="CO"/>
+      <scl:DA name="stVal" bType="Dbpos" fc="ST" dchg="true"/>
+      <scl:DA name="q" bType="Quality" fc="ST" qchg="true"/>
+      <scl:DA name="t" bType="Timestamp" fc="ST"/>
+      <scl:DA name="ctlModel" bType="Enum" type="CtlModelKind" fc="CF"><scl:Val>status-only</scl:Val></scl:DA>
+    </scl:DOType>
+    <scl:DOType id="ASG_2" cdc="ASG">
+      <scl:DA name="setMag" bType="Struct" type="AV_2" fc="SG"/>
+    </scl:DOType>
+    <scl:DAType id="AV_2">
+      <scl:BDA name="f" bType="FLOAT32"/>
+    </scl:DAType>
+    <scl:DAType id="Vec_2">
+      <scl:BDA name="mag" bType="Struct" type="AV_2"/>
+    </scl:DAType>
+    <scl:DAType id="Orig_2">
+      <scl:BDA name="orCat" bType="Enum" type="OrCat"/>
+      <scl:BDA name="orIdent" bType="Octet64"/>
+    </scl:DAType>
+    <scl:DAType id="Oper_2">
+      <scl:BDA name="ctlVal" bType="BOOLEAN"/>
+      <scl:BDA name="origin" bType="Struct" type="Orig_2"/>
+      <scl:BDA name="ctlNum" bType="INT8U"/>
+      <scl:BDA name="T" bType="Timestamp"/>
+      <scl:BDA name="Test" bType="BOOLEAN"/>
+      <scl:BDA name="Check" bType="Check"/>
+    </scl:DAType>
+    <scl:DAType id="Cancel_2">
+      <scl:BDA name="ctlVal" bType="BOOLEAN"/>
+      <scl:BDA name="origin" bType="Struct" type="Orig_2"/>
+      <scl:BDA name="ctlNum" bType="INT8U"/>
+      <scl:BDA name="T" bType="Timestamp"/>
+      <scl:BDA name="Test" bType="BOOLEAN"/>
+    </scl:DAType>
+    <scl:EnumType id="BehKind">
+      <scl:EnumVal ord="1">on</scl:EnumVal>
+      <scl:EnumVal ord="2">on-blocked</scl:EnumVal>
+      <scl:EnumVal ord="3">test</scl:EnumVal>
+      <scl:EnumVal ord="4">test/blocked</scl:EnumVal>
+      <scl:EnumVal ord="5">off</scl:EnumVal>
+    </scl:EnumType>
+    <scl:EnumType id="CtlModelKind">
+      <scl:EnumVal ord="0">status-only</scl:EnumVal>
+      <scl:EnumVal ord="1">direct-with-normal-security</scl:EnumVal>
+      <scl:EnumVal ord="2">sbo-with-normal-security</scl:EnumVal>
+      <scl:EnumVal ord="3">direct-with-enhanced-security</scl:EnumVal>
+      <scl:EnumVal ord="4">sbo-with-enhanced-security</scl:EnumVal>
+    </scl:EnumType>
+    <scl:EnumType id="OrCat">
+      <scl:EnumVal ord="0">not-supported</scl:EnumVal>
+      <scl:EnumVal ord="3">remote-control</scl:EnumVal>
+    </scl:EnumType>
+    <scl:EnumType id="Unused">
+      <scl:EnumVal ord="0">x</scl:EnumVal>
+    </scl:EnumType>
+  </scl:DataTypeTemplates>
+</scl:SCL>
