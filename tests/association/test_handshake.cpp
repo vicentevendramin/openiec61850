@@ -35,7 +35,7 @@ namespace {
 //
 // S-CONNECT (X.225 §8.3.1), CN SPDU:
 //   0D B5                    SI 13 (CN), LI 181
-//   05 06 13 01 00 16 01 03  Connect/Accept Item: protocol options 0, version number {1, 2}
+//   05 06 13 01 00 16 01 02  Connect/Accept Item: protocol options 0, version number {2}
 //   14 02 00 02              Session User Requirements: duplex only (the kernel is implicit)
 //   33 02 00 01              Calling Session Selector 0x0001
 //   34 02 00 01              Called Session Selector 0x0001
@@ -77,14 +77,14 @@ namespace {
 // presentation selectors 0x00000001, presentation contexts 1 = ACSE and 3 = MMS with BER only,
 // normal mode with the kernel functional units, the MMS application context {1 0 9506 2 3}
 // and AP-title {1 1 999 1} / AE-qualifier 12 all match. Points that a strict peer could treat
-// differently, all permitted by the standards: the CN proposes session versions 1 and 2 (X.225
-// lets the responder pick; 8-1 requires version 2 support), the CP omits the DEFAULT
+// differently, all permitted by the standards: the CN proposes session version 2 only (some
+// servers drop a CN that proposes versions 1 and 2 together), the CP omits the DEFAULT
 // protocol-version, the AARQ carries an explicit protocol-version, and the EXTERNAL identifies
 // the MMS PDU by indirect-reference only (X.227 §7.1.4 with a presentation context identifier).
 // servicesSupportedCalling lists the services this codec handles; peers that test individual
 // bits (e.g. the file services, which are not proposed here) may restrict what they offer.
 const byte_buffer cp_vector = hex(
-    "0D B5 05 06 13 01 00 16 01 03 14 02 00 02 33 02 00 01 34 02 00 01 C1 9F 31 81 9C A0 03 80 01 01 "
+    "0D B5 05 06 13 01 00 16 01 02 14 02 00 02 33 02 00 01 34 02 00 01 C1 9F 31 81 9C A0 03 80 01 01 "
     "A2 81 94 81 04 00 00 00 01 82 04 00 00 00 01 A4 23 30 0F 02 01 01 06 04 52 01 00 01 30 04 06 02 "
     "51 01 30 10 02 01 03 06 05 28 CA 22 02 01 30 04 06 02 51 01 61 61 30 5F 02 01 01 A0 5A 60 58 80 "
     "02 07 80 A1 07 06 05 28 CA 22 02 03 A2 06 06 04 29 87 67 01 A3 03 02 01 0C A6 06 06 04 29 87 67 "

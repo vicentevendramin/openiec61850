@@ -153,6 +153,7 @@ negotiated_parameters to_negotiated(const mms::initiate_request& proposed,
 ps::connection_options initiator_options(const association_params& p) {
   ps::connection_options o;
   o.session.local_selector = p.calling_session_selector;
+  o.session.versions = p.session_versions;
   o.session.remote_selector = p.called_session_selector;
   o.local_selector = p.calling_presentation_selector;
   o.remote_selector = p.called_presentation_selector;

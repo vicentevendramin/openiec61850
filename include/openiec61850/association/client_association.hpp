@@ -15,6 +15,7 @@
 #include "openiec61850/association/types.hpp"
 #include "openiec61850/ber/oid.hpp"
 #include "openiec61850/core/bytes.hpp"
+#include "openiec61850/iso/session/spdu.hpp"
 #include "openiec61850/core/result.hpp"
 #include "openiec61850/mms/pdu.hpp"
 #include "openiec61850/transport/cotp_channel.hpp"
@@ -32,6 +33,9 @@ struct association_params {
   transport::channel_options transport = default_channel_options();
   byte_buffer calling_session_selector{0x00, 0x01};
   byte_buffer called_session_selector{0x00, 0x01};
+  // Session versions proposed in CN. Version 2 only by default: some IEC 61850 servers drop the
+  // connection when a CN proposes versions 1 and 2 together.
+  std::uint8_t session_versions = iso::session::version_2;
   byte_buffer calling_presentation_selector{0x00, 0x00, 0x00, 0x01};
   byte_buffer called_presentation_selector{0x00, 0x00, 0x00, 0x01};
   // ACSE application entity titles (form 2); unset omits the field from the AARQ.
