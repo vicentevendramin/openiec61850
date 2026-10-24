@@ -285,6 +285,7 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
   std::uint64_t clock_ms = 0;
   bool hold = false;
   std::vector<incoming_request> held;
+  std::map<std::uint32_t, std::deque<fake_server::injected_failure>> failures;  // by service tag
 
   void build_model() {
     domain d0{std::string(ld0), {}};
@@ -999,9 +1000,20 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
     for (;;) {
       auto r = co_await s->assoc.next_request();
       if (!r) break;
-      ++self->counts[mms::service_tag(r->service())];
+      const auto tag = mms::service_tag(r->service());
+      ++self->counts[tag];
       if (self->hold) {
         self->held.push_back(std::move(*r));
+        continue;
+      }
+      if (auto it = self->failures.find(tag); it != self->failures.end() && !it->second.empty()) {
+        const auto f = std::move(it->second.front());
+        it->second.pop_front();
+        if (f.error) {
+          (void)co_await r->respond_error(f.error->view(), f.modifier_position);
+        } else {
+          (void)co_await r->reject(f.reject_reason);
+        }
         continue;
       }
       co_await self->handle(*s, *r);
@@ -1084,6 +1096,10 @@ void fake_server::drop_connections() {
 }
 
 void fake_server::hold_requests(bool on) { state_->hold = on; }
+
+void fake_server::fail_next(mms::confirmed_service service, injected_failure failure) {
+  state_->failures[static_cast<std::uint32_t>(service)].push_back(std::move(failure));
+}
 
 std::size_t fake_server::associations_accepted() const noexcept { return state_->accepted; }
 

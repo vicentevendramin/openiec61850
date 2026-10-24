@@ -15,6 +15,7 @@
 #include "openiec61850/association/types.hpp"
 #include "openiec61850/client/control.hpp"
 #include "openiec61850/client/error.hpp"
+#include "openiec61850/client/error_details.hpp"
 #include "openiec61850/client/report.hpp"
 #include "openiec61850/client/types.hpp"
 #include "openiec61850/client/values.hpp"
@@ -166,6 +167,36 @@ class client {
   [[nodiscard]] asio::awaitable<result<void>> operate(model::object_reference object,
                                                       mms::data value,
                                                       control_options options = {});
+
+
+  // --- the services with error details (client/error_details.hpp)
+
+  // Each behaves exactly like the overload without `details` and also fills it: the
+  // ServiceError (class, code, additionalCode/Description, modifierPosition) or Reject of the
+  // request that failed, and the LastApplError of a refused control. `details` must stay alive
+  // until the operation completes.
+  [[nodiscard]] asio::awaitable<result<std::vector<std::string>>> get_server_directory(error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<std::string>>> get_logical_device_directory(std::string ld, error_details& details);
+  [[nodiscard]] asio::awaitable<result<logical_node_directory>> get_logical_node_directory(model::object_reference ln, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<data_directory_entry>>> get_data_directory(model::object_reference ref, error_details& details);
+  [[nodiscard]] asio::awaitable<result<data_definition>> get_data_definition(model::object_reference ref, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<std::string>>> get_name_list(mms::object_class cls, std::string domain, error_details& details);
+  [[nodiscard]] asio::awaitable<result<mms::data>> read(model::object_reference ref, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<result<mms::data>>>> read_many(std::vector<model::object_reference> refs, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> write(model::object_reference ref, mms::data value, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<result<void>>>> write_many(std::vector<write_item> items, error_details& details);
+  [[nodiscard]] asio::awaitable<result<data_set_directory>> get_data_set_directory(model::object_reference data_set, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> create_data_set(model::object_reference data_set, std::vector<model::object_reference> members, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> delete_data_set(model::object_reference data_set, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<result<mms::data>>>> get_data_set_values(model::object_reference data_set, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<result<void>>>> set_data_set_values(model::object_reference data_set, std::vector<mms::data> values, error_details& details);
+  [[nodiscard]] asio::awaitable<result<rcb_values>> get_rcb_values(model::object_reference rcb, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> set_rcb_values(model::object_reference rcb, rcb_settings settings, error_details& details);
+  [[nodiscard]] asio::awaitable<result<rcb_values>> enable_reporting(model::object_reference rcb, report_settings settings, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> disable_reporting(model::object_reference rcb, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> trigger_gi(model::object_reference rcb, error_details& details);
+  [[nodiscard]] asio::awaitable<result<control>> get_control(model::object_reference object, control_config config, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> operate(model::object_reference object, mms::data value, control_options options, error_details& details);
 
   // The EntryID of the last report received for a BRCB enabled with enable_reporting().
   [[nodiscard]] std::optional<model::entry_id> last_entry_id(

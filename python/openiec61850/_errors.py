@@ -25,7 +25,13 @@ Hierarchy::
     │   │   TypeInconsistent, ValueInvalid, ObjectInvalidated, HardwareFault,
     │   │   InvalidAddress, TypeUnsupported, ObjectAttributeInconsistent,
     │   │   AccessUnsupported, NotDeleted
-    │   └── RequestRejected, ConcludeRefused
+    │   ├── RequestRejected, ConcludeRefused
+    │   └── ControlRefused, SelectFailed (also ControlError)
+    ├── ControlError                   a control service failed
+    │   ├── ControlRefused             LastApplError (refusal or negative CommandTermination)
+    │   ├── SelectFailed               SBO read returned "" without a LastApplError
+    │   ├── TerminationTimeout (Timeout)
+    │   └── ControlModelMismatch (InvalidOperation)
     ├── ProtocolError                  the server violated the protocol or sent bad encodings
     ├── NotSupported (NotImplementedError)
     ├── TypeMismatch (TypeError)
@@ -36,7 +42,9 @@ Hierarchy::
 
 from __future__ import annotations
 
+import enum
 import errno as _errno
+from typing import Any
 
 __all__ = [
     "Iec61850Error",
@@ -69,6 +77,13 @@ __all__ = [
     "NotDeleted",
     "RequestRejected",
     "ConcludeRefused",
+    "ControlError",
+    "ControlRefused",
+    "SelectFailed",
+    "TerminationTimeout",
+    "ControlModelMismatch",
+    "ErrorClass",
+    "RejectType",
     "ProtocolError",
     "NotSupported",
     "TypeMismatch",
@@ -152,16 +167,58 @@ class OperationAborted(Iec61850Error):
     """The native operation was cancelled."""
 
 
-class ServiceError(Iec61850Error):
-    """The server refused a service (Confirmed-ErrorPDU or a DataAccessError).
+class ErrorClass(enum.IntEnum):
+    """MMS ServiceError errorClass (ISO 9506-2 §7.5.4)."""
 
-    ``error_class`` / ``error_code`` are the MMS ServiceError class and code when known; the
-    native client does not propagate them yet, so they are ``None`` except for the
-    DataAccessError subclasses, which set ``data_access_error`` (ISO 9506-2 numbering).
+    VMD_STATE = 0
+    APPLICATION_REFERENCE = 1
+    DEFINITION = 2
+    RESOURCE = 3
+    SERVICE = 4
+    SERVICE_PREEMPT = 5
+    TIME_RESOLUTION = 6
+    ACCESS = 7
+    INITIATE = 8
+    CONCLUDE = 9
+    CANCEL = 10
+    FILE = 11
+    OTHERS = 12
+
+
+class RejectType(enum.IntEnum):
+    """The PDU kind a RejectPDU names (rejectReason CHOICE, ISO 9506-2 §7.5.5)."""
+
+    CONFIRMED_REQUEST = 1
+    CONFIRMED_RESPONSE = 2
+    CONFIRMED_ERROR = 3
+    UNCONFIRMED = 4
+    PDU_ERROR = 5
+    CANCEL_REQUEST = 6
+    CANCEL_RESPONSE = 7
+    CANCEL_ERROR = 8
+    CONCLUDE_REQUEST = 9
+    CONCLUDE_RESPONSE = 10
+    CONCLUDE_ERROR = 11
+
+
+class ServiceError(Iec61850Error):
+    """The server refused a service (Confirmed-ErrorPDU, RejectPDU or a DataAccessError).
+
+    What the server sent, when it was a Confirmed-ErrorPDU: ``error_class`` (:class:`ErrorClass`),
+    ``error_code``, ``additional_code``, ``additional_description`` and ``modifier_position``;
+    when it was a RejectPDU: ``reject_type`` (:class:`RejectType`), ``reject_reason`` and
+    ``original_invoke_id``. They are ``None`` otherwise, e.g. for the per-item DataAccessError of
+    :meth:`Client.read_many`, which set ``data_access_error`` (ISO 9506-2 numbering) instead.
     """
 
-    error_class: int | None = None
+    error_class: ErrorClass | int | None = None
     error_code: int | None = None
+    additional_code: int | None = None
+    additional_description: str | None = None
+    modifier_position: int | None = None
+    reject_type: RejectType | int | None = None
+    reject_reason: int | None = None
+    original_invoke_id: int | None = None
     data_access_error: int | None = None
 
 
@@ -249,6 +306,43 @@ class InvalidReference(Iec61850Error, ValueError):
     """Malformed object reference."""
 
 
+class ControlError(Iec61850Error):
+    """A control service failed.
+
+    ``add_cause`` (:class:`~openiec61850.AddCause`) and ``last_appl_error``
+    (:class:`~openiec61850.LastApplError`) are set when the server sent a LastApplError; the
+    :class:`ServiceError` attributes describe the refused request itself when known.
+    """
+
+    add_cause: Any = None
+    last_appl_error: Any = None
+    error_class: ErrorClass | int | None = None
+    error_code: int | None = None
+    additional_code: int | None = None
+    additional_description: str | None = None
+    modifier_position: int | None = None
+    reject_type: RejectType | int | None = None
+    reject_reason: int | None = None
+    original_invoke_id: int | None = None
+
+
+class ControlRefused(ControlError, ServiceError):
+    """The server refused the command with a LastApplError, or ended it with a negative
+    CommandTermination; see ``add_cause``."""
+
+
+class SelectFailed(ControlError, ServiceError):
+    """Select (SBO read) returned an empty reference without a LastApplError."""
+
+
+class TerminationTimeout(ControlError, Timeout):
+    """No CommandTermination arrived within ``termination_timeout``."""
+
+
+class ControlModelMismatch(ControlError, InvalidOperation):
+    """The service does not exist in the object's ctlModel."""
+
+
 _CLIENT = {
     1: NotConnected,
     2: ObjectNotFound,
@@ -266,6 +360,9 @@ _CLIENT = {
     14: TypeMismatch,
     15: NotDeleted,
     16: RecoveryFailed,
+    17: SelectFailed,
+    18: TerminationTimeout,
+    19: ControlModelMismatch,
 }
 
 _ASSOCIATION = {
@@ -314,6 +411,8 @@ _BY_CATEGORY: dict[str, dict[int, type[Iec61850Error]]] = {
 
 def error_class_for(category: str, value: int) -> type[Iec61850Error]:
     """The exception class for a native error code."""
+    if category == "openiec61850.control":
+        return ControlRefused
     table = _BY_CATEGORY.get(category)
     if table is not None:
         return table.get(value, Iec61850Error)
@@ -326,11 +425,36 @@ def error_class_for(category: str, value: int) -> type[Iec61850Error]:
     return Iec61850Error
 
 
-def _make_error(category: str, value: int, message: str) -> BaseException:
+def _enum(cls: type[enum.IntEnum], v: int | None) -> Any:
+    if v is None:
+        return None
+    try:
+        return cls(v)
+    except ValueError:
+        return v
+
+
+def _make_error(category: str, value: int, message: str, details: dict[str, Any] | None = None) -> BaseException:
     if category in ("system", "generic", "asio.system") and value == _errno.ENOMEM:
         return MemoryError(message)
     cls = error_class_for(category, value)
     exc = cls(message, category=category, code=value)
     if isinstance(exc, OSError) and category in ("system", "generic", "asio.system"):
         exc.errno = value
+    if category == "openiec61850.control" or details:
+        from openiec61850._control import LastApplError, add_cause
+
+        if category == "openiec61850.control":
+            exc.add_cause = add_cause(value - 1)  # type: ignore[attr-defined]
+        if details:
+            for key in ("error_code", "additional_code", "additional_description", "modifier_position",
+                        "reject_reason", "original_invoke_id"):
+                setattr(exc, key, details.get(key))
+            exc.error_class = _enum(ErrorClass, details.get("error_class"))  # type: ignore[attr-defined]
+            exc.reject_type = _enum(RejectType, details.get("reject_type"))  # type: ignore[attr-defined]
+            lae = LastApplError._from(details.get("last_appl_error"))
+            if lae is not None:
+                exc.last_appl_error = lae  # type: ignore[attr-defined]
+                if getattr(exc, "add_cause", None) is None:
+                    exc.add_cause = lae.add_cause  # type: ignore[attr-defined]
     return exc

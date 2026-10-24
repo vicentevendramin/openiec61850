@@ -76,6 +76,8 @@ struct client_state;
 struct control_state;
 }  // namespace detail
 
+struct error_details;  // client/error_details.hpp
+
 // AddCause (IEC 61850-7-2 Ed.2 §20.5.2.9 / Table 103, as recalled; values beyond those listed
 // here are kept as raw numbers in the enum). Ed.1 defines the subset up to
 // abortion_by_communication_loss; Ed.2 added the rest. The exact numbering of the higher values
@@ -256,6 +258,18 @@ class control {
   // Cancel: Write of Cancel, with the ctlVal of the current sequence (or a default value of the
   // ctlVal type; openiec61850::errc::invalid_state when neither is known).
   [[nodiscard]] asio::awaitable<result<void>> cancel(control_options options = {});
+
+  // The same services, also filling `details` (client/error_details.hpp): the ServiceError or
+  // Reject of a refused request and the LastApplError of a refusal / negative termination.
+  [[nodiscard]] asio::awaitable<result<void>> select(control_options options,
+                                                     error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> select_with_value(mms::data value,
+                                                                control_options options,
+                                                                error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> operate(mms::data value, control_options options,
+                                                      error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> cancel(control_options options,
+                                                     error_details& details);
 
  private:
   friend struct detail::control_state;

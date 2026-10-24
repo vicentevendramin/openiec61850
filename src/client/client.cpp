@@ -37,11 +37,11 @@ client_state::client_state(asio::any_io_executor ex, client_options o)
   events.capacity = std::max<std::size_t>(1, options.event_queue_capacity);
 }
 
-result<assoc_ptr> client_state::current() const {
+result<assoc_ptr> client_state::current(error_details* details) const {
   if (state.load() != connection_state::established || !assoc) {
     return make_error_code(errc::not_connected);
   }
-  return assoc;
+  return assoc_ptr(assoc, details);
 }
 
 void client_state::adopt(association::client_association a) {
@@ -303,6 +303,18 @@ asio::awaitable<R> invoke(const std::shared_ptr<detail::client_state>& s,
   return detail::on_strand(s->strand, op(s, std::forward<A>(args)...));
 }
 
+// The same for a service recording its request failures in `d` (may be null).
+template <typename R, typename... P, typename... A>
+asio::awaitable<R> invoke(const std::shared_ptr<detail::client_state>& s, error_details* d,
+                          asio::awaitable<R> (*op)(std::shared_ptr<detail::client_state>,
+                                                   error_details*, P...),
+                          A&&... args) {
+  auto started = s ? detail::on_strand(s->strand, op(s, d, std::forward<A>(args)...))
+                   : detail::ready(R(openiec61850::errc::invalid_state));
+  if (d == nullptr) return started;
+  return detail::with_details(*d, std::move(started));
+}
+
 }  // namespace
 
 client::client(std::shared_ptr<detail::client_state> state) noexcept : state_(std::move(state)) {}
@@ -357,105 +369,193 @@ const client_options& client::options() const noexcept { return state_->options;
 client::executor_type client::get_executor() const noexcept { return state_->strand; }
 
 asio::awaitable<result<std::vector<std::string>>> client::get_server_directory() {
-  return invoke(state_, &detail::get_server_directory_op);
+  return invoke(state_, nullptr, &detail::get_server_directory_op);
 }
 
 asio::awaitable<result<std::vector<std::string>>> client::get_logical_device_directory(
     std::string ld) {
-  return invoke(state_, &detail::get_logical_device_directory_op, std::move(ld));
+  return invoke(state_, nullptr, &detail::get_logical_device_directory_op, std::move(ld));
 }
 
 asio::awaitable<result<logical_node_directory>> client::get_logical_node_directory(
     model::object_reference ln) {
-  return invoke(state_, &detail::get_logical_node_directory_op, std::move(ln));
+  return invoke(state_, nullptr, &detail::get_logical_node_directory_op, std::move(ln));
 }
 
 asio::awaitable<result<std::vector<data_directory_entry>>> client::get_data_directory(
     model::object_reference ref) {
-  return invoke(state_, &detail::get_data_directory_op, std::move(ref));
+  return invoke(state_, nullptr, &detail::get_data_directory_op, std::move(ref));
 }
 
 asio::awaitable<result<data_definition>> client::get_data_definition(model::object_reference ref) {
-  return invoke(state_, &detail::get_data_definition_op, std::move(ref));
+  return invoke(state_, nullptr, &detail::get_data_definition_op, std::move(ref));
 }
 
 asio::awaitable<result<std::vector<std::string>>> client::get_name_list(mms::object_class cls,
                                                                          std::string domain) {
-  return invoke(state_, &detail::get_name_list_op, cls, std::move(domain));
+  return invoke(state_, nullptr, &detail::get_name_list_op, cls, std::move(domain));
 }
 
 asio::awaitable<result<mms::data>> client::read(model::object_reference ref) {
-  return invoke(state_, &detail::read_op, std::move(ref));
+  return invoke(state_, nullptr, &detail::read_op, std::move(ref));
 }
 
 asio::awaitable<result<std::vector<result<mms::data>>>> client::read_many(
     std::vector<model::object_reference> refs) {
-  return invoke(state_, &detail::read_many_op, std::move(refs));
+  return invoke(state_, nullptr, &detail::read_many_op, std::move(refs));
 }
 
 asio::awaitable<result<void>> client::write(model::object_reference ref, mms::data value) {
-  return invoke(state_, &detail::write_op, std::move(ref), std::move(value));
+  return invoke(state_, nullptr, &detail::write_op, std::move(ref), std::move(value));
 }
 
 asio::awaitable<result<std::vector<result<void>>>> client::write_many(std::vector<write_item> items) {
-  return invoke(state_, &detail::write_many_op, std::move(items));
+  return invoke(state_, nullptr, &detail::write_many_op, std::move(items));
 }
 
 asio::awaitable<result<data_set_directory>> client::get_data_set_directory(
     model::object_reference data_set) {
-  return invoke(state_, &detail::get_data_set_directory_op, std::move(data_set));
+  return invoke(state_, nullptr, &detail::get_data_set_directory_op, std::move(data_set));
 }
 
 asio::awaitable<result<void>> client::create_data_set(model::object_reference data_set,
                                                       std::vector<model::object_reference> members) {
-  return invoke(state_, &detail::create_data_set_op, std::move(data_set), std::move(members));
+  return invoke(state_, nullptr, &detail::create_data_set_op, std::move(data_set), std::move(members));
 }
 
 asio::awaitable<result<void>> client::delete_data_set(model::object_reference data_set) {
-  return invoke(state_, &detail::delete_data_set_op, std::move(data_set));
+  return invoke(state_, nullptr, &detail::delete_data_set_op, std::move(data_set));
 }
 
 asio::awaitable<result<std::vector<result<mms::data>>>> client::get_data_set_values(
     model::object_reference data_set) {
-  return invoke(state_, &detail::get_data_set_values_op, std::move(data_set));
+  return invoke(state_, nullptr, &detail::get_data_set_values_op, std::move(data_set));
 }
 
 asio::awaitable<result<std::vector<result<void>>>> client::set_data_set_values(
     model::object_reference data_set, std::vector<mms::data> values) {
-  return invoke(state_, &detail::set_data_set_values_op, std::move(data_set), std::move(values));
+  return invoke(state_, nullptr, &detail::set_data_set_values_op, std::move(data_set), std::move(values));
 }
 
 asio::awaitable<result<rcb_values>> client::get_rcb_values(model::object_reference rcb) {
-  return invoke(state_, &detail::get_rcb_values_op, std::move(rcb));
+  return invoke(state_, nullptr, &detail::get_rcb_values_op, std::move(rcb));
 }
 
 asio::awaitable<result<void>> client::set_rcb_values(model::object_reference rcb,
                                                      rcb_settings settings) {
-  return invoke(state_, &detail::set_rcb_values_op, std::move(rcb), std::move(settings));
+  return invoke(state_, nullptr, &detail::set_rcb_values_op, std::move(rcb), std::move(settings));
 }
 
 asio::awaitable<result<rcb_values>> client::enable_reporting(model::object_reference rcb,
                                                              report_settings settings) {
-  return invoke(state_, &detail::enable_reporting_op, std::move(rcb), std::move(settings));
+  return invoke(state_, nullptr, &detail::enable_reporting_op, std::move(rcb), std::move(settings));
 }
 
 asio::awaitable<result<void>> client::disable_reporting(model::object_reference rcb) {
-  return invoke(state_, &detail::disable_reporting_op, std::move(rcb));
+  return invoke(state_, nullptr, &detail::disable_reporting_op, std::move(rcb));
 }
 
 asio::awaitable<result<void>> client::trigger_gi(model::object_reference rcb) {
-  return invoke(state_, &detail::trigger_gi_op, std::move(rcb));
+  return invoke(state_, nullptr, &detail::trigger_gi_op, std::move(rcb));
 }
 
 asio::awaitable<result<control>> client::get_control(model::object_reference object,
                                                      control_config config) {
-  return invoke(state_, &detail::get_control_op, std::move(object), std::move(config));
+  return invoke(state_, nullptr, &detail::get_control_op, std::move(object), std::move(config));
 }
 
 asio::awaitable<result<void>> client::operate(model::object_reference object, mms::data value,
                                               control_options options) {
-  return invoke(state_, &detail::operate_once_op, std::move(object), std::move(value),
+  return invoke(state_, nullptr, &detail::operate_once_op, std::move(object), std::move(value),
                 std::move(options));
+}
+
+asio::awaitable<result<std::vector<std::string>>> client::get_server_directory(error_details& details) {
+  return invoke(state_, &details, &detail::get_server_directory_op);
+}
+
+asio::awaitable<result<std::vector<std::string>>> client::get_logical_device_directory(std::string ld, error_details& details) {
+  return invoke(state_, &details, &detail::get_logical_device_directory_op, std::move(ld));
+}
+
+asio::awaitable<result<logical_node_directory>> client::get_logical_node_directory(model::object_reference ln, error_details& details) {
+  return invoke(state_, &details, &detail::get_logical_node_directory_op, std::move(ln));
+}
+
+asio::awaitable<result<std::vector<data_directory_entry>>> client::get_data_directory(model::object_reference ref, error_details& details) {
+  return invoke(state_, &details, &detail::get_data_directory_op, std::move(ref));
+}
+
+asio::awaitable<result<data_definition>> client::get_data_definition(model::object_reference ref, error_details& details) {
+  return invoke(state_, &details, &detail::get_data_definition_op, std::move(ref));
+}
+
+asio::awaitable<result<std::vector<std::string>>> client::get_name_list(mms::object_class cls, std::string domain, error_details& details) {
+  return invoke(state_, &details, &detail::get_name_list_op, cls, std::move(domain));
+}
+
+asio::awaitable<result<mms::data>> client::read(model::object_reference ref, error_details& details) {
+  return invoke(state_, &details, &detail::read_op, std::move(ref));
+}
+
+asio::awaitable<result<std::vector<result<mms::data>>>> client::read_many(std::vector<model::object_reference> refs, error_details& details) {
+  return invoke(state_, &details, &detail::read_many_op, std::move(refs));
+}
+
+asio::awaitable<result<void>> client::write(model::object_reference ref, mms::data value, error_details& details) {
+  return invoke(state_, &details, &detail::write_op, std::move(ref), std::move(value));
+}
+
+asio::awaitable<result<std::vector<result<void>>>> client::write_many(std::vector<write_item> items, error_details& details) {
+  return invoke(state_, &details, &detail::write_many_op, std::move(items));
+}
+
+asio::awaitable<result<data_set_directory>> client::get_data_set_directory(model::object_reference data_set, error_details& details) {
+  return invoke(state_, &details, &detail::get_data_set_directory_op, std::move(data_set));
+}
+
+asio::awaitable<result<void>> client::create_data_set(model::object_reference data_set, std::vector<model::object_reference> members, error_details& details) {
+  return invoke(state_, &details, &detail::create_data_set_op, std::move(data_set), std::move(members));
+}
+
+asio::awaitable<result<void>> client::delete_data_set(model::object_reference data_set, error_details& details) {
+  return invoke(state_, &details, &detail::delete_data_set_op, std::move(data_set));
+}
+
+asio::awaitable<result<std::vector<result<mms::data>>>> client::get_data_set_values(model::object_reference data_set, error_details& details) {
+  return invoke(state_, &details, &detail::get_data_set_values_op, std::move(data_set));
+}
+
+asio::awaitable<result<std::vector<result<void>>>> client::set_data_set_values(model::object_reference data_set, std::vector<mms::data> values, error_details& details) {
+  return invoke(state_, &details, &detail::set_data_set_values_op, std::move(data_set), std::move(values));
+}
+
+asio::awaitable<result<rcb_values>> client::get_rcb_values(model::object_reference rcb, error_details& details) {
+  return invoke(state_, &details, &detail::get_rcb_values_op, std::move(rcb));
+}
+
+asio::awaitable<result<void>> client::set_rcb_values(model::object_reference rcb, rcb_settings settings, error_details& details) {
+  return invoke(state_, &details, &detail::set_rcb_values_op, std::move(rcb), std::move(settings));
+}
+
+asio::awaitable<result<rcb_values>> client::enable_reporting(model::object_reference rcb, report_settings settings, error_details& details) {
+  return invoke(state_, &details, &detail::enable_reporting_op, std::move(rcb), std::move(settings));
+}
+
+asio::awaitable<result<void>> client::disable_reporting(model::object_reference rcb, error_details& details) {
+  return invoke(state_, &details, &detail::disable_reporting_op, std::move(rcb));
+}
+
+asio::awaitable<result<void>> client::trigger_gi(model::object_reference rcb, error_details& details) {
+  return invoke(state_, &details, &detail::trigger_gi_op, std::move(rcb));
+}
+
+asio::awaitable<result<control>> client::get_control(model::object_reference object, control_config config, error_details& details) {
+  return invoke(state_, &details, &detail::get_control_op, std::move(object), std::move(config));
+}
+
+asio::awaitable<result<void>> client::operate(model::object_reference object, mms::data value, control_options options, error_details& details) {
+  return invoke(state_, &details, &detail::operate_once_op, std::move(object), std::move(value), std::move(options));
 }
 
 std::optional<model::entry_id> client::last_entry_id(const model::object_reference& rcb) const {

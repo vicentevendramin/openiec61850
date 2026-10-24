@@ -15,6 +15,7 @@
 #include <asio/co_spawn.hpp>
 #include <asio/post.hpp>
 
+#include "openiec61850/client/error_details.hpp"
 #include "openiec61850/core/result.hpp"
 #include "openiec61850/transport/io_runtime.hpp"
 #include "openiec61850/transport/spawn.hpp"
@@ -125,8 +126,11 @@ void set_complete_function(nb::handle fn);
 // _complete(future, box).
 void complete(nb::handle future, deferred& box);
 
-// Builds the Python exception for an error code (via the factory installed from Python).
-nb::object make_error(std::error_code ec);
+// Builds the Python exception for an error code (via the factory installed from Python), with
+// the server's answer from `details` when given.
+nb::object make_error(std::error_code ec, const client::error_details* details = nullptr);
+// The details as the dict handed to the factory (None when there is nothing beyond the code).
+nb::object error_details_to_py(const client::error_details& d);
 void set_error_factory(nb::handle factory);
 
 struct op_state {
@@ -135,9 +139,11 @@ struct op_state {
 };
 
 // Starts `op` on `ex` (a strand) and returns an asyncio future resolved with convert(T&&)
-// (called on the loop thread with the GIL held), or with the exception for the error.
+// (called on the loop thread with the GIL held), or with the exception for the error. `details`,
+// when given, is the error_details the operation fills (kept alive until the conversion).
 template <typename Executor, typename T, typename Convert>
-nb::object launch(const Executor& ex, asio::awaitable<result<T>> op, Convert convert) {
+nb::object launch(const Executor& ex, asio::awaitable<result<T>> op, Convert convert,
+                  std::shared_ptr<client::error_details> details = nullptr) {
   auto c = std::make_shared<completion>();
   auto st = std::make_shared<op_state>();
   nb::object fut = c->future();
@@ -152,7 +158,7 @@ nb::object launch(const Executor& ex, asio::awaitable<result<T>> op, Convert con
   });
   fut.attr("add_done_callback")(on_done);
 
-  auto handler = [c, st, convert = std::move(convert)](
+  auto handler = [c, st, convert = std::move(convert), details = std::move(details)](
                      std::exception_ptr e, transport::detail::box<result<T>> b) mutable {
     st->done = true;
     st->signal.slot().clear();
@@ -162,8 +168,9 @@ nb::object launch(const Executor& ex, asio::awaitable<result<T>> op, Convert con
     } else {
       r.emplace(std::move(*b.value));
     }
-    auto fn = [r = std::move(r), convert = std::move(convert)]() mutable -> outcome {
-      if (!r->has_value()) return {false, make_error(r->error())};
+    auto fn = [r = std::move(r), convert = std::move(convert),
+               details = std::move(details)]() mutable -> outcome {
+      if (!r->has_value()) return {false, make_error(r->error(), details.get())};
       if constexpr (std::is_void_v<T>) {
         return {true, convert()};
       } else {

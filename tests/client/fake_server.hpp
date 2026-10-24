@@ -120,6 +120,15 @@ class fake_server {
   // While on, confirmed requests are counted but left unanswered (until the association ends).
   void hold_requests(bool on);
 
+  // The next request of a service fails: with a Confirmed-ErrorPDU carrying `error` (and
+  // modifierPosition) when set, else with a RejectPDU (confirmed-requestPDU, `reject_reason`).
+  struct injected_failure {
+    std::optional<association::service_error_info> error;
+    std::optional<std::uint32_t> modifier_position;
+    std::int64_t reject_reason = 0;
+  };
+  void fail_next(mms::confirmed_service service, injected_failure failure);
+
   // --- control objects ("XCBR1.Pos", "GGIO1.SPCSO1"...; false/0/nullopt for unknown names)
 
   enum class termination_mode : std::uint8_t { positive, negative, none };

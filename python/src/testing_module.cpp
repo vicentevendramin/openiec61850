@@ -114,6 +114,60 @@ class fake_server_host {
   void hold_requests(bool on) {
     run([&] { srv().hold_requests(on); });
   }
+  bool set_interlocked(const std::string& object, bool on) {
+    return run([&] { return srv().set_interlocked(object, on); });
+  }
+  bool set_synchrocheck_blocked(const std::string& object, bool on) {
+    return run([&] { return srv().set_synchrocheck_blocked(object, on); });
+  }
+  bool set_command_termination(const std::string& object, const std::string& mode,
+                               std::int16_t add_cause, double delay) {
+    using tm = testing::fake_server::termination_mode;
+    tm m = tm::positive;
+    if (mode == "negative") {
+      m = tm::negative;
+    } else if (mode == "none") {
+      m = tm::none;
+    } else if (mode != "positive") {
+      throw nb::value_error("mode is 'positive', 'negative' or 'none'");
+    }
+    const auto ms = std::chrono::milliseconds(static_cast<std::int64_t>(delay * 1000.0));
+    return run([&] { return srv().set_command_termination(object, m, add_cause, ms); });
+  }
+  std::size_t operations(const std::string& object) {
+    return run([&] { return srv().operations(object); });
+  }
+  std::size_t cancellations(const std::string& object) {
+    return run([&] { return srv().cancellations(object); });
+  }
+  bool selected(const std::string& object) {
+    return run([&] { return srv().selected(object); });
+  }
+  nb::object last_control_request(const std::string& object) {
+    auto v = run([&] { return srv().last_control_request(object); });
+    if (!v) return nb::none();
+    return py::data_to_py(*v);
+  }
+  // A Confirmed-ErrorPDU when error_class is given, else a RejectPDU with reject_reason.
+  void fail_next(int service, std::optional<int> error_class, std::int64_t error_code,
+                 std::optional<std::int64_t> additional_code,
+                 std::optional<std::string> additional_description,
+                 std::optional<std::uint32_t> modifier_position, std::int64_t reject_reason) {
+    testing::fake_server::injected_failure f;
+    if (error_class) {
+      openiec61850::association::service_error_info e;
+      e.cls = static_cast<openiec61850::mms::error_class>(*error_class);
+      e.code = error_code;
+      e.additional_code = additional_code;
+      e.additional_description = std::move(additional_description);
+      f.error = std::move(e);
+      f.modifier_position = modifier_position;
+    }
+    f.reject_reason = reject_reason;
+    run([&] {
+      srv().fail_next(static_cast<openiec61850::mms::confirmed_service>(service), std::move(f));
+    });
+  }
   std::size_t buffered_entries(const std::string& brcb) {
     return run([&] { return srv().buffered_entries(brcb); });
   }
@@ -176,6 +230,19 @@ NB_MODULE(_testing, m) {
            nb::arg("reason") = 2)
       .def("send_report", &fake_server_host::send_report, nb::arg("values"))
       .def("hold_requests", &fake_server_host::hold_requests, nb::arg("on"))
+      .def("set_interlocked", &fake_server_host::set_interlocked, nb::arg("object"), nb::arg("on"))
+      .def("set_synchrocheck_blocked", &fake_server_host::set_synchrocheck_blocked, nb::arg("object"),
+           nb::arg("on"))
+      .def("set_command_termination", &fake_server_host::set_command_termination, nb::arg("object"),
+           nb::arg("mode"), nb::arg("add_cause") = 16, nb::arg("delay") = 0.005)
+      .def("operations", &fake_server_host::operations, nb::arg("object"))
+      .def("cancellations", &fake_server_host::cancellations, nb::arg("object"))
+      .def("selected", &fake_server_host::selected, nb::arg("object"))
+      .def("last_control_request", &fake_server_host::last_control_request, nb::arg("object"))
+      .def("fail_next", &fake_server_host::fail_next, nb::arg("service"), nb::arg("error_class") = nb::none(),
+           nb::arg("error_code") = 0, nb::arg("additional_code") = nb::none(),
+           nb::arg("additional_description") = nb::none(), nb::arg("modifier_position") = nb::none(),
+           nb::arg("reject_reason") = 0)
       .def("buffered_entries", &fake_server_host::buffered_entries, nb::arg("brcb"))
       .def("rcb_enabled", &fake_server_host::rcb_enabled, nb::arg("rcb"));
 }

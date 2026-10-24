@@ -250,6 +250,7 @@ struct control_state {
   std::optional<last_appl_error> last_error;
 
   static control make(std::shared_ptr<control_state> s) { return control(std::move(s)); }
+  static std::shared_ptr<control_state> of(const control& c) { return c.state_; }
 
   std::uint8_t begin_sequence() {
     const auto n = next_num++;
@@ -458,13 +459,15 @@ result<control_channel*> acquire(control_state& cs) {
 
 // A request failed with `ec`: when the server sent a LastApplError for the object (8-1 sends it
 // before the response), that becomes the error.
-awaitable<std::error_code> refusal(control_state& cs, control_channel& ch, std::error_code ec) {
+awaitable<std::error_code> refusal(control_state& cs, control_channel& ch, const assoc_ptr& a,
+                                   std::error_code ec) {
   // The InformationReport precedes the response on the wire and both reach this strand in that
   // order; one round trip through the strand lets a LastApplError still being posted arrive.
   co_await asio::post(cs.client->strand, asio::use_awaitable);
   for (auto it = ch.messages.rbegin(); it != ch.messages.rend(); ++it) {
     if (it->type == control_message::kind::last_appl_error && it->error) {
       const auto cause = it->error->cause;
+      a.record(*it->error);
       cs.set_last_error(*it->error);
       co_return make_error_code(cause);
     }
@@ -492,6 +495,7 @@ awaitable<result<void>> wait_termination(control_state& cs, control_channel& ch,
       if (m.error) {
         // A negative termination, or a lone LastApplError after the Oper was accepted.
         const auto cause = m.error->cause;
+        a.record(*m.error);
         cs.set_last_error(std::move(*m.error));
         co_return make_error_code(cause);
       }
@@ -534,11 +538,12 @@ std::uint8_t number_for(control_state& cs, const control_options& o, bool contin
   return n;
 }
 
-awaitable<result<void>> select_impl(std::shared_ptr<control_state> cs, control_options o) {
+awaitable<result<void>> select_impl(std::shared_ptr<control_state> cs, error_details* d,
+                                    control_options o) {
   if (cs->model != model::ctl_model::sbo_with_normal_security) {
     co_return err(errc::control_model_mismatch);
   }
-  auto a = cs->client->current();
+  auto a = cs->client->current(d);
   if (!a) co_return a.error();
   auto ch = acquire(*cs);
   if (!ch) co_return ch.error();
@@ -547,21 +552,21 @@ awaitable<result<void>> select_impl(std::shared_ptr<control_state> cs, control_o
   auto r = co_await read_variables_on(*a, std::move(vars));
   if (!r) co_return r.error();
   const auto& v = (*r)[0];
-  if (!v) co_return co_await refusal(*cs, **ch, v.error());
+  if (!v) co_return co_await refusal(*cs, **ch, *a, v.error());
   auto text = to_string(*v);
   if (!text) co_return err(errc::type_mismatch);
-  if (text->empty()) co_return co_await refusal(*cs, **ch, err(errc::select_failed));
+  if (text->empty()) co_return co_await refusal(*cs, **ch, *a, err(errc::select_failed));
   (void)number_for(*cs, o, false);
   cs->selected.store(true);
   co_return result<void>{};
 }
 
-awaitable<result<void>> select_with_value_impl(std::shared_ptr<control_state> cs, mms::data value,
-                                               control_options o) {
+awaitable<result<void>> select_with_value_impl(std::shared_ptr<control_state> cs, error_details* d,
+                                               mms::data value, control_options o) {
   if (cs->model != model::ctl_model::sbo_with_enhanced_security) {
     co_return err(errc::control_model_mismatch);
   }
-  auto a = cs->client->current();
+  auto a = cs->client->current(d);
   if (!a) co_return a.error();
   auto ch = acquire(*cs);
   if (!ch) co_return ch.error();
@@ -570,16 +575,16 @@ awaitable<result<void>> select_with_value_impl(std::shared_ptr<control_state> cs
   auto req = build_request(cs->component("SBOw"), service::sbow, value, o, num);
   if (!req) co_return req.error();
   auto w = co_await write_variable_on(*a, cs->variable("SBOw"), std::move(*req));
-  if (!w) co_return co_await refusal(*cs, **ch, w.error());
+  if (!w) co_return co_await refusal(*cs, **ch, *a, w.error());
   cs->sequence_value = std::move(value);
   cs->selected.store(true);
   co_return result<void>{};
 }
 
-awaitable<result<void>> operate_impl(std::shared_ptr<control_state> cs, mms::data value,
-                                     control_options o) {
+awaitable<result<void>> operate_impl(std::shared_ptr<control_state> cs, error_details* d,
+                                     mms::data value, control_options o) {
   if (cs->model == model::ctl_model::status_only) co_return err(errc::control_model_mismatch);
-  auto a = cs->client->current();
+  auto a = cs->client->current(d);
   if (!a) co_return a.error();
   auto ch = acquire(*cs);
   if (!ch) co_return ch.error();
@@ -588,7 +593,7 @@ awaitable<result<void>> operate_impl(std::shared_ptr<control_state> cs, mms::dat
   auto req = build_request(cs->component("Oper"), service::oper, value, o, num);
   if (!req) co_return req.error();
   auto w = co_await write_variable_on(*a, cs->variable("Oper"), std::move(*req));
-  if (!w) co_return co_await refusal(*cs, **ch, w.error());
+  if (!w) co_return co_await refusal(*cs, **ch, *a, w.error());
   cs->sequence_value = std::move(value);
   if (enhanced(cs->model)) {
     auto t = co_await wait_termination(*cs, **ch, *a, o.termination_timeout);
@@ -602,12 +607,13 @@ awaitable<result<void>> operate_impl(std::shared_ptr<control_state> cs, mms::dat
   co_return result<void>{};
 }
 
-awaitable<result<void>> cancel_impl(std::shared_ptr<control_state> cs, control_options o) {
+awaitable<result<void>> cancel_impl(std::shared_ptr<control_state> cs, error_details* d,
+                                    control_options o) {
   if (cs->model == model::ctl_model::status_only ||
       cs->model == model::ctl_model::direct_with_normal_security) {
     co_return err(errc::control_model_mismatch);
   }
-  auto a = cs->client->current();
+  auto a = cs->client->current(d);
   if (!a) co_return a.error();
   std::optional<mms::data> value = cs->in_sequence ? cs->sequence_value : std::nullopt;
   if (!value) {
@@ -627,20 +633,20 @@ awaitable<result<void>> cancel_impl(std::shared_ptr<control_state> cs, control_o
   auto req = build_request(cs->component("Cancel"), service::cancel, *value, o, num);
   if (!req) co_return req.error();
   auto w = co_await write_variable_on(*a, cs->variable("Cancel"), std::move(*req));
-  if (!w) co_return co_await refusal(*cs, **ch, w.error());
+  if (!w) co_return co_await refusal(*cs, **ch, *a, w.error());
   cs->end_sequence();
   co_return result<void>{};
 }
 
 }  // namespace
 
-awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s,
+awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s, error_details* d,
                                           model::object_reference object, control_config config) {
   object.set_fc(std::nullopt);
   if (!object.has_ln() || object.path().empty() || object.has_index()) {
     co_return openiec61850::errc::invalid_state;
   }
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
 
   auto cs = std::make_shared<control_state>();
@@ -708,20 +714,22 @@ awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s,
   co_return control_state::make(std::move(cs));
 }
 
-awaitable<result<void>> operate_once_op(std::shared_ptr<client_state> s,
+awaitable<result<void>> operate_once_op(std::shared_ptr<client_state> s, error_details* d,
                                         model::object_reference object, mms::data value,
                                         control_options options) {
-  auto c = co_await get_control_op(s, std::move(object), {});
+  auto c = co_await get_control_op(s, d, std::move(object), {});
   if (!c) co_return c.error();
+  // Already on the strand: the services are run directly, sharing `d`.
+  auto cs = control_state::of(*c);
   const auto m = c->ctl_model();
   if (m == model::ctl_model::sbo_with_normal_security) {
-    auto r = co_await c->select(options);
+    auto r = co_await select_impl(cs, d, options);
     if (!r) co_return r;
   } else if (m == model::ctl_model::sbo_with_enhanced_security) {
-    auto r = co_await c->select_with_value(value, options);
+    auto r = co_await select_with_value_impl(cs, d, value, options);
     if (!r) co_return r;
   }
-  co_return co_await c->operate(std::move(value), std::move(options));
+  co_return co_await operate_impl(std::move(cs), d, std::move(value), std::move(options));
 }
 
 }  // namespace detail
@@ -733,11 +741,15 @@ namespace {
 
 template <typename... P, typename... A>
 asio::awaitable<result<void>> run(const std::shared_ptr<detail::control_state>& s,
+                                  error_details* d,
                                   asio::awaitable<result<void>> (*op)(
-                                      std::shared_ptr<detail::control_state>, P...),
+                                      std::shared_ptr<detail::control_state>, error_details*,
+                                      P...),
                                   A&&... args) {
-  if (!s) return detail::ready(result<void>(openiec61850::errc::invalid_state));
-  return detail::on_strand(s->client->strand, op(s, std::forward<A>(args)...));
+  auto started = s ? detail::on_strand(s->client->strand, op(s, d, std::forward<A>(args)...))
+                   : detail::ready(result<void>(openiec61850::errc::invalid_state));
+  if (d == nullptr) return started;
+  return detail::with_details(*d, std::move(started));
 }
 
 }  // namespace
@@ -782,19 +794,39 @@ std::optional<last_appl_error> control::last_error() const {
 }
 
 asio::awaitable<result<void>> control::select(control_options options) {
-  return run(state_, &detail::select_impl, std::move(options));
+  return run(state_, nullptr, &detail::select_impl, std::move(options));
+}
+
+asio::awaitable<result<void>> control::select(control_options options, error_details& details) {
+  return run(state_, &details, &detail::select_impl, std::move(options));
 }
 
 asio::awaitable<result<void>> control::select_with_value(mms::data value, control_options options) {
-  return run(state_, &detail::select_with_value_impl, std::move(value), std::move(options));
+  return run(state_, nullptr, &detail::select_with_value_impl, std::move(value),
+             std::move(options));
+}
+
+asio::awaitable<result<void>> control::select_with_value(mms::data value, control_options options,
+                                                         error_details& details) {
+  return run(state_, &details, &detail::select_with_value_impl, std::move(value),
+             std::move(options));
 }
 
 asio::awaitable<result<void>> control::operate(mms::data value, control_options options) {
-  return run(state_, &detail::operate_impl, std::move(value), std::move(options));
+  return run(state_, nullptr, &detail::operate_impl, std::move(value), std::move(options));
+}
+
+asio::awaitable<result<void>> control::operate(mms::data value, control_options options,
+                                               error_details& details) {
+  return run(state_, &details, &detail::operate_impl, std::move(value), std::move(options));
 }
 
 asio::awaitable<result<void>> control::cancel(control_options options) {
-  return run(state_, &detail::cancel_impl, std::move(options));
+  return run(state_, nullptr, &detail::cancel_impl, std::move(options));
+}
+
+asio::awaitable<result<void>> control::cancel(control_options options, error_details& details) {
+  return run(state_, &details, &detail::cancel_impl, std::move(options));
 }
 
 }  // namespace openiec61850::client

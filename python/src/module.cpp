@@ -22,7 +22,7 @@ NB_MODULE(_core, m) {
   m.def("_complete", &py::complete, nb::arg("future"), nb::arg("box"));
   py::set_complete_function(m.attr("_complete"));
   m.def("_set_error_factory", &py::set_error_factory, nb::arg("factory"),
-        "Installs factory(category, value, message) -> BaseException.");
+        "Installs factory(category, value, message, details) -> BaseException.");
   m.def("_shutdown", &py::shutdown_runtime, "Stops the I/O thread (registered with atexit).");
   m.def(
       "_runtime_running", [] { return py::runtime().running(); },

@@ -29,7 +29,10 @@ const R* response_as(const association::service_response& r) noexcept {
 awaitable<result<association::service_response>> call(assoc_ptr a,
                                                        mms::confirmed_service_request svc) {
   auto r = co_await a->request(std::move(svc));
-  if (!r) co_return request_error_code(r.failure());
+  if (!r) {
+    a.record(r.failure());
+    co_return request_error_code(r.failure());
+  }
   co_return std::move(*r);
 }
 
@@ -476,22 +479,22 @@ std::error_code request_error_code(const association::request_error& e) {
 
 // --- directory and definition
 
-awaitable<result<std::vector<std::string>>> get_name_list_op(std::shared_ptr<client_state> s,
+awaitable<result<std::vector<std::string>>> get_name_list_op(std::shared_ptr<client_state> s, error_details* d,
                                                               mms::object_class cls,
                                                               std::string domain) {
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   co_return co_await name_list_on(*a, cls, std::move(domain));
 }
 
-awaitable<result<std::vector<std::string>>> get_server_directory_op(std::shared_ptr<client_state> s) {
-  co_return co_await get_name_list_op(s, mms::object_class::domain, {});
+awaitable<result<std::vector<std::string>>> get_server_directory_op(std::shared_ptr<client_state> s, error_details* d) {
+  co_return co_await get_name_list_op(s, d, mms::object_class::domain, {});
 }
 
 awaitable<result<std::vector<std::string>>> get_logical_device_directory_op(
-    std::shared_ptr<client_state> s, std::string ld) {
+    std::shared_ptr<client_state> s, error_details* d, std::string ld) {
   if (ld.empty()) co_return misuse;
-  auto names = co_await get_name_list_op(s, mms::object_class::named_variable, std::move(ld));
+  auto names = co_await get_name_list_op(s, d, mms::object_class::named_variable, std::move(ld));
   if (!names) co_return names.error();
   std::vector<std::string> out;
   for (auto& n : *names) {
@@ -501,9 +504,9 @@ awaitable<result<std::vector<std::string>>> get_logical_device_directory_op(
 }
 
 awaitable<result<logical_node_directory>> get_logical_node_directory_op(
-    std::shared_ptr<client_state> s, model::object_reference ln) {
+    std::shared_ptr<client_state> s, error_details* d, model::object_reference ln) {
   if (!ln.has_ln() || !ln.path().empty()) co_return misuse;
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   const std::string ld(ln.ld());
   const std::string name(ln.ln());
@@ -547,11 +550,11 @@ awaitable<result<logical_node_directory>> get_logical_node_directory_op(
   co_return out;
 }
 
-awaitable<result<data_definition>> get_data_definition_op(std::shared_ptr<client_state> s,
+awaitable<result<data_definition>> get_data_definition_op(std::shared_ptr<client_state> s, error_details* d,
                                                           model::object_reference ref) {
   if (!ref.has_ln() || ref.has_index()) co_return misuse;
   if (ref.fc() == fc::XX) co_return misuse;
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   const std::string ld(ref.ld());
   const std::string ln(ref.ln());
@@ -594,8 +597,8 @@ awaitable<result<data_definition>> get_data_definition_op(std::shared_ptr<client
 }
 
 awaitable<result<std::vector<data_directory_entry>>> get_data_directory_op(
-    std::shared_ptr<client_state> s, model::object_reference ref) {
-  auto def = co_await get_data_definition_op(s, std::move(ref));
+    std::shared_ptr<client_state> s, error_details* d, model::object_reference ref) {
+  auto def = co_await get_data_definition_op(s, d, std::move(ref));
   if (!def) co_return def.error();
   std::vector<data_directory_entry> out;
   if (def->type != data_definition::kind::structure) co_return out;
@@ -612,16 +615,16 @@ awaitable<result<std::vector<data_directory_entry>>> get_data_directory_op(
 
 // --- data access
 
-awaitable<result<mms::data>> read_op(std::shared_ptr<client_state> s, model::object_reference ref) {
+awaitable<result<mms::data>> read_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference ref) {
   std::vector<model::object_reference> refs;
   refs.push_back(std::move(ref));
-  auto r = co_await read_many_op(s, std::move(refs));
+  auto r = co_await read_many_op(s, d, std::move(refs));
   if (!r) co_return r.error();
   co_return std::move((*r)[0]);
 }
 
 awaitable<result<std::vector<result<mms::data>>>> read_many_op(
-    std::shared_ptr<client_state> s, std::vector<model::object_reference> refs) {
+    std::shared_ptr<client_state> s, error_details* d, std::vector<model::object_reference> refs) {
   if (refs.empty()) co_return misuse;
   std::vector<model::mms_variable> vars;
   vars.reserve(refs.size());
@@ -630,22 +633,22 @@ awaitable<result<std::vector<result<mms::data>>>> read_many_op(
     if (!v) co_return v.error();
     vars.push_back(std::move(*v));
   }
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   const auto specs = specs_of(vars);
   co_return co_await read_on(*a, mms::variable_access_specification::list(specs), vars.size());
 }
 
-awaitable<result<void>> write_op(std::shared_ptr<client_state> s, model::object_reference ref,
+awaitable<result<void>> write_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference ref,
                                  mms::data value) {
   std::vector<write_item> items;
   items.push_back({std::move(ref), std::move(value)});
-  auto r = co_await write_many_op(s, std::move(items));
+  auto r = co_await write_many_op(s, d, std::move(items));
   if (!r) co_return r.error();
   co_return (*r)[0];
 }
 
-awaitable<result<std::vector<result<void>>>> write_many_op(std::shared_ptr<client_state> s,
+awaitable<result<std::vector<result<void>>>> write_many_op(std::shared_ptr<client_state> s, error_details* d,
                                                            std::vector<write_item> items) {
   if (items.empty()) co_return misuse;
   std::vector<model::mms_variable> vars;
@@ -657,7 +660,7 @@ awaitable<result<std::vector<result<void>>>> write_many_op(std::shared_ptr<clien
     vars.push_back(std::move(*v));
     values.push_back(std::move(item.value));
   }
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   const auto specs = specs_of(vars);
   co_return co_await write_on(*a, mms::variable_access_specification::list(specs), values,
@@ -666,14 +669,14 @@ awaitable<result<std::vector<result<void>>>> write_many_op(std::shared_ptr<clien
 
 // --- data sets
 
-awaitable<result<data_set_directory>> get_data_set_directory_op(std::shared_ptr<client_state> s,
+awaitable<result<data_set_directory>> get_data_set_directory_op(std::shared_ptr<client_state> s, error_details* d,
                                                                 model::object_reference ds) {
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   co_return co_await data_set_directory_on(s, *a, std::move(ds));
 }
 
-awaitable<result<void>> create_data_set_op(std::shared_ptr<client_state> s,
+awaitable<result<void>> create_data_set_op(std::shared_ptr<client_state> s, error_details* d,
                                            model::object_reference ds,
                                            std::vector<model::object_reference> members) {
   if (members.empty()) co_return misuse;
@@ -685,7 +688,7 @@ awaitable<result<void>> create_data_set_op(std::shared_ptr<client_state> s,
     if (!v) co_return v.error();
     vars.push_back(std::move(*v));
   }
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   const auto specs = specs_of(vars);
   auto r = co_await call(*a, mms::define_named_variable_list_request{name->view(), specs});
@@ -694,40 +697,40 @@ awaitable<result<void>> create_data_set_op(std::shared_ptr<client_state> s,
   co_return result<void>{};
 }
 
-awaitable<result<void>> delete_data_set_op(std::shared_ptr<client_state> s,
+awaitable<result<void>> delete_data_set_op(std::shared_ptr<client_state> s, error_details* d,
                                            model::object_reference ds) {
   auto name = model::to_mms_named_variable_list(ds, s->limits);
   if (!name) co_return name.error();
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   const std::vector<mms::object_name> names{name->view()};
   auto r = co_await call(*a, mms::delete_named_variable_list_request{mms::delete_scope::specific,
                                                                      names, std::nullopt});
   if (!r) co_return r.error();
-  const auto* d = response_as<mms::delete_named_variable_list_response>(*r);
-  if (d == nullptr) co_return violation;
-  if (d->number_deleted == 0) {
-    co_return err(d->number_matched == 0 ? errc::object_not_found : errc::not_deleted);
+  const auto* resp = response_as<mms::delete_named_variable_list_response>(*r);
+  if (resp == nullptr) co_return violation;
+  if (resp->number_deleted == 0) {
+    co_return err(resp->number_matched == 0 ? errc::object_not_found : errc::not_deleted);
   }
   co_return result<void>{};
 }
 
 awaitable<result<std::vector<result<mms::data>>>> get_data_set_values_op(
-    std::shared_ptr<client_state> s, model::object_reference ds) {
+    std::shared_ptr<client_state> s, error_details* d, model::object_reference ds) {
   auto name = model::to_mms_named_variable_list(ds, s->limits);
   if (!name) co_return name.error();
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   co_return co_await read_on(*a, mms::variable_access_specification::named(name->view()),
                              std::nullopt);
 }
 
 awaitable<result<std::vector<result<void>>>> set_data_set_values_op(
-    std::shared_ptr<client_state> s, model::object_reference ds, std::vector<mms::data> values) {
+    std::shared_ptr<client_state> s, error_details* d, model::object_reference ds, std::vector<mms::data> values) {
   if (values.empty()) co_return misuse;
   auto name = model::to_mms_named_variable_list(ds, s->limits);
   if (!name) co_return name.error();
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   co_return co_await write_on(*a, mms::variable_access_specification::named(name->view()), values,
                               values.size());
@@ -735,24 +738,24 @@ awaitable<result<std::vector<result<void>>>> set_data_set_values_op(
 
 // --- reporting
 
-awaitable<result<rcb_values>> get_rcb_values_op(std::shared_ptr<client_state> s,
+awaitable<result<rcb_values>> get_rcb_values_op(std::shared_ptr<client_state> s, error_details* d,
                                                 model::object_reference rcb) {
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   co_return co_await get_rcb_values_on(s, *a, std::move(rcb));
 }
 
-awaitable<result<void>> set_rcb_values_op(std::shared_ptr<client_state> s,
+awaitable<result<void>> set_rcb_values_op(std::shared_ptr<client_state> s, error_details* d,
                                           model::object_reference rcb, rcb_settings w) {
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   co_return co_await set_rcb_values_on(s, *a, std::move(rcb), std::move(w));
 }
 
-awaitable<result<rcb_values>> enable_reporting_op(std::shared_ptr<client_state> s,
+awaitable<result<rcb_values>> enable_reporting_op(std::shared_ptr<client_state> s, error_details* d,
                                                   model::object_reference rcb,
                                                   report_settings settings) {
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   enable_mode mode;
   mode.entry = settings.entry_id;
@@ -761,7 +764,7 @@ awaitable<result<rcb_values>> enable_reporting_op(std::shared_ptr<client_state> 
   co_return co_await enable_on(s, *a, std::move(rcb), std::move(settings), mode);
 }
 
-awaitable<result<void>> disable_reporting_op(std::shared_ptr<client_state> s,
+awaitable<result<void>> disable_reporting_op(std::shared_ptr<client_state> s, error_details* d,
                                              model::object_reference rcb) {
   auto kind = rcb_kind(rcb);
   if (!kind) co_return kind.error();
@@ -770,7 +773,7 @@ awaitable<result<void>> disable_reporting_op(std::shared_ptr<client_state> s,
     reserved = it->second.reserved;
     s->subscriptions.erase(it);
   }
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   auto r = co_await write_attribute(s, *a, rcb, "RptEna", mms::data::boolean(false));
   if (!r) co_return r;
@@ -780,10 +783,10 @@ awaitable<result<void>> disable_reporting_op(std::shared_ptr<client_state> s,
   co_return result<void>{};
 }
 
-awaitable<result<void>> trigger_gi_op(std::shared_ptr<client_state> s,
+awaitable<result<void>> trigger_gi_op(std::shared_ptr<client_state> s, error_details* d,
                                       model::object_reference rcb) {
   if (auto kind = rcb_kind(rcb); !kind) co_return kind.error();
-  auto a = s->current();
+  auto a = s->current(d);
   if (!a) co_return a.error();
   co_return co_await write_attribute(s, *a, std::move(rcb), "GI", mms::data::boolean(true));
 }

@@ -11,10 +11,12 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, Union
 
 from openiec61850 import _core
+from openiec61850._control import Control, Originator, _options
 from openiec61850._errors import ConnectionClosed, Iec61850Error, InvalidReference
 from openiec61850._types import (
     FC,
     BasicType,
+    CtlModel,
     Edition,
     EntryID,
     EntryTime,
@@ -951,6 +953,59 @@ class Client:
     async def trigger_gi(self, rcb: Ref) -> None:
         """GI = true on an enabled RCB."""
         await self._native.trigger_gi(_ref_text(rcb))
+
+    # --- control
+
+    async def control(
+        self,
+        ref: Ref,
+        *,
+        ctl_model: CtlModel | int | None = None,
+        read_sbo_timeout: bool = True,
+        read_structure: bool = True,
+    ) -> Control:
+        """A handle on the controllable data object ``ref`` (``LD/LN.DO``; an FC is ignored).
+
+        Reads CF.ctlModel (unless ``ctl_model`` is given), CF.sboTimeout and the CO structure
+        (which types plain ctlVal values and tells which components to send).
+        """
+        native = await self._native.control(
+            _ref_text(ref), int(ctl_model) if ctl_model is not None else None, read_sbo_timeout, read_structure
+        )
+        return Control(native, self._edition)
+
+    async def operate(
+        self,
+        ref: Ref,
+        value: Any,
+        *,
+        test: bool = False,
+        interlock_check: bool = False,
+        synchro_check: bool = False,
+        origin: Originator | None = None,
+        oper_time: Any = None,
+        ctl_num: int | None = None,
+        termination_timeout: float = 10.0,
+    ) -> None:
+        """One-shot control: by ctlModel, operate (direct), select + operate (SBO) or
+        select_with_value + operate (SBO enhanced, also waiting for the CommandTermination).
+        Keywords as for :meth:`Control.operate`."""
+        opts = _options(
+            test=test,
+            interlock_check=interlock_check,
+            synchro_check=synchro_check,
+            origin=origin,
+            oper_time=oper_time,
+            ctl_num=ctl_num,
+            termination_timeout=termination_timeout,
+        )
+        try:
+            t = encode(value)
+        except TypeNeeded:
+            # A plain value: type it from the object's CO structure.
+            ctl = await self.control(ref)
+            t = ctl._value(value)
+        await self._native.operate(_ref_text(ref), t, opts)
 
     def last_entry_id(self, rcb: Ref) -> EntryID | None:
         """The EntryID of the last report received for a BRCB enabled by this client."""

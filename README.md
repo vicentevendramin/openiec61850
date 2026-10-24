@@ -53,6 +53,16 @@ async def main():
                 for entry in report.entries:
                     print(report.seq_num, entry.reference, entry.value, entry.reason)
 
+        # Control (select-before-operate is driven by the object's ctlModel).
+        breaker = await client.control("IED1LD1/XCBR1.Pos")
+        try:
+            await breaker.select_with_value(True)
+            await breaker.operate(True, interlock_check=True,
+                                  origin=iec.Originator(iec.OrCat.STATION_CONTROL, b"hmi"))
+        except iec.ControlRefused as e:
+            print("refused:", e.add_cause, e.last_appl_error)
+        await client.operate("IED1LD1/GGIO1.SPCSO1", False)  # one-shot
+
 asyncio.run(main())
 ```
 

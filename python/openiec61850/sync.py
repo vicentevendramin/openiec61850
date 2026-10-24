@@ -18,7 +18,7 @@ import threading
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Generic, TypeVar
 
-from openiec61850 import _client
+from openiec61850 import _client, _control
 from openiec61850._client import (
     AssociationInfo,
     ConnectionEvent,
@@ -33,9 +33,10 @@ from openiec61850._client import (
     Ref,
 )
 from openiec61850._errors import Iec61850Error
-from openiec61850._types import EntryID, ObjectClass
+from openiec61850._control import LastApplError
+from openiec61850._types import CtlModel, EntryID, ObjectClass, ObjectReference
 
-__all__ = ["Client", "ReportSubscription", "ReportStream", "EventStream"]
+__all__ = ["Client", "Control", "ReportSubscription", "ReportStream", "EventStream"]
 
 T = TypeVar("T")
 
@@ -154,6 +155,62 @@ class EventStream(_SyncStream[ConnectionEvent]):
         _LoopThread.loop().call_soon_threadsafe(self._stream.close)
 
 
+class Control:
+    """Blocking control handle; see :class:`openiec61850.Control` for the semantics."""
+
+    def __init__(self, inner: _control.Control) -> None:
+        """Internal; use :meth:`Client.control`."""
+        self._c = inner
+
+    def __repr__(self) -> str:
+        return repr(self._c)
+
+    @property
+    def aio(self) -> _control.Control:
+        return self._c
+
+    @property
+    def reference(self) -> ObjectReference:
+        return self._c.reference
+
+    @property
+    def ctl_model(self) -> CtlModel:
+        return self._c.ctl_model
+
+    @property
+    def sbo_timeout(self) -> float | None:
+        return self._c.sbo_timeout
+
+    @property
+    def ctl_num(self) -> int:
+        return self._c.ctl_num
+
+    @property
+    def selected(self) -> bool:
+        return self._c.selected
+
+    @property
+    def has_oper_time(self) -> bool | None:
+        return self._c.has_oper_time
+
+    @property
+    def last_error(self) -> LastApplError | None:
+        return self._c.last_error
+
+    def select(self, **options: Any) -> None:
+        _run(self._c.select(**options))
+
+    def select_with_value(self, value: Any, **options: Any) -> None:
+        _run(self._c.select_with_value(value, **options))
+
+    def operate(self, value: Any, **options: Any) -> None:
+        """Same keywords as :meth:`openiec61850.Control.operate`."""
+        _run(self._c.operate(value, **options))
+
+    def cancel(self, **options: Any) -> None:
+        _run(self._c.cancel(**options))
+
+
 class Client:
     """Blocking IEC 61850 client; see :class:`openiec61850.Client` for the semantics."""
 
@@ -265,6 +322,14 @@ class Client:
 
     def trigger_gi(self, rcb: Ref) -> None:
         _run(self._c.trigger_gi(rcb))
+
+    def control(self, ref: Ref, **options: Any) -> Control:
+        """Same keywords as :meth:`openiec61850.Client.control`."""
+        return Control(_run(self._c.control(ref, **options)))
+
+    def operate(self, ref: Ref, value: Any, **options: Any) -> None:
+        """Same keywords as :meth:`openiec61850.Client.operate`."""
+        _run(self._c.operate(ref, value, **options))
 
     def last_entry_id(self, rcb: Ref) -> EntryID | None:
         return self._c.last_entry_id(rcb)
