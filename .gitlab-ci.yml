@@ -1,5 +1,5 @@
 # Main CI pipeline (ADR 0006). Runs on the homelab GitLab instance.
-stages: [build, test, analysis, package]
+stages: [build, test, analysis, interop, package]
 
 variables:
   VCPKG_ROOT: /opt/vcpkg
@@ -79,3 +79,41 @@ package:wheels:
     - .venv/bin/cibuildwheel --platform linux --output-dir wheelhouse
   artifacts:
     paths: [wheelhouse/]
+
+# Google Benchmark suite (benchmarks/, GLOSSARY "Benchmark de referência"). Smoke run on every
+# pipeline (short min time: catches crashes and fixture errors, not regressions); the JSON is kept
+# as an artifact. Reference numbers are recorded on a quiet machine, see docs/guides/contributing.md.
+analysis:bench-smoke:
+  stage: analysis
+  script:
+    - cmake --preset bench
+    - cmake --build --preset bench
+    - mkdir -p bench-results
+    - build/bench/benchmarks/openiec61850_bench --benchmark_min_time=0.01s
+        --benchmark_out_format=json --benchmark_out=bench-results/smoke.json
+  artifacts:
+    when: always
+    paths: [bench-results/]
+
+# Interoperability against the libiec61850 example servers, run as binaries (ADR 0001, 0007).
+# Needs Docker on the runner and the homelab infrastructure (ADR 0006): only for the default
+# branch (manual on other branches of this project), never for external contributions.
+interop:libiec61850:
+  stage: interop
+  image: docker:27
+  tags: [homelab]  # placeholder: the homelab runner with Docker
+  allow_failure: true  # until the suite has been stable for a while
+  timeout: 1h
+  needs: []
+  cache: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "push"
+      when: manual
+  variables:
+    LIBIEC61850_VERSION: "1.6.0"
+  before_script:
+    - apk add --no-cache bash > /dev/null
+    - docker info > /dev/null
+  script:
+    - interop/run.sh

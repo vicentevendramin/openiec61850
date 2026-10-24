@@ -1,0 +1,37 @@
+# Interop against the libiec61850 example servers (ADR 0007).
+#
+#   docker compose -f interop/compose.yaml up --detach --wait --build basic-io control
+#   docker compose -f interop/compose.yaml run --rm runner
+#
+# or interop/run.sh. The servers are also published on the host (ports below) for running the
+# runner, the Python API or a debugger against them by hand.
+name: openiec61850-interop
+
+x-libiec61850: &libiec61850
+  image: openiec61850-interop/libiec61850:${LIBIEC61850_VERSION:-1.6.0}
+  build:
+    context: ./libiec61850
+    args:
+      LIBIEC61850_VERSION: ${LIBIEC61850_VERSION:-1.6.0}
+      LIBIEC61850_SHA256: ${LIBIEC61850_SHA256:-}
+
+services:
+  basic-io:
+    <<: *libiec61850
+    command: ["server_example_basic_io"]
+    ports: ["127.0.0.1:${BASIC_IO_PORT:-10102}:102"]
+
+  control:
+    <<: *libiec61850
+    command: ["server_example_control"]
+    ports: ["127.0.0.1:${CONTROL_PORT:-10103}:102"]
+
+  runner:
+    image: openiec61850-interop/runner:local
+    build:
+      context: ..
+      dockerfile: interop/runner/Dockerfile
+    depends_on:
+      basic-io: {condition: service_healthy}
+      control: {condition: service_healthy}
+    command: ["--timeout", "${INTEROP_TIMEOUT:-5}", "basic-io:102", "control:102"]

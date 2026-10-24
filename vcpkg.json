@@ -9,6 +9,12 @@
     "pugixml"
   ],
   "features": {
+    "benchmarks": {
+      "description": "Google Benchmark suite (benchmarks/)",
+      "dependencies": [
+        "benchmark"
+      ]
+    },
     "tests": {
       "description": "C++ tests",
       "dependencies": [

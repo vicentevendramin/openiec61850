@@ -1,0 +1,8 @@
+# Context is the repository root; only what runner/Dockerfile copies is needed.
+*
+!vcpkg.json
+!CMakeLists.txt
+!cmake/
+!include/
+!src/
+!interop/runner/

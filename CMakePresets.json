@@ -43,13 +43,24 @@
         "OPENIEC61850_BUILD_FUZZERS": "ON",
         "OPENIEC61850_BUILD_TESTS": "OFF"
       }
+    },
+    {
+      "name": "bench",
+      "inherits": "base",
+      "displayName": "Release benchmarks (Google Benchmark)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OPENIEC61850_BUILD_BENCHMARKS": "ON",
+        "OPENIEC61850_BUILD_TESTS": "OFF"
+      }
     }
   ],
   "buildPresets": [
     {"name": "dev", "configurePreset": "dev"},
     {"name": "release", "configurePreset": "release"},
     {"name": "asan", "configurePreset": "asan"},
-    {"name": "fuzz", "configurePreset": "fuzz"}
+    {"name": "fuzz", "configurePreset": "fuzz"},
+    {"name": "bench", "configurePreset": "bench"}
   ],
   "testPresets": [
     {"name": "dev", "configurePreset": "dev", "output": {"outputOnFailure": true}},
