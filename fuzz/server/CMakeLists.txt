@@ -1,0 +1,1 @@
+openiec61850_add_fuzzer(fuzz_server_requests fuzz_server_requests.cpp)
