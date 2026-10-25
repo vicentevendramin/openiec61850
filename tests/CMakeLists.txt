@@ -16,5 +16,6 @@ add_subdirectory(model)
 add_subdirectory(client)
 add_subdirectory(server)
 add_subdirectory(scl)
+add_subdirectory(goose)
 
 catch_discover_tests(openiec61850_tests)

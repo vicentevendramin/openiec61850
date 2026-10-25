@@ -1,0 +1,2 @@
+openiec61850_add_fuzzer(fuzz_goose_frame fuzz_goose_frame.cpp)
+openiec61850_add_fuzzer(fuzz_goose_sv_frame fuzz_goose_sv_frame.cpp)
