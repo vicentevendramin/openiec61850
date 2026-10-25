@@ -1,0 +1,9 @@
+# Context is the repository root; only what server/Dockerfile copies is needed.
+*
+!vcpkg.json
+!CMakeLists.txt
+!cmake/
+!include/
+!src/
+!tools/
+!interop/server/

@@ -1,4 +1,4 @@
-# libiec61850 example servers as interoperability peers (ADR 0007).
+# libiec61850 example servers and clients as interoperability peers (ADR 0007).
 #
 # Clean-room rule (ADR 0001): this image only downloads a libiec61850 release, runs its own build
 # system and keeps the resulting example executables. Nobody working on openiec61850 reads, copies
@@ -8,8 +8,12 @@ FROM ubuntu:24.04 AS build
 ARG LIBIEC61850_VERSION=1.6.0
 # Optional: pin the release tarball (sha256). Empty skips the check.
 ARG LIBIEC61850_SHA256=""
-# Example servers kept in the image (build fails if one is missing).
-ARG EXAMPLES="server_example_basic_io server_example_control"
+# Example servers (interop runner peers) and example clients (reverse interop against the
+# openiec61850-server tool) kept in the image; the build fails if one is missing.
+ARG EXAMPLES="server_example_basic_io server_example_control \
+  iec61850_client_example1 iec61850_client_example2 iec61850_client_example4 \
+  iec61850_client_example_reporting iec61850_client_example_rcbAsync iec61850_client_async \
+  client_example_control mms_utility"
 
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \

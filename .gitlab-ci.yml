@@ -95,9 +95,11 @@ analysis:bench-smoke:
     when: always
     paths: [bench-results/]
 
-# Interoperability against the libiec61850 example servers, run as binaries (ADR 0001, 0007).
-# Needs Docker on the runner and the homelab infrastructure (ADR 0006): only for the default
-# branch (manual on other branches of this project), never for external contributions.
+# Interoperability with libiec61850, run as binaries (ADR 0001, 0007), in both directions: our
+# client (interop/runner) against its example servers, and its example clients (interop/clients)
+# against the openiec61850-server tool. Needs Docker on the runner and the homelab infrastructure
+# (ADR 0006): only for the default branch (manual on other branches of this project), never for
+# external contributions.
 interop:libiec61850:
   stage: interop
   image: docker:27
@@ -112,6 +114,8 @@ interop:libiec61850:
       when: manual
   variables:
     LIBIEC61850_VERSION: "1.6.0"
+    INTEROP_TIMEOUT: "5"
+    CLIENT_TIMEOUT: "8"
   before_script:
     - apk add --no-cache bash > /dev/null
     - docker info > /dev/null

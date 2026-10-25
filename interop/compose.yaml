@@ -1,10 +1,17 @@
-# Interop against the libiec61850 example servers (ADR 0007).
+# Interop with libiec61850 (ADR 0007), in both directions:
 #
-#   docker compose -f interop/compose.yaml up --detach --wait --build basic-io control
+#   our client  -> libiec61850 example servers: `runner` (interop/runner) against `basic-io`
+#                  (server_example_basic_io) and `control` (server_example_control)
+#   their clients -> our server: `clients` (libiec61850 example clients, interop/clients) against
+#                  `openiec61850-server` (the openiec61850-server tool serving
+#                  interop/server/simpleIO.icd with --simulate)
+#
+#   docker compose -f interop/compose.yaml up --detach --wait --build basic-io control openiec61850-server
 #   docker compose -f interop/compose.yaml run --rm runner
+#   docker compose -f interop/compose.yaml run --rm clients
 #
 # or interop/run.sh. The servers are also published on the host (ports below) for running the
-# runner, the Python API or a debugger against them by hand.
+# runner, the example clients, the Python API or a debugger against them by hand.
 name: openiec61850-interop
 
 x-libiec61850: &libiec61850
@@ -26,6 +33,14 @@ services:
     command: ["server_example_control"]
     ports: ["127.0.0.1:${CONTROL_PORT:-10103}:102"]
 
+  openiec61850-server:
+    image: openiec61850-interop/server:local
+    build:
+      context: ..
+      dockerfile: interop/server/Dockerfile
+    command: ["--simulate", "--verbose"]
+    ports: ["127.0.0.1:${OPENIEC61850_PORT:-10104}:102"]
+
   runner:
     image: openiec61850-interop/runner:local
     build:
@@ -35,3 +50,13 @@ services:
       basic-io: {condition: service_healthy}
       control: {condition: service_healthy}
     command: ["--timeout", "${INTEROP_TIMEOUT:-5}", "basic-io:102", "control:102"]
+
+  clients:
+    image: openiec61850-interop/clients:${LIBIEC61850_VERSION:-1.6.0}
+    build:
+      context: ./clients
+      additional_contexts:
+        libiec61850: service:basic-io
+    depends_on:
+      openiec61850-server: {condition: service_healthy}
+    command: ["--timeout", "${CLIENT_TIMEOUT:-8}", "openiec61850-server", "102"]

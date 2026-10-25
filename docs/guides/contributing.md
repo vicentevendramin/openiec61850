@@ -1,8 +1,8 @@
 # Contributing: benchmarks and interop
 
 General rules (clean-room, layout, error handling) are in [CONTRIBUTING.md](../../CONTRIBUTING.md).
-This guide covers the two suites that live outside the default build: the benchmarks and the
-interop tests.
+This guide covers the two suites that live outside the default build, the benchmarks and the
+interop tests, and the command-line tools used for interop debugging.
 
 ## Benchmarks (`benchmarks/`)
 
@@ -77,7 +77,11 @@ Guidelines:
 ## Interop (`interop/`)
 
 ADR 0007 validates interoperability against independent implementations instead of physical
-IEDs. The first peer is the libiec61850 example servers.
+IEDs. The first peer is libiec61850, tested in both directions:
+
+- **our client against their servers**: the runner drives the libiec61850 example servers;
+- **their clients against our server**: the libiec61850 example clients run against
+  `openiec61850-server` (see [Command-line tools](#command-line-tools-tools)).
 
 **Clean-room (ADR 0001):** `interop/libiec61850/Dockerfile` downloads a libiec61850 release and
 builds it with its own build system. Only the resulting executables are used. Do not open,
@@ -88,15 +92,18 @@ from the wire instead (Wireshark's MMS dissector, the runner's output, our own l
 
 | Path | Role |
 |---|---|
-| `interop/libiec61850/Dockerfile` | builds the example servers (`LIBIEC61850_VERSION`, optional `LIBIEC61850_SHA256`) |
+| `interop/libiec61850/Dockerfile` | builds the example servers and example clients (`LIBIEC61850_VERSION`, optional `LIBIEC61850_SHA256`) |
 | `interop/runner/` | `openiec61850_interop`, a C++ program using our client, built as a standalone CMake project (`cmake -S interop/runner -B build/interop`) and as a Docker image |
-| `interop/compose.yaml` | `basic-io` (`server_example_basic_io`) and `control` (`server_example_control`) on the compose network, also published on `127.0.0.1:10102` / `:10103`, plus the `runner` |
-| `interop/run.sh` | builds everything, starts the servers, runs the runner, tears down |
+| `interop/server/` | Docker image of `openiec61850-server` serving `simpleIO.icd`, the model the example clients expect |
+| `interop/clients/` | `run_clients.sh`, which runs the example clients against a server and grades their output; its image is the libiec61850 one plus the script |
+| `interop/compose.yaml` | `basic-io` (`server_example_basic_io`), `control` (`server_example_control`) and `openiec61850-server` on the compose network, also published on `127.0.0.1:10102` / `:10103` / `:10104`, plus `runner` and `clients` |
+| `interop/run.sh` | builds everything, runs both directions, prints a summary, tears down |
 
 ### Running
 
 ```bash
 interop/run.sh                                 # exit status 0 when nothing FAILed
+ONLY=runner interop/run.sh                     # one direction: runner | clients
 KEEP_UP=1 interop/run.sh                       # leave the servers up afterwards
 LIBIEC61850_VERSION=1.5.3 interop/run.sh       # another release
 
@@ -121,9 +128,45 @@ services and then runs these checks against each server:
 Each check prints `PASS`, `WARN`, `SKIP` (the model has nothing to exercise) or `FAIL`. The exit
 status is non-zero only on `FAIL`.
 
+### Reverse direction: libiec61850 clients against our server
+
+`interop/server/simpleIO.icd` reproduces the model the example clients expect: LD
+`simpleIOGenericIO`, `GGIO1` with `AnIn1..4`, `SPCSO1..9` (the control models of
+`server_example_control`), `Ind1..4`, the data sets `Events`, `Events2`, `Measurements`,
+`ControlEvents` and their RCB instances (`EventsRCB01`, `EventsIndexed01..03`,
+`Measurements01..03`...). It was written from black-box observation only: the clients' printed
+output and errors, and the discovery of the libiec61850 example servers with `openiec61850-client
+discover`. The server runs with `--simulate`, so integrity and data-change reports flow.
+
+`run_clients.sh [--timeout S] HOST [PORT]` runs each example client (host and port as
+arguments), stops the ones that run until interrupted with SIGINT after the timeout, and checks
+the exit status and output patterns:
+
+| Check | Client | What it expects |
+|---|---|---|
+| `mms_utility/{identify,domains,directory,read}` | `mms_utility -i / -d / -t / -r` | Identify, domain list, domain variables (with RCBs), a Read |
+| `client_example2/discovery` | `iec61850_client_example2` | LD/LN/DO tree, data sets with members, RP/BR instances |
+| `client_example4/dataset` | `iec61850_client_example4` | four `AnIn` values from a data set read |
+| `client_example1/read+report` | `iec61850_client_example1` | a float read, `EventsRCB01` enabled, reports received |
+| `client_example_reporting/reports` | `iec61850_client_example_reporting` | reports with RptID `Events1` and member references |
+| `client_example_rcbAsync/rcb` | `iec61850_client_example_rcbAsync` | async reads, data set values, RCB values |
+| `client_async/services` | `iec61850_client_async` | async directory, reads, data set values, a control |
+| `client_example_control/control` | `client_example_control` | SPCSO1..4 and 9 operated (direct/SBO, normal/enhanced), three CommandTermination+ |
+
+The patterns were checked against the libiec61850 example servers themselves, which pass the same
+checks (`basic-io` for all but the control check, `control` for that one). To run the clients by
+hand against any server:
+
+```bash
+docker run --rm --network host openiec61850-interop/clients:1.6.0 127.0.0.1 10104
+docker run --rm --network host --entrypoint iec61850_client_example2 \
+  openiec61850-interop/libiec61850:1.6.0 127.0.0.1 10104
+```
+
 ### CI
 
-The `interop:libiec61850` job (stage `interop`) runs `interop/run.sh` in a `docker:27` image. It
+The `interop:libiec61850` job (stage `interop`) runs `interop/run.sh` (both directions) in a
+`docker:27` image. It
 needs the homelab runner with Docker (`tags: [homelab]`, a placeholder until the runner tag is
 final). It runs only on the default branch and on merge requests from this project, never for
 external contributions (ADR 0006). It is `allow_failure: true` until it has proven stable.
@@ -147,3 +190,41 @@ external contributions (ADR 0006). It is `allow_failure: true` until it has prov
   (`association_params::session_versions`).
 - **Writes refused.** The example servers refuse writes to CF/DC with object-access-denied, so
   the `write` check reports WARN.
+- **Read of a whole LN with a small PDU size.** `mms_utility -l 300 -a simpleIOGenericIO -r GGIO1`
+  fails ("ERROR 40") against both our server and the libiec61850 example server, since the value
+  does not fit the negotiated PDU size. Not a deviation; noted because it looks like one.
+
+## Command-line tools (`tools/`)
+
+Two small programs, built by default (`OPENIEC61850_BUILD_TOOLS`, off for the Python wheels) and
+installed into `bin/`:
+
+```bash
+# Serve the IED model of an SCL file; prints "listening on ADDR:PORT" once ready.
+openiec61850-server --scl interop/server/simpleIO.icd --port 10102 --simulate --verbose
+#   --ied NAME / --ap NAME   IED and access point (default: the first ones)
+#   --bind ADDR, --port N    0 picks a free port
+#   --password PW            require ACSE password authentication
+#   --simulate, --period MS  random-walk MX FLOAT values, toggle status-only BOOLEAN stVal
+#   --control-delay MS       complete operations later (enhanced: CommandTermination after MS)
+#   --verbose                associations, writes, controls, SCL diagnostics (stderr)
+
+# Explore a server.
+openiec61850-client --port 10102 discover
+openiec61850-client --port 10102 read 'simpleIOGenericIO/GGIO1.AnIn1.mag.f[MX]'
+openiec61850-client --port 10102 write 'simpleIOGenericIO/GGIO1.NamPlt.d[DC]' text
+openiec61850-client --port 10102 --count 3 reports 'simpleIOGenericIO/LLN0.EventsRCB01[RP]'
+openiec61850-client --port 10102 operate simpleIOGenericIO/GGIO1.SPCSO2 true
+```
+
+The server accepts every write and every control and mirrors ctlVal into stVal (a BOOLEAN ctlVal
+into a Dbpos stVal as on/off). SIGINT or SIGTERM stops it cleanly. `--verbose` logs what the
+server API exposes: associations (accepted or refused), writes and control requests; there is no
+per-request hook for reads and directory services. The client takes values as text
+(`true`/`false`, numbers, strings, bit strings as `0`/`1` digits, octet strings as hex) and
+converts them to the type it reads first (write) or to the ctlVal type (operate). Exit status: 0
+on success, 1 when a service fails, 2 on usage errors.
+
+The CTest `tools.smoke` (`tools/smoke_test.sh`) starts the server on port 0 and runs `discover`,
+`read`, `write`, `operate` on the four control models, `reports` and the error paths with the
+client.
