@@ -37,7 +37,10 @@ Hierarchy::
     ├── TypeMismatch (TypeError)
     ├── ValueOutOfRange (ValueError)
     ├── InvalidOperation (ValueError)  local misuse (e.g. reading a reference without an FC)
-    └── InvalidReference (ValueError)  malformed object reference
+    │   └── ServerStopped              server API used after Server.stop()
+    ├── InvalidReference (ValueError)  malformed object reference
+    ├── InvalidModel (ValueError)      inconsistent server data model
+    └── SclError (ValueError)          an SCL file could not be loaded (see ``diagnostics``)
 """
 
 from __future__ import annotations
@@ -90,6 +93,9 @@ __all__ = [
     "ValueOutOfRange",
     "InvalidOperation",
     "InvalidReference",
+    "InvalidModel",
+    "ServerStopped",
+    "SclError",
 ]
 
 
@@ -306,6 +312,23 @@ class InvalidReference(Iec61850Error, ValueError):
     """Malformed object reference."""
 
 
+class InvalidModel(Iec61850Error, ValueError):
+    """The server data model is inconsistent (builder misuse, bad values, dangling members)."""
+
+
+class ServerStopped(InvalidOperation):
+    """The server has been stopped."""
+
+
+class SclError(Iec61850Error, ValueError):
+    """An SCL file could not be turned into a server model.
+
+    ``diagnostics`` lists every problem found (:class:`~openiec61850.SclDiagnostic`).
+    """
+
+    diagnostics: tuple[Any, ...] = ()
+
+
 class ControlError(Iec61850Error):
     """A control service failed.
 
@@ -402,7 +425,18 @@ _ERRNO = {
     _errno.ESHUTDOWN: ConnectionLost,
 }
 
+# server::errc (server/error.hpp)
+_SERVER = {
+    1: ObjectNotFound,
+    2: ObjectExists,
+    3: TypeMismatch,
+    4: InvalidModel,
+    5: ServerStopped,
+    6: AccessDenied,
+}
+
 _BY_CATEGORY: dict[str, dict[int, type[Iec61850Error]]] = {
+    "openiec61850.server": _SERVER,
     "openiec61850.client": _CLIENT,
     "openiec61850.association": _ASSOCIATION,
     "openiec61850": _CORE,

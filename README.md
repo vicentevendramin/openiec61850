@@ -29,8 +29,8 @@ pytest
 
 ## Python
 
-The `asyncio` API is the primary one; `openiec61850.sync.Client` is a thin blocking facade with the
-same method names.
+The `asyncio` API is the primary one; `openiec61850.sync.Client` and `openiec61850.sync.Server`
+are thin blocking facades with the same method names.
 
 ```python
 import asyncio
@@ -62,6 +62,28 @@ async def main():
         except iec.ControlRefused as e:
             print("refused:", e.add_cause, e.last_appl_error)
         await client.operate("IED1LD1/GGIO1.SPCSO1", False)  # one-shot
+
+asyncio.run(main())
+```
+
+A server is built from a model (programmatic or SCL) and driven with `update()` from any thread;
+application hooks decide writes and commands:
+
+```python
+import asyncio
+import openiec61850 as iec
+
+model = iec.Model.from_scl("station.cid", ied="BAY1")        # or iec.ModelBuilder()...build()
+
+async def on_control(request):                                  # Operates run on the event loop
+    await asyncio.sleep(0.2)                                    # e.g. drive the breaker
+    return iec.ControlResult.ok()                               # or .refused(iec.AddCause...)
+
+async def main():
+    async with await iec.Server.start(model, port=102, on_control=on_control,
+                                      on_write=lambda assoc, ref, value: None) as server:
+        server.update("Bay1Prot/MMXU1.Hz.mag.f", 50.02, quality=iec.Quality())
+        await server.wait_stopped()
 
 asyncio.run(main())
 ```

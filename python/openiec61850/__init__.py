@@ -1,7 +1,7 @@
 """Clean-room IEC 61850 implementation with a native core.
 
-The asyncio :class:`Client` is the primary API; :mod:`openiec61850.sync` is a thin blocking
-facade over it.
+The asyncio :class:`Client` and :class:`Server` are the primary API; :mod:`openiec61850.sync` is a
+thin blocking facade over them.
 """
 
 from openiec61850 import _core
@@ -28,6 +28,7 @@ from openiec61850._errors import (
     InitiateError,
     InvalidAddress,
     InvalidOperation,
+    InvalidModel,
     InvalidReference,
     NotConnected,
     NotDeleted,
@@ -41,6 +42,8 @@ from openiec61850._errors import (
     ProtocolError,
     RecoveryFailed,
     RequestRejected,
+    SclError,
+    ServerStopped,
     ServiceError,
     TemporarilyUnavailable,
     Timeout,
@@ -134,6 +137,27 @@ from openiec61850._client import (  # noqa: E402
     ReportSubscription,
 )
 
+from openiec61850._server import (  # noqa: E402
+    AssociationRequest,
+    AttributeBuilder,
+    ControlAction,
+    ControlRequest,
+    ControlResult,
+    DataAccessError,
+    DataObjectBuilder,
+    DataSetDefinition,
+    Identity,
+    LogicalDeviceBuilder,
+    LogicalNodeBuilder,
+    Model,
+    ModelBuilder,
+    ModelNode,
+    NodeKind,
+    ReportControl,
+    SclDiagnostic,
+    Server,
+)
+
 __version__: str = _core.__version__
 
 __all__ = [
@@ -161,6 +185,25 @@ __all__ = [
     "ReportStream",
     "DEFAULT_AP_TITLE",
     "DEFAULT_AE_QUALIFIER",
+    # server
+    "Server",
+    "Model",
+    "ModelBuilder",
+    "LogicalDeviceBuilder",
+    "LogicalNodeBuilder",
+    "DataObjectBuilder",
+    "AttributeBuilder",
+    "ModelNode",
+    "NodeKind",
+    "DataSetDefinition",
+    "ReportControl",
+    "SclDiagnostic",
+    "Identity",
+    "DataAccessError",
+    "ControlAction",
+    "ControlRequest",
+    "ControlResult",
+    "AssociationRequest",
     # control
     "Control",
     "Originator",
@@ -258,4 +301,7 @@ __all__ = [
     "ValueOutOfRange",
     "InvalidOperation",
     "InvalidReference",
+    "InvalidModel",
+    "ServerStopped",
+    "SclError",
 ]

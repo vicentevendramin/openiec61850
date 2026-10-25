@@ -1,9 +1,10 @@
-"""Blocking facade over the asyncio client (ADR 0004: a thin synchronous wrapper).
+"""Blocking facade over the asyncio client and server (ADR 0004: a thin synchronous wrapper).
 
 Every :class:`Client` method has the same name and arguments as in :class:`openiec61850.Client`
 and blocks the calling thread (without holding the GIL) until it completes. The asyncio clients
 run on one private event loop in a background daemon thread shared by all synchronous clients;
-report callbacks run on that thread.
+report callbacks run on that thread. :class:`Server` mirrors :class:`openiec61850.Server` the
+same way (awaitables returned by its ``on_control`` hook run on that loop).
 
 >>> from openiec61850.sync import Client
 >>> with Client.connect("10.0.0.5") as c:                        # doctest: +SKIP
@@ -18,7 +19,7 @@ import threading
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Generic, TypeVar
 
-from openiec61850 import _client, _control
+from openiec61850 import _client, _control, _server
 from openiec61850._client import (
     AssociationInfo,
     ConnectionEvent,
@@ -36,7 +37,7 @@ from openiec61850._errors import Iec61850Error
 from openiec61850._control import LastApplError
 from openiec61850._types import CtlModel, EntryID, ObjectClass, ObjectReference
 
-__all__ = ["Client", "Control", "ReportSubscription", "ReportStream", "EventStream"]
+__all__ = ["Client", "Control", "ReportSubscription", "ReportStream", "EventStream", "Server"]
 
 T = TypeVar("T")
 
@@ -347,3 +348,64 @@ class Client:
 
 async def _call(fn: Callable[[], T]) -> T:
     return fn()
+
+
+class Server:
+    """Blocking IEC 61850 server; see :class:`openiec61850.Server` for the semantics.
+
+    >>> with Server.start(model, port=0) as server:                 # doctest: +SKIP
+    ...     server.update("IED1LD0/GGIO1.Ind1.stVal", True)
+    """
+
+    def __init__(self, inner: _server.Server) -> None:
+        """Internal; use :meth:`start`."""
+        self._s = inner
+
+    @classmethod
+    def start(cls, model: _server.Model, host: str = "0.0.0.0", port: int = 102, **options: Any) -> Server:
+        """Same keywords as :meth:`openiec61850.Server.start`."""
+        return cls(_run(_server.Server.start(model, host, port, **options)))
+
+    @property
+    def aio(self) -> _server.Server:
+        """The underlying asyncio server (bound to the facade's loop thread)."""
+        return self._s
+
+    def __enter__(self) -> Server:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+        self.wait_stopped()
+
+    @property
+    def model(self) -> _server.Model:
+        return self._s.model
+
+    def stop(self) -> None:
+        self._s.stop()
+
+    def wait_stopped(self, timeout: float | None = None) -> None:
+        _run(self._s.wait_stopped(), timeout)
+
+    @property
+    def association_count(self) -> int:
+        return self._s.association_count
+
+    @property
+    def local_endpoint(self) -> tuple[str, int]:
+        return self._s.local_endpoint
+
+    @property
+    def port(self) -> int:
+        return self._s.port
+
+    def update(self, ref: Ref, value: Any, quality: Any = None, timestamp: Any = None) -> None:
+        """Non-blocking; any thread."""
+        self._s.update(ref, value, quality, timestamp)
+
+    def update_many(self, items: Any) -> None:
+        self._s.update_many(items)
+
+    def read(self, ref: Ref) -> Any:
+        return _run(self._s.read(ref))

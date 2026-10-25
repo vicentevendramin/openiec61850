@@ -15,6 +15,7 @@ nanobind_add_module(_core NB_STATIC LTO NB_SUPPRESS_WARNINGS
   src/module.cpp
   src/client_binding.cpp
   src/model_binding.cpp
+  src/server_binding.cpp
   ${_binding_common})
 target_link_libraries(_core PRIVATE openiec61850::openiec61850)
 openiec61850_set_warnings(_core)

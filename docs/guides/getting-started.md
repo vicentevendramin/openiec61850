@@ -40,6 +40,51 @@ asyncio.run(main())
 Pass `recovery=True` to `connect()` to have the association (and its RCBs) restored after a
 connection loss.
 
+### A first server
+
+```python
+import asyncio
+import openiec61850 as iec
+from openiec61850 import FC, BasicType as B, TrgOps
+
+b = iec.ModelBuilder()
+ld = b.logical_device("IED1LD0")
+lln0 = ld.logical_node("LLN0")
+lln0.data_object("Mod").attribute("stVal", FC.ST, B.ENUMERATED, value=1)
+ggio = ld.logical_node("GGIO1")
+ind = ggio.data_object("Ind1")
+ind.attribute("stVal", FC.ST, B.BOOLEAN, triggers=TrgOps.DATA_CHANGE)
+ind.attribute("q", FC.ST, B.QUALITY, triggers=TrgOps.QUALITY_CHANGE)
+ind.attribute("t", FC.ST, B.TIMESTAMP)
+ggio.data_object("Set").attribute("setVal", FC.SP, B.INT32, value=7)
+lln0.data_set("DS1", ["IED1LD0/GGIO1.Ind1[ST]"])
+lln0.report_control(iec.ReportControl("urcb01", data_set="DS1",
+                                      trg_ops=TrgOps.DATA_CHANGE | TrgOps.GENERAL_INTERROGATION))
+model = b.build()               # or: iec.Model.from_scl("bay.cid"); see model.diagnostics
+
+def on_write(association, ref, value):
+    # SP / SV / CF / DC / BL / SG / SE writes by clients; None accepts.
+    return iec.DataAccessError.OBJECT_VALUE_INVALID if value < 0 else None
+
+async def main():
+    async with await iec.Server.start(model, "0.0.0.0", 102, on_write=on_write) as server:
+        while True:
+            server.update("IED1LD0/GGIO1.Ind1.stVal", True)       # reports follow the TrgOps
+            await asyncio.sleep(1)
+
+asyncio.run(main())
+```
+
+- `update()` / `update_many()` take plain Python values typed from the model, never block and
+  may be called from any thread; `await server.read(ref)` returns the current value.
+- Hooks (`on_write`, `on_control`, `authorize`) are called on the native I/O thread, which waits
+  for their answer: keep them short and non-blocking. For a long Operate, return an awaitable from
+  `on_control` (or make it `async def`): it runs on the event loop and its `ControlResult`
+  completes the command (CommandTermination with enhanced security). Alternatively return
+  `ControlResult.pending()` and call `request.complete(...)` later from any thread. Select and
+  Cancel must be answered at once.
+- `openiec61850.sync.Server.start(...)` is the blocking variant.
+
 ## C++
 
 ### Building
