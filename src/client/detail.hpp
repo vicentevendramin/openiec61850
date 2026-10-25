@@ -296,6 +296,32 @@ asio::awaitable<result<mms::type_description>> type_description_on(assoc_ptr a,
                                                                    std::string domain,
                                                                    std::string item);
 
+// Sends one confirmed request; failures are recorded in the association's error details and
+// mapped with request_error_code() (services.cpp).
+asio::awaitable<result<association::service_response>> call_on(assoc_ptr a,
+                                                               mms::confirmed_service_request svc);
+
+// --- setting groups, logs, files, GoCBs (acsi_services.cpp)
+
+asio::awaitable<result<sgcb_values>> get_sgcb_values_op(std::shared_ptr<client_state> s, error_details* d, std::string ld);
+asio::awaitable<result<void>> select_active_sg_op(std::shared_ptr<client_state> s, error_details* d, std::string ld, std::uint8_t sg);
+asio::awaitable<result<void>> select_edit_sg_op(std::shared_ptr<client_state> s, error_details* d, std::string ld, std::uint8_t sg);
+asio::awaitable<result<void>> set_edit_sg_value_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference ref, mms::data value);
+asio::awaitable<result<void>> confirm_edit_sg_values_op(std::shared_ptr<client_state> s, error_details* d, std::string ld);
+asio::awaitable<result<mms::data>> get_edit_sg_value_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference ref);
+asio::awaitable<result<lcb_values>> get_lcb_values_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference lcb);
+asio::awaitable<result<void>> set_lcb_values_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference lcb, lcb_settings w);
+asio::awaitable<result<std::vector<log_entry>>> query_log_by_time_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference log, std::optional<model::entry_time> start, std::optional<model::entry_time> stop);
+asio::awaitable<result<std::vector<log_entry>>> query_log_after_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference log, model::entry_time time, model::entry_id entry);
+asio::awaitable<result<std::uint32_t>> get_log_status_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference log);
+asio::awaitable<result<std::vector<file_entry>>> get_file_directory_op(std::shared_ptr<client_state> s, error_details* d, std::string path);
+asio::awaitable<result<byte_buffer>> get_file_op(std::shared_ptr<client_state> s, error_details* d, std::string name);
+asio::awaitable<result<std::uint64_t>> get_file_stream_op(std::shared_ptr<client_state> s, error_details* d, std::string name, std::function<void(byte_buffer)> on_chunk);
+asio::awaitable<result<void>> delete_file_op(std::shared_ptr<client_state> s, error_details* d, std::string name);
+asio::awaitable<result<void>> rename_file_op(std::shared_ptr<client_state> s, error_details* d, std::string from, std::string to);
+asio::awaitable<result<gocb_values>> get_gocb_values_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference gocb);
+asio::awaitable<result<void>> set_gocb_values_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference gocb, gocb_settings w);
+
 // --- control (control.cpp)
 
 asio::awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s, error_details* d,

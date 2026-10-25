@@ -791,7 +791,12 @@ awaitable<result<void>> trigger_gi_op(std::shared_ptr<client_state> s, error_det
   co_return co_await write_attribute(s, *a, std::move(rcb), "GI", mms::data::boolean(true));
 }
 
-// --- helpers for control.cpp
+// --- helpers for control.cpp and acsi_services.cpp
+
+awaitable<result<association::service_response>> call_on(assoc_ptr a,
+                                                         mms::confirmed_service_request svc) {
+  co_return co_await call(std::move(a), std::move(svc));
+}
 
 awaitable<result<std::vector<result<mms::data>>>> read_variables_on(
     assoc_ptr a, std::vector<model::mms_variable> vars) {

@@ -32,12 +32,21 @@
 //                                          rptID, datSet, confRev, bufTime, intgPd, TrgOps and
 //                                          OptFields as given
 //
+//   SettingControl (LLN0)                  the SGCB (numOfSGs, actSG); <Val sGroup> of FC SG
+//                                          attributes give each group's initial value
+//   LogControl                             LCBs (datSet, logEna, TrgOps, intgPd) and their logs
+//                                          (logName in the LN given by prefix / lnClass / lnInst
+//                                          of the same LD)
+//   GSEControl (type GOOSE)                GoCBs (appID as GoID, datSet, confRev, fixedOffs) with
+//                                          the Communication GSE address (MAC-Address, APPID,
+//                                          VLAN-ID, VLAN-PRIORITY, MinTime, MaxTime)
+//
 // Control objects need nothing special: ctlModel and sboTimeout (FC CF) are ordinary attributes
 // whose SCL values drive the server's control model.
 //
 // Not mapped: attributes whose bType has no basic type (INT64U, PhyComAddr, SvOptFlds,
-// LogOptFlds), arrays of SDOs, Timestamp / EntryTime initial values, Log / GSE / SMV / Setting
-// control blocks. In lenient mode (default) they are skipped with a warning diagnostic, as are
+// LogOptFlds), arrays of SDOs, Timestamp / EntryTime initial values, SMV and GSSE control blocks,
+// logs of other LDs. In lenient mode (default) they are skipped with a warning diagnostic, as are
 // values that do not fit their attribute; data set members referring to a skipped attribute are
 // dropped (and a data set left empty, with the report controls using it). In strict mode any of
 // them fails the load with errc::invalid_model.

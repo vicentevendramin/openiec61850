@@ -59,6 +59,26 @@ void visit_service(const T& s) {
     (void)count(s.variables);
   } else if constexpr (std::is_same_v<T, mms::delete_named_variable_list_request>) {
     (void)count(s.names);
+  } else if constexpr (std::is_same_v<T, mms::read_journal_request>) {
+    if (s.variables) (void)count(*s.variables);
+  } else if constexpr (std::is_same_v<T, mms::read_journal_response>) {
+    for (const auto& e : s.entries) {
+      for (const auto& v : e.variables) mms_fuzz::walk(v.value.view());
+      (void)count(e.variables);
+    }
+    (void)count(s.entries);
+  } else if constexpr (std::is_same_v<T, mms::file_open_request> ||
+                       std::is_same_v<T, mms::file_delete_request>) {
+    (void)count(s.file_name);
+  } else if constexpr (std::is_same_v<T, mms::file_rename_request>) {
+    (void)count(s.current_name);
+    (void)count(s.new_name);
+  } else if constexpr (std::is_same_v<T, mms::file_directory_request>) {
+    if (s.file_specification) (void)count(*s.file_specification);
+    if (s.continue_after) (void)count(*s.continue_after);
+  } else if constexpr (std::is_same_v<T, mms::file_directory_response>) {
+    for (const auto& e : s.entries) (void)count(e.file_name);
+    (void)count(s.entries);
   }
 }
 

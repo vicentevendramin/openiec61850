@@ -558,6 +558,150 @@ asio::awaitable<result<void>> client::operate(model::object_reference object, mm
   return invoke(state_, &details, &detail::operate_once_op, std::move(object), std::move(value), std::move(options));
 }
 
+asio::awaitable<result<sgcb_values>> client::get_sgcb_values(std::string ld) {
+  return invoke(state_, nullptr, &detail::get_sgcb_values_op, std::move(ld));
+}
+
+asio::awaitable<result<sgcb_values>> client::get_sgcb_values(std::string ld, error_details& details) {
+  return invoke(state_, &details, &detail::get_sgcb_values_op, std::move(ld));
+}
+
+asio::awaitable<result<void>> client::select_active_sg(std::string ld, std::uint8_t sg) {
+  return invoke(state_, nullptr, &detail::select_active_sg_op, std::move(ld), sg);
+}
+
+asio::awaitable<result<void>> client::select_active_sg(std::string ld, std::uint8_t sg, error_details& details) {
+  return invoke(state_, &details, &detail::select_active_sg_op, std::move(ld), sg);
+}
+
+asio::awaitable<result<void>> client::select_edit_sg(std::string ld, std::uint8_t sg) {
+  return invoke(state_, nullptr, &detail::select_edit_sg_op, std::move(ld), sg);
+}
+
+asio::awaitable<result<void>> client::select_edit_sg(std::string ld, std::uint8_t sg, error_details& details) {
+  return invoke(state_, &details, &detail::select_edit_sg_op, std::move(ld), sg);
+}
+
+asio::awaitable<result<void>> client::set_edit_sg_value(model::object_reference ref, mms::data value) {
+  return invoke(state_, nullptr, &detail::set_edit_sg_value_op, std::move(ref), std::move(value));
+}
+
+asio::awaitable<result<void>> client::set_edit_sg_value(model::object_reference ref, mms::data value, error_details& details) {
+  return invoke(state_, &details, &detail::set_edit_sg_value_op, std::move(ref), std::move(value));
+}
+
+asio::awaitable<result<void>> client::confirm_edit_sg_values(std::string ld) {
+  return invoke(state_, nullptr, &detail::confirm_edit_sg_values_op, std::move(ld));
+}
+
+asio::awaitable<result<void>> client::confirm_edit_sg_values(std::string ld, error_details& details) {
+  return invoke(state_, &details, &detail::confirm_edit_sg_values_op, std::move(ld));
+}
+
+asio::awaitable<result<mms::data>> client::get_edit_sg_value(model::object_reference ref) {
+  return invoke(state_, nullptr, &detail::get_edit_sg_value_op, std::move(ref));
+}
+
+asio::awaitable<result<mms::data>> client::get_edit_sg_value(model::object_reference ref, error_details& details) {
+  return invoke(state_, &details, &detail::get_edit_sg_value_op, std::move(ref));
+}
+
+asio::awaitable<result<lcb_values>> client::get_lcb_values(model::object_reference lcb) {
+  return invoke(state_, nullptr, &detail::get_lcb_values_op, std::move(lcb));
+}
+
+asio::awaitable<result<lcb_values>> client::get_lcb_values(model::object_reference lcb, error_details& details) {
+  return invoke(state_, &details, &detail::get_lcb_values_op, std::move(lcb));
+}
+
+asio::awaitable<result<void>> client::set_lcb_values(model::object_reference lcb, lcb_settings settings) {
+  return invoke(state_, nullptr, &detail::set_lcb_values_op, std::move(lcb), std::move(settings));
+}
+
+asio::awaitable<result<void>> client::set_lcb_values(model::object_reference lcb, lcb_settings settings, error_details& details) {
+  return invoke(state_, &details, &detail::set_lcb_values_op, std::move(lcb), std::move(settings));
+}
+
+asio::awaitable<result<std::vector<log_entry>>> client::query_log_by_time(model::object_reference log, std::optional<model::entry_time> start, std::optional<model::entry_time> stop) {
+  return invoke(state_, nullptr, &detail::query_log_by_time_op, std::move(log), start, stop);
+}
+
+asio::awaitable<result<std::vector<log_entry>>> client::query_log_by_time(model::object_reference log, std::optional<model::entry_time> start, std::optional<model::entry_time> stop, error_details& details) {
+  return invoke(state_, &details, &detail::query_log_by_time_op, std::move(log), start, stop);
+}
+
+asio::awaitable<result<std::vector<log_entry>>> client::query_log_after(model::object_reference log, model::entry_time time, model::entry_id entry) {
+  return invoke(state_, nullptr, &detail::query_log_after_op, std::move(log), time, entry);
+}
+
+asio::awaitable<result<std::vector<log_entry>>> client::query_log_after(model::object_reference log, model::entry_time time, model::entry_id entry, error_details& details) {
+  return invoke(state_, &details, &detail::query_log_after_op, std::move(log), time, entry);
+}
+
+asio::awaitable<result<std::uint32_t>> client::get_log_status(model::object_reference log) {
+  return invoke(state_, nullptr, &detail::get_log_status_op, std::move(log));
+}
+
+asio::awaitable<result<std::uint32_t>> client::get_log_status(model::object_reference log, error_details& details) {
+  return invoke(state_, &details, &detail::get_log_status_op, std::move(log));
+}
+
+asio::awaitable<result<std::vector<file_entry>>> client::get_file_directory(std::string path) {
+  return invoke(state_, nullptr, &detail::get_file_directory_op, std::move(path));
+}
+
+asio::awaitable<result<std::vector<file_entry>>> client::get_file_directory(std::string path, error_details& details) {
+  return invoke(state_, &details, &detail::get_file_directory_op, std::move(path));
+}
+
+asio::awaitable<result<byte_buffer>> client::get_file(std::string name) {
+  return invoke(state_, nullptr, &detail::get_file_op, std::move(name));
+}
+
+asio::awaitable<result<byte_buffer>> client::get_file(std::string name, error_details& details) {
+  return invoke(state_, &details, &detail::get_file_op, std::move(name));
+}
+
+asio::awaitable<result<std::uint64_t>> client::get_file(std::string name, std::function<void(byte_buffer)> on_chunk) {
+  return invoke(state_, nullptr, &detail::get_file_stream_op, std::move(name), std::move(on_chunk));
+}
+
+asio::awaitable<result<std::uint64_t>> client::get_file(std::string name, std::function<void(byte_buffer)> on_chunk, error_details& details) {
+  return invoke(state_, &details, &detail::get_file_stream_op, std::move(name), std::move(on_chunk));
+}
+
+asio::awaitable<result<void>> client::delete_file(std::string name) {
+  return invoke(state_, nullptr, &detail::delete_file_op, std::move(name));
+}
+
+asio::awaitable<result<void>> client::delete_file(std::string name, error_details& details) {
+  return invoke(state_, &details, &detail::delete_file_op, std::move(name));
+}
+
+asio::awaitable<result<void>> client::rename_file(std::string from, std::string to) {
+  return invoke(state_, nullptr, &detail::rename_file_op, std::move(from), std::move(to));
+}
+
+asio::awaitable<result<void>> client::rename_file(std::string from, std::string to, error_details& details) {
+  return invoke(state_, &details, &detail::rename_file_op, std::move(from), std::move(to));
+}
+
+asio::awaitable<result<gocb_values>> client::get_gocb_values(model::object_reference gocb) {
+  return invoke(state_, nullptr, &detail::get_gocb_values_op, std::move(gocb));
+}
+
+asio::awaitable<result<gocb_values>> client::get_gocb_values(model::object_reference gocb, error_details& details) {
+  return invoke(state_, &details, &detail::get_gocb_values_op, std::move(gocb));
+}
+
+asio::awaitable<result<void>> client::set_gocb_values(model::object_reference gocb, gocb_settings settings) {
+  return invoke(state_, nullptr, &detail::set_gocb_values_op, std::move(gocb), std::move(settings));
+}
+
+asio::awaitable<result<void>> client::set_gocb_values(model::object_reference gocb, gocb_settings settings, error_details& details) {
+  return invoke(state_, &details, &detail::set_gocb_values_op, std::move(gocb), std::move(settings));
+}
+
 std::optional<model::entry_id> client::last_entry_id(const model::object_reference& rcb) const {
   if (!state_) return std::nullopt;
   const std::lock_guard lock(state_->mutex);

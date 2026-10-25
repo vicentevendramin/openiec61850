@@ -10,6 +10,7 @@
 #include <variant>
 #include <vector>
 
+#include "openiec61850/scl/address.hpp"
 #include "values.hpp"
 
 namespace openiec61850::server {
@@ -43,8 +44,9 @@ bool mappable(const scl::data_node& n) {
 
 class loader {
  public:
-  loader(const scl::instantiated_ied& ied, const scl_load_options& opts, scl::diagnostics* diags)
-      : ied_(ied), opts_(opts), diags_(diags), b_(ied.edition) {}
+  loader(const scl::instantiated_ied& ied, const scl_load_options& opts, scl::diagnostics* diags,
+         const scl::connected_ap* ap = nullptr)
+      : ied_(ied), opts_(opts), diags_(diags), ap_(ap), b_(ied.edition) {}
 
   result<data_model> run() {
     sg_ = opts_.setting_group;
@@ -100,8 +102,17 @@ class loader {
           data_sets.push_back(ds.name);
         }
         for (const auto& rc : ln.report_controls) add_report_control(lnh, ln_ref, rc, data_sets);
+        if (ln.setting) {
+          setting_group_settings sg;
+          sg.num_of_sgs = static_cast<std::uint8_t>(std::clamp<std::uint32_t>(ln.setting->num_of_sgs, 1, 255));
+          sg.act_sg = static_cast<std::uint8_t>(std::clamp<std::uint32_t>(ln.setting->act_sg, 1, sg.num_of_sgs));
+          lnh.setting_group_control(sg);
+        }
+        for (const auto& lc : ln.log_controls) add_log_control(ld, lnh, ln_ref, lc, data_sets);
+        for (const auto& gc : ln.gse_controls) add_goose_control(ld, lnh, ln_ref, gc, data_sets);
       }
     }
+    for (const auto& [key, name] : logs_) b_.logical_node_handle(key).log(name);
     if (failed_) return make_error_code(errc::invalid_model);
     return b_.build();
   }
@@ -153,7 +164,8 @@ class loader {
       }
       auto options = options_for(c, child_ref);
       if (c.type) {
-        (void)h.attribute(c.name, *c.fc, *c.type, std::move(options));
+        auto da = h.attribute(c.name, *c.fc, *c.type, std::move(options));
+        add_groups(da, c, child_ref);
       } else {
         add_components(h.structure(c.name, *c.fc, std::move(options)), c, child_ref, c.count > 0);
       }
@@ -177,7 +189,8 @@ class loader {
         options = options_for(c, child_ref);
       }
       if (c.type) {
-        (void)h.attribute(c.name, *c.type, std::move(options));
+        auto da = h.attribute(c.name, *c.type, std::move(options));
+        if (!in_array) add_groups(da, c, child_ref);
       } else {
         add_components(h.structure(c.name, std::move(options)), c, child_ref, in_array || c.count > 0);
       }
@@ -393,6 +406,93 @@ class loader {
     return std::move(*value);
   }
 
+  // FC SG leaves: the Val of every setting group.
+  void add_groups(da_handle& h, const scl::data_node& n, const std::string& ref) {
+    if (n.fc != fc::SG || !n.type || n.count > 0) return;
+    for (const auto& v : n.values) {
+      if (!v.sgroup || *v.sgroup == 0 || *v.sgroup > 255 || v.index) continue;
+      if (auto d = convert(n, v, ref)) h.group_value(*v.sgroup, std::move(*d));
+    }
+  }
+
+  // ---- log and GOOSE control blocks
+
+  void add_log_control(const scl::instantiated_ld& ld, ln_handle& lnh, const std::string& ln_ref,
+                       const scl::log_control& lc, const std::vector<std::string>& data_sets) {
+    log_control_settings s;
+    s.name = lc.name;
+    s.data_set = lc.dat_set;
+    if (!s.data_set.empty() &&
+        std::find(data_sets.begin(), data_sets.end(), s.data_set) == data_sets.end()) {
+      note(diagnostic_code::unresolved_reference, "log control " + ln_ref + "." + lc.name +
+                                                      ": data set " + lc.dat_set +
+                                                      " is not available; none configured");
+      s.data_set.clear();
+    }
+    s.log_ena = lc.log_ena;
+    s.trg_ops = lc.trg_ops;
+    s.intg_pd = lc.intg_pd;
+    if (!lc.log_name.empty()) {
+      if (!lc.ld_inst.empty() && lc.ld_inst != ld.inst) {
+        note(diagnostic_code::unresolved_reference,
+             "log control " + ln_ref + "." + lc.name + ": logs of other LDs are not supported");
+      } else {
+        const std::string log_ln = lc.prefix + lc.ln_class + lc.ln_inst;
+        const node_id id = find_ln(ld.name + "/" + log_ln);
+        if (id == no_node) {
+          note(diagnostic_code::unresolved_reference,
+               "log control " + ln_ref + "." + lc.name + ": no LN " + log_ln);
+        } else {
+          s.log_name = lc.log_name;
+          s.log_ln = log_ln;
+          if (std::find(logs_.begin(), logs_.end(), std::make_pair(id, lc.log_name)) == logs_.end()) {
+            logs_.emplace_back(id, lc.log_name);
+          }
+        }
+      }
+    }
+    lnh.log_control(std::move(s));
+  }
+
+  void add_goose_control(const scl::instantiated_ld& ld, ln_handle& lnh, const std::string& ln_ref,
+                         const scl::gse_control& gc, const std::vector<std::string>& data_sets) {
+    if (gc.type != "GOOSE") {
+      note(diagnostic_code::type_mismatch, "GSSE control " + ln_ref + "." + gc.name + " skipped");
+      return;
+    }
+    goose_control_settings s;
+    s.name = gc.name;
+    s.go_id = gc.app_id;
+    s.conf_rev = gc.conf_rev;
+    s.fixed_offs = gc.fixed_offs;
+    s.data_set = gc.dat_set;
+    if (!s.data_set.empty() &&
+        std::find(data_sets.begin(), data_sets.end(), s.data_set) == data_sets.end()) {
+      note(diagnostic_code::unresolved_reference, "GOOSE control " + ln_ref + "." + gc.name +
+                                                      ": data set " + gc.dat_set +
+                                                      " is not available; none configured");
+      s.data_set.clear();
+    }
+    if (ap_ != nullptr) {
+      for (const auto& g : ap_->gse) {
+        if (g.ld_inst != ld.inst || g.cb_name != gc.name) continue;
+        if (auto a = scl::parse_l2_address(g.addr)) {
+          s.dst_mac = a->mac;
+          s.app_id = a->app_id;
+          s.vlan_id = a->vlan_id;
+          s.vlan_priority = a->vlan_priority;
+        } else {
+          note(diagnostic_code::invalid_value,
+               "GSE address of " + ln_ref + "." + gc.name + " is invalid; defaults used");
+        }
+        s.min_time = g.min_time.value_or(0);
+        s.max_time = g.max_time.value_or(0);
+        break;
+      }
+    }
+    lnh.goose_control(std::move(s));
+  }
+
   // ---- report control blocks
 
   void add_report_control(ln_handle& lnh, const std::string& ln_ref, const scl::report_control& rc,
@@ -438,7 +538,9 @@ class loader {
   const scl::instantiated_ied& ied_;
   const scl_load_options& opts_;
   scl::diagnostics* diags_;
+  const scl::connected_ap* ap_;
   model_builder b_;
+  std::vector<std::pair<node_id, std::string>> logs_;
   std::uint32_t sg_ = 1;
   std::vector<std::string> skipped_;
   std::map<std::string, node_id, std::less<>> ln_ids_;
@@ -457,7 +559,7 @@ result<data_model> load_model(const scl::document& doc, std::string_view ied,
   }
   auto inst = scl::instantiate(doc, name, access_point, diags, options.instantiate);
   if (!inst) return inst.error();
-  loader l(*inst, options, diags);
+  loader l(*inst, options, diags, doc.comm.find(inst->name, inst->access_point));
   return l.run();
 }
 

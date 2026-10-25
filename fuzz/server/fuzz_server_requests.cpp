@@ -1,5 +1,6 @@
 // Feeds MMS PDUs to the server's request dispatcher (no network): every confirmed request is
-// served against a small model, as if received on one association, and the reply is encoded.
+// served against a small model (with setting groups, a log, a GoCB and an in-memory file store),
+// as if received on one association, and the reply is encoded.
 
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <asio/io_context.hpp>
 
 #include "../../src/server/detail.hpp"
+#include "openiec61850/server/files.hpp"
 #include "openiec61850/server/model.hpp"
 
 namespace srv = openiec61850::server;
@@ -76,6 +78,26 @@ srv::data_model make_model() {
   u1.buffered = false;
   u1.buf_tm = 0;
   lln0.report_control(u1);
+  // Setting groups, a log with its LCB, and a GoCB.
+  ggio.data_object("Set").attribute("v", fc::SG, basic_type::int32)
+      .group_value(1, mms::data::integer(1))
+      .group_value(2, mms::data::integer(2));
+  srv::setting_group_settings sg;
+  sg.num_of_sgs = 2;
+  sg.resv_tms = 1;
+  lln0.setting_group_control(sg);
+  lln0.log("Log");
+  srv::log_control_settings lc;
+  lc.name = "lcb01";
+  lc.data_set = "DS1";
+  lc.log_name = "Log";
+  lc.log_ena = true;
+  lc.trg_ops = model::trigger_conditions::from_raw(0x7E);
+  lln0.log_control(lc);
+  srv::goose_control_settings gc;
+  gc.name = "gcb01";
+  gc.data_set = "DS1";
+  lln0.goose_control(gc);
   return *b.build();
 }
 
@@ -100,6 +122,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       default: return srv::control_result::ok();
     }
   };
+  auto files = std::make_shared<srv::memory_file_store>();
+  (void)files->put("dir/a.txt", openiec61850::byte_buffer(3000, 0x41));
+  (void)files->put("b.bin", {1, 2, 3});
+  opts.files = files;
+  opts.log_capacity = 4;
   auto st = detail::make_offline_state(ctx.get_executor(), shared_model(), opts);
   if (!st) return 0;
   detail::session s((*st)->strand);

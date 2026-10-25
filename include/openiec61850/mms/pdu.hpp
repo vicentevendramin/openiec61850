@@ -49,8 +49,11 @@
 //   write [5] IMPLICIT, getVariableAccessAttributes [6] (request: explicit tag around the
 //   CHOICE; response IMPLICIT), defineNamedVariableList [11] IMPLICIT (response NULL),
 //   getNamedVariableListAttributes [12] (request: explicit tag around ObjectName; response
-//   IMPLICIT), deleteNamedVariableList [13] IMPLICIT.
-// Any other service (e.g. the file services) decodes to `other_service` with its raw encoding,
+//   IMPLICIT), deleteNamedVariableList [13] IMPLICIT, readJournal [65] IMPLICIT,
+//   initializeJournal [67] IMPLICIT, reportJournalStatus [68] (request: explicit tag around
+//   ObjectName; response IMPLICIT), fileOpen [72], fileRead [73], fileClose [74], fileRename [75],
+//   fileDelete [76], fileDirectory [77] (all IMPLICIT).
+// Any other service (e.g. obtainFile) decodes to `other_service` with its raw encoding,
 // so a server can answer with a reject (unrecognized-service) and new services can be added
 // without changing the PDU layout. The listOfModifier and service-ext fields are carried opaque.
 //
@@ -249,6 +252,19 @@ inline constexpr support_options iec61850_services{
      service_bit::get_variable_access_attributes, service_bit::define_named_variable_list,
      service_bit::get_named_variable_list_attributes, service_bit::delete_named_variable_list,
      service_bit::information_report, service_bit::conclude, service_bit::cancel}};
+
+// iec61850_services plus the journal (readJournal, initializeJournal, reportJournalStatus) and
+// file services (fileOpen ... fileDirectory) implemented by the server.
+inline constexpr support_options iec61850_server_services{
+    service_bit::bit_count,
+    {service_bit::get_name_list, service_bit::identify, service_bit::read, service_bit::write,
+     service_bit::get_variable_access_attributes, service_bit::define_named_variable_list,
+     service_bit::get_named_variable_list_attributes, service_bit::delete_named_variable_list,
+     service_bit::read_journal, service_bit::initialize_journal,
+     service_bit::report_journal_status, service_bit::file_open, service_bit::file_read,
+     service_bit::file_close, service_bit::file_rename, service_bit::file_delete,
+     service_bit::file_directory, service_bit::information_report, service_bit::conclude,
+     service_bit::cancel}};
 
 struct init_detail {
   std::int16_t version_number = 1;
@@ -632,17 +648,206 @@ struct delete_named_variable_list_response {
   std::uint32_t number_deleted = 0;
 };
 
+// ---------------------------------------------------------------------------------------------
+// Journal services (ISO 9506-2 §19 "Journal management"; IEC 61850-8-1 §17.3 maps the ACSI log
+// onto them). TimeOfDay fields are the 4- or 6-octet form of mms::binary_time.
+
+//   ReadJournal-Request ::= SEQUENCE {
+//     journalName             [0] ObjectName,
+//     rangeStartSpecification [1] CHOICE { startingTime [0] IMPLICIT TimeOfDay,
+//                                          startingEntry [1] IMPLICIT OCTET STRING } OPTIONAL,
+//     rangeStopSpecification  [2] CHOICE { endingTime [0] IMPLICIT TimeOfDay,
+//                                          numberOfEntries [1] IMPLICIT Integer32 } OPTIONAL,
+//     listOfVariables         [4] IMPLICIT SEQUENCE OF VisibleString OPTIONAL,
+//     entryToStartAfter       [5] IMPLICIT SEQUENCE { timeSpecification [0] IMPLICIT TimeOfDay,
+//                                                     entrySpecification [1] IMPLICIT OCTET STRING }
+//                                 OPTIONAL }
+// At most one of each starting_* / ending_* pair may be set (encoding fails with
+// errc::invalid_state otherwise).
+struct journal_start_after {
+  binary_time time;
+  byte_view entry;
+};
+
+struct read_journal_request {
+  object_name journal_name;
+  std::optional<binary_time> starting_time;
+  std::optional<byte_view> starting_entry;
+  std::optional<binary_time> ending_time;
+  std::optional<std::int32_t> number_of_entries;
+  std::optional<list_view<std::string_view>> variables;
+  std::optional<journal_start_after> start_after;
+};
+
+//   Journal-Variable ::= SEQUENCE { variableTag [0] IMPLICIT MMS255String,
+//                                   valueSpecification [1] Data }
+struct journal_variable {
+  std::string_view tag;
+  data_ref value;
+};
+
+//   JournalEntry ::= SEQUENCE {
+//     entryIdentifier        [0] IMPLICIT OCTET STRING,
+//     originatingApplication [1] ApplicationReference,
+//     entryContent           [2] IMPLICIT EntryContent }
+//   EntryContent ::= SEQUENCE {
+//     occurrenceTime   [0] IMPLICIT TimeOfDay,
+//     additionalDetail [1] ... OPTIONAL,              -- skipped when decoding, never encoded
+//     entryForm CHOICE {
+//       data [2] IMPLICIT SEQUENCE {
+//         event [0] IMPLICIT SEQUENCE { ... } OPTIONAL,  -- carried opaque
+//         listOfVariables [1] IMPLICIT SEQUENCE OF Journal-Variable OPTIONAL },
+//       annotation [3] MMSString } }
+// `originating_application` holds the contents of [1] (an ApplicationReference SEQUENCE); when
+// empty an empty SEQUENCE is encoded. An annotation entry has `annotation` set.
+struct journal_entry {
+  byte_view entry_id;
+  byte_view originating_application;
+  binary_time occurrence_time;
+  byte_view event;  // contents of event [0]; empty when absent
+  list_view<journal_variable> variables;
+  std::optional<std::string_view> annotation;
+};
+
+//   ReadJournal-Response ::= SEQUENCE {
+//     listOfJournalEntry [0] IMPLICIT SEQUENCE OF JournalEntry,
+//     moreFollows        [1] IMPLICIT BOOLEAN DEFAULT FALSE }
+struct read_journal_response {
+  list_view<journal_entry> entries;
+  bool more_follows = false;
+};
+
+//   InitializeJournal-Request ::= SEQUENCE {
+//     journalName        [0] ObjectName,
+//     limitSpecification [1] IMPLICIT SEQUENCE { limitingTime [0] IMPLICIT TimeOfDay,
+//                                                limitingEntry [1] IMPLICIT OCTET STRING OPTIONAL }
+//                            OPTIONAL }
+//   InitializeJournal-Response ::= Unsigned32  -- entries deleted
+struct initialize_journal_request {
+  object_name journal_name;
+  std::optional<binary_time> limiting_time;
+  std::optional<byte_view> limiting_entry;  // requires limiting_time
+};
+
+struct initialize_journal_response {
+  std::uint32_t deleted = 0;
+};
+
+//   ReportJournalStatus-Request ::= ObjectName
+//   ReportJournalStatus-Response ::= SEQUENCE { currentEntries [0] IMPLICIT Unsigned32,
+//     mmsDeletable [1] IMPLICIT BOOLEAN, accessControlList [2] IMPLICIT Identifier OPTIONAL }
+struct report_journal_status_request {
+  object_name journal_name;
+};
+
+struct report_journal_status_response {
+  std::uint32_t current_entries = 0;
+  bool mms_deletable = false;
+};
+
+// ---------------------------------------------------------------------------------------------
+// File services (ISO 9506-2 Annex C "File access"; IEC 61850-8-1 §23 maps the ACSI file
+// transfer onto them). obtainFile is not implemented (it decodes as other_service).
+//
+//   FileName ::= SEQUENCE OF GraphicString   -- a VisibleString is accepted too
+//   FileAttributes ::= SEQUENCE { sizeOfFile [0] IMPLICIT Unsigned32,
+//                                 lastModified [1] IMPLICIT GeneralizedTime OPTIONAL }
+
+struct file_attributes {
+  std::uint32_t size = 0;
+  std::optional<std::string_view> last_modified;  // GeneralizedTime text, e.g. "20240101120000Z"
+};
+
+//   FileOpen-Request ::= SEQUENCE { fileName [0] IMPLICIT FileName,
+//                                   initialPosition [1] IMPLICIT Unsigned32 }
+//   FileOpen-Response ::= SEQUENCE { frsmID [0] IMPLICIT Integer32,
+//                                    fileAttributes [1] IMPLICIT FileAttributes }
+struct file_open_request {
+  list_view<std::string_view> file_name;
+  std::uint32_t initial_position = 0;
+};
+
+struct file_open_response {
+  std::int32_t frsm_id = 0;
+  file_attributes attributes;
+};
+
+//   FileRead-Request ::= Integer32  -- FRSM ID
+//   FileRead-Response ::= SEQUENCE { fileData [0] IMPLICIT OCTET STRING,
+//                                    moreFollows [1] IMPLICIT BOOLEAN DEFAULT TRUE }
+struct file_read_request {
+  std::int32_t frsm_id = 0;
+};
+
+struct file_read_response {
+  byte_view data;
+  bool more_follows = true;
+};
+
+//   FileClose-Request ::= Integer32  -- FRSM ID;  FileClose-Response ::= NULL
+struct file_close_request {
+  std::int32_t frsm_id = 0;
+};
+
+struct file_close_response {};
+
+//   FileRename-Request ::= SEQUENCE { currentFileName [0] IMPLICIT FileName,
+//                                     newFileName [1] IMPLICIT FileName }
+//   FileRename-Response ::= NULL
+struct file_rename_request {
+  list_view<std::string_view> current_name;
+  list_view<std::string_view> new_name;
+};
+
+struct file_rename_response {};
+
+//   FileDelete-Request ::= FileName;  FileDelete-Response ::= NULL
+struct file_delete_request {
+  list_view<std::string_view> file_name;
+};
+
+struct file_delete_response {};
+
+//   FileDirectory-Request ::= SEQUENCE { fileSpecification [0] IMPLICIT FileName OPTIONAL,
+//                                        continueAfter [1] IMPLICIT FileName OPTIONAL }
+//   FileDirectory-Response ::= SEQUENCE {
+//     listOfDirectoryEntry [0] SEQUENCE OF DirectoryEntry,   -- explicit tag
+//     moreFollows          [1] IMPLICIT BOOLEAN DEFAULT FALSE }
+//   DirectoryEntry ::= SEQUENCE { fileName [0] IMPLICIT FileName,
+//                                 fileAttributes [1] IMPLICIT FileAttributes }
+struct file_directory_request {
+  std::optional<list_view<std::string_view>> file_specification;
+  std::optional<list_view<std::string_view>> continue_after;
+};
+
+struct directory_entry {
+  list_view<std::string_view> file_name;
+  file_attributes attributes;
+};
+
+struct file_directory_response {
+  list_view<directory_entry> entries;
+  bool more_follows = false;
+};
+
+// The alternatives after other_service were added later; existing indices are unchanged.
 using confirmed_service_request =
     std::variant<identify_request, get_name_list_request, read_request, write_request,
                  get_variable_access_attributes_request, get_named_variable_list_attributes_request,
                  define_named_variable_list_request, delete_named_variable_list_request,
-                 other_service>;
+                 other_service, read_journal_request, initialize_journal_request,
+                 report_journal_status_request, file_open_request, file_read_request,
+                 file_close_request, file_rename_request, file_delete_request,
+                 file_directory_request>;
 
 using confirmed_service_response =
     std::variant<identify_response, get_name_list_response, read_response, write_response,
                  get_variable_access_attributes_response,
                  get_named_variable_list_attributes_response, define_named_variable_list_response,
-                 delete_named_variable_list_response, other_service>;
+                 delete_named_variable_list_response, other_service, read_journal_response,
+                 initialize_journal_response, report_journal_status_response, file_open_response,
+                 file_read_response, file_close_response, file_rename_response,
+                 file_delete_response, file_directory_response>;
 
 // The CHOICE tag of a service (other_service: its tag).
 [[nodiscard]] std::uint32_t service_tag(const confirmed_service_request& s) noexcept;

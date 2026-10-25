@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -131,6 +132,84 @@ struct rcb {
   bool pump_posted = false;
 };
 
+// The SGCB of a logical device (7-2 §16). The values of the active group live in
+// server_state::values (so reads, reports and logs need nothing special); every group is also
+// kept in `groups`, and the edit buffer in `edit_values`.
+struct sgcb {
+  explicit sgcb(const strand_type& s) : resv_timer(s) {}
+
+  node_id node = no_node;
+  node_id ld = no_node;
+  std::map<std::string, node_id, std::less<>> attrs;
+  std::uint8_t num = 1;
+  std::uint8_t act = 1;
+  std::uint8_t edit = 0;
+  std::uint16_t resv_tms = 0;
+  model::timestamp lact_tm;
+  std::uint64_t owner = 0;  // session holding the edit buffer
+  std::vector<node_id> holders;  // FC SG value-holding nodes of the LD
+  std::unordered_map<node_id, std::size_t> index;  // holder -> position
+  std::vector<std::vector<mms::data>> groups;      // [group - 1][position]
+  std::vector<mms::data> edit_values;              // [position]
+  std::uint64_t resv_gen = 0;
+  asio::steady_timer resv_timer;
+};
+
+// One logged data value (8-1 §17.3.3: a Journal-Variable with the data reference, followed by
+// one tagged "ReasonCode").
+struct logged_value {
+  std::string reference;  // "LD/LN$FC$DO$DA"
+  mms::data value;
+  model::trigger_conditions reason;
+};
+
+struct log_entry {
+  model::entry_id id;
+  model::entry_time time{0, std::uint16_t{0}};
+  std::vector<logged_value> values;
+};
+
+// A log (MMS journal "LN$name" of the LD's domain).
+struct log_store {
+  std::string domain;
+  std::string item;
+  std::deque<log_entry> entries;
+};
+
+struct lcb {
+  explicit lcb(const strand_type& s) : intg_timer(s) {}
+
+  node_id node = no_node;
+  node_id ln = no_node;
+  std::map<std::string, node_id, std::less<>> attrs;
+  bool ena = false;
+  std::string log_ref;  // "LD/LN$Log"; empty: none
+  log_store* log = nullptr;
+  std::string dat_set;
+  std::shared_ptr<data_set> ds;
+  model::trigger_conditions trg;
+  std::uint32_t intg_pd = 0;
+  std::uint64_t intg_gen = 0;
+  asio::steady_timer intg_timer;
+};
+
+struct gocb {
+  node_id node = no_node;
+  node_id ln = no_node;
+  std::map<std::string, node_id, std::less<>> attrs;
+  model::object_reference reference;
+  goose_control_settings live;
+  std::string dat_set;
+  std::shared_ptr<data_set> ds;
+};
+
+// A file open by FileOpen (ISO 9506-2 file read state machine).
+struct open_file {
+  std::string path;
+  std::uint64_t position = 0;
+  std::uint64_t size = 0;
+};
+
 struct session {
   explicit session(const strand_type& s) : wake(s, clock::time_point::max()) {}
 
@@ -143,6 +222,8 @@ struct session {
   asio::steady_timer wake;
   bool closed = false;
   std::map<std::string, std::shared_ptr<data_set>, std::less<>> aa_sets;
+  std::map<std::int32_t, open_file> files;  // by FRSM ID
+  std::int32_t next_frsm = 1;
 
   void push(asio::awaitable<result<void>> a) {
     if (closed || !assoc) return;
@@ -169,6 +250,12 @@ struct reply {
   std::vector<mms::access_result> results;
   std::vector<mms::write_result> writes;
   std::vector<mms::variable_spec> specs;
+  std::vector<mms::journal_entry> journal;
+  std::deque<std::vector<mms::journal_variable>> journal_vars;
+  std::vector<mms::directory_entry> directory;
+  std::deque<std::vector<std::string_view>> file_names;
+  std::deque<std::array<std::uint8_t, 8>> ids;
+  byte_buffer bytes;
 
   void fail(mms::error_class c, std::int64_t code) {
     type = kind::error;
@@ -263,6 +350,15 @@ struct server_state : std::enable_shared_from_this<server_state> {
   std::map<node_id, execution> executions;  // controllable DO -> operation in progress
   std::uint64_t next_control_gen = 0;
 
+  std::vector<std::unique_ptr<sgcb>> sgcbs;
+  std::unordered_map<node_id, sgcb*> sgcb_of;         // SGCB node -> sgcb
+  std::unordered_map<node_id, sgcb*> sgcb_of_holder;  // FC SG holder -> sgcb
+  std::map<std::pair<std::string, std::string>, std::unique_ptr<log_store>> logs;
+  std::vector<std::unique_ptr<lcb>> lcbs;
+  std::unordered_map<node_id, lcb*> lcb_of;
+  std::vector<std::unique_ptr<gocb>> gocbs;
+  std::unordered_map<node_id, gocb*> gocb_of;
+
   // --- setup (server.cpp)
   result<void> init();
 
@@ -307,6 +403,47 @@ struct server_state : std::enable_shared_from_this<server_state> {
   void release_session_rcbs(session& s);
   void data_set_deleted(const std::shared_ptr<data_set>& ds);
   [[nodiscard]] report_entry snapshot_all(rcb& r, model::trigger_conditions reason);
+
+  // --- setting groups (setting_groups.cpp)
+  void init_sgcb(const setting_group_definition& def);
+  void sync(sgcb& g);
+  std::optional<dae> write_sgcb(session& s, sgcb& g, std::string_view attr, const mms::data& v);
+  // A write to the edit buffer ("$SE$" of an FC SG attribute).
+  std::optional<dae> write_edit(session& s, const target& t, const mms::data& v);
+  // The edit buffer value for a holder (the active value when no edit is in progress).
+  [[nodiscard]] const mms::data& edit_value(node_id holder) const;
+  void activate_group(sgcb& g, std::uint8_t sg);
+  void release_edit(sgcb& g);
+  void setting_groups_session_closed(session& s);
+  // After apply(): keeps the stored active group in step with values.
+  void store_active(node_id holder);
+
+  // --- logs (logging.cpp)
+  void init_logs();
+  void sync(lcb& l);
+  std::optional<dae> write_lcb(session& s, lcb& l, std::string_view attr, const mms::data& v);
+  // Logs the changes of one apply() (one entry per LCB).
+  void log_changes(const std::vector<std::pair<node_id, model::trigger_conditions>>& changes);
+  void log_integrity(lcb& l);
+  void start_log_integrity(lcb& l);
+  void add_log_entry(lcb& l, std::vector<logged_value> values);
+  void dispatch_ext(session& s, const mms::read_journal_request& r, reply& out);
+  void dispatch_ext(session& s, const mms::initialize_journal_request& r, reply& out);
+  void dispatch_ext(session& s, const mms::report_journal_status_request& r, reply& out);
+
+  // --- GOOSE control blocks (goose_control.cpp)
+  void init_gocb(const goose_control_definition& def);
+  void sync(gocb& g);
+  std::optional<dae> write_gocb(session& s, gocb& g, std::string_view attr, const mms::data& v);
+  [[nodiscard]] goose_control_state state_of(const gocb& g) const;
+
+  // --- files (file_services.cpp)
+  void dispatch_ext(session& s, const mms::file_open_request& r, reply& out);
+  void dispatch_ext(session& s, const mms::file_read_request& r, reply& out);
+  void dispatch_ext(session& s, const mms::file_close_request& r, reply& out);
+  void dispatch_ext(session& s, const mms::file_rename_request& r, reply& out);
+  void dispatch_ext(session& s, const mms::file_delete_request& r, reply& out);
+  void dispatch_ext(session& s, const mms::file_directory_request& r, reply& out);
 
   // --- control (control.cpp)
   // Returns true when the target is handled by the control model (CO data objects).

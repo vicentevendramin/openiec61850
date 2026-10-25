@@ -120,7 +120,10 @@ namespace {
 
 mms::data build(const server_state& s, node_id id, std::optional<model::functional_constraint> f) {
   const auto& n = s.at(id);
-  if (n.holds_value()) return s.values[id];
+  if (n.holds_value()) {
+    if (f == fc::SE && n.fc == fc::SG) return s.edit_value(id);
+    return s.values[id];
+  }
   std::vector<mms::data> comps;
   if (n.kind == node_kind::logical_node && !f) {
     for (std::size_t i = 0; i < model::functional_constraint_count; ++i) {
@@ -141,7 +144,8 @@ mms::data build(const server_state& s, node_id id, std::optional<model::function
 
 result<mms::data> server_state::value_of(const target& t) const {
   if (t.path.empty()) return build(*this, t.node, t.fc);
-  const mms::data* cur = &values[t.node];
+  const mms::data* cur = t.fc == fc::SE && at(t.node).fc == fc::SG ? &edit_value(t.node)
+                                                                     : &values[t.node];
   for (const auto& sel : t.path) {
     const auto elems = cur->elements();
     if (sel.value >= elems.size()) return not_found();
@@ -242,6 +246,12 @@ void server_state::apply(std::vector<assignment> plan_items) {
   for (const auto& c : changes) {
     if (!c.reasons.empty()) on_change(c.holder, c.reasons);
   }
+  std::vector<std::pair<node_id, model::trigger_conditions>> logged;
+  for (const auto& c : changes) {
+    store_active(c.holder);
+    if (!c.reasons.empty()) logged.emplace_back(c.holder, c.reasons);
+  }
+  if (!logged.empty() && !lcbs.empty()) log_changes(logged);
 }
 
 result<model::object_reference> server_state::acsi_reference(const target& t) const {

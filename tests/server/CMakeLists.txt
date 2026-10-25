@@ -4,4 +4,5 @@ target_sources(openiec61850_tests PRIVATE
   test_model.cpp
   test_reporting.cpp
   test_scl_model.cpp
-  test_server.cpp)
+  test_server.cpp
+  test_services_ext.cpp)

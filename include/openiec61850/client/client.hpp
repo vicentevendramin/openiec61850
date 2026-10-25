@@ -55,9 +55,8 @@ struct client_state;
 // CommandTermination InformationReports are routed to the control handles of this client; those
 // for objects without a handle are discarded.
 //
-// Not implemented yet (extension points): setting groups (§16), logs (§17.3), files (§23),
-// GOOSE/SV control blocks beyond their names in the LN directory. They will be further members
-// using the same request path.
+// Setting groups (§16), logs (§17.3, MMS journals), files (§23, MMS file services) and GoCB
+// attributes (§18) are members below. SV control blocks are only listed in the LN directory.
 class client {
  public:
   using executor_type = asio::strand<asio::any_io_executor>;
@@ -169,6 +168,62 @@ class client {
                                                       control_options options = {});
 
 
+  // --- setting groups (7-2 §16, 8-1 §16), on the SGCB "ld/LLN0.SGCB[SP]"
+
+  // GetSGCBValues.
+  [[nodiscard]] asio::awaitable<result<sgcb_values>> get_sgcb_values(std::string ld);
+  // SelectActiveSG: Write ActSG.
+  [[nodiscard]] asio::awaitable<result<void>> select_active_sg(std::string ld, std::uint8_t sg);
+  // SelectEditSG: Write EditSG (0 releases the edit buffer).
+  [[nodiscard]] asio::awaitable<result<void>> select_edit_sg(std::string ld, std::uint8_t sg);
+  // SetEditSGValue: Write of an FC SE reference (openiec61850::errc::invalid_state otherwise).
+  [[nodiscard]] asio::awaitable<result<void>> set_edit_sg_value(model::object_reference ref,
+                                                                mms::data value);
+  // ConfirmEditSGValues: Write CnfEdit = true.
+  [[nodiscard]] asio::awaitable<result<void>> confirm_edit_sg_values(std::string ld);
+  // GetEditSGValue: Read of an FC SE or SG reference (invalid_state otherwise).
+  [[nodiscard]] asio::awaitable<result<mms::data>> get_edit_sg_value(model::object_reference ref);
+
+  // --- logs (7-2 §17.3, 8-1 §17.3). `lcb` is "LD/LN.name[LG]"; `log` is "LD/LN.LogName" (the
+  // MMS journal "LN$LogName" of domain LD).
+
+  [[nodiscard]] asio::awaitable<result<lcb_values>> get_lcb_values(model::object_reference lcb);
+  // Stops at the first failing attribute.
+  [[nodiscard]] asio::awaitable<result<void>> set_lcb_values(model::object_reference lcb,
+                                                             lcb_settings settings);
+  // QueryLogByTime: the entries from `start` to `stop` (unset: open ended), following
+  // moreFollows with entryToStartAfter.
+  [[nodiscard]] asio::awaitable<result<std::vector<log_entry>>> query_log_by_time(
+      model::object_reference log, std::optional<model::entry_time> start,
+      std::optional<model::entry_time> stop);
+  // QueryLogAfter: the entries after the one identified by `entry` / `time` (the time is used
+  // when the server no longer has the entry).
+  [[nodiscard]] asio::awaitable<result<std::vector<log_entry>>> query_log_after(
+      model::object_reference log, model::entry_time time, model::entry_id entry);
+  // GetLogStatus (ReportJournalStatus): the number of entries in the log.
+  [[nodiscard]] asio::awaitable<result<std::uint32_t>> get_log_status(model::object_reference log);
+
+  // --- files (7-2 §23, 8-1 §23). Names are '/'-separated paths sent as one GraphicString.
+
+  // GetServerDirectory(FILE) / FileDirectory, following moreFollows; `path` empty: everything.
+  [[nodiscard]] asio::awaitable<result<std::vector<file_entry>>> get_file_directory(
+      std::string path = {});
+  // GetFile: FileOpen, FileRead until moreFollows is false, FileClose.
+  [[nodiscard]] asio::awaitable<result<byte_buffer>> get_file(std::string name);
+  // Streaming GetFile: each chunk is handed to `on_chunk` (on the client strand; it must not
+  // block nor throw) as it arrives. Returns the number of octets read.
+  [[nodiscard]] asio::awaitable<result<std::uint64_t>> get_file(
+      std::string name, std::function<void(byte_buffer)> on_chunk);
+  [[nodiscard]] asio::awaitable<result<void>> delete_file(std::string name);
+  [[nodiscard]] asio::awaitable<result<void>> rename_file(std::string from, std::string to);
+
+  // --- GOOSE control blocks (7-2 §18.2, 8-1 §18.1). `gocb` is "LD/LN.name[GO]".
+
+  [[nodiscard]] asio::awaitable<result<gocb_values>> get_gocb_values(model::object_reference gocb);
+  // Stops at the first failing attribute.
+  [[nodiscard]] asio::awaitable<result<void>> set_gocb_values(model::object_reference gocb,
+                                                              gocb_settings settings);
+
   // --- the services with error details (client/error_details.hpp)
 
   // Each behaves exactly like the overload without `details` and also fills it: the
@@ -197,6 +252,24 @@ class client {
   [[nodiscard]] asio::awaitable<result<void>> trigger_gi(model::object_reference rcb, error_details& details);
   [[nodiscard]] asio::awaitable<result<control>> get_control(model::object_reference object, control_config config, error_details& details);
   [[nodiscard]] asio::awaitable<result<void>> operate(model::object_reference object, mms::data value, control_options options, error_details& details);
+  [[nodiscard]] asio::awaitable<result<sgcb_values>> get_sgcb_values(std::string ld, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> select_active_sg(std::string ld, std::uint8_t sg, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> select_edit_sg(std::string ld, std::uint8_t sg, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> set_edit_sg_value(model::object_reference ref, mms::data value, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> confirm_edit_sg_values(std::string ld, error_details& details);
+  [[nodiscard]] asio::awaitable<result<mms::data>> get_edit_sg_value(model::object_reference ref, error_details& details);
+  [[nodiscard]] asio::awaitable<result<lcb_values>> get_lcb_values(model::object_reference lcb, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> set_lcb_values(model::object_reference lcb, lcb_settings settings, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<log_entry>>> query_log_by_time(model::object_reference log, std::optional<model::entry_time> start, std::optional<model::entry_time> stop, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<log_entry>>> query_log_after(model::object_reference log, model::entry_time time, model::entry_id entry, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::uint32_t>> get_log_status(model::object_reference log, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::vector<file_entry>>> get_file_directory(std::string path, error_details& details);
+  [[nodiscard]] asio::awaitable<result<byte_buffer>> get_file(std::string name, error_details& details);
+  [[nodiscard]] asio::awaitable<result<std::uint64_t>> get_file(std::string name, std::function<void(byte_buffer)> on_chunk, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> delete_file(std::string name, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> rename_file(std::string from, std::string to, error_details& details);
+  [[nodiscard]] asio::awaitable<result<gocb_values>> get_gocb_values(model::object_reference gocb, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> set_gocb_values(model::object_reference gocb, gocb_settings settings, error_details& details);
 
   // The EntryID of the last report received for a BRCB enabled with enable_reporting().
   [[nodiscard]] std::optional<model::entry_id> last_entry_id(

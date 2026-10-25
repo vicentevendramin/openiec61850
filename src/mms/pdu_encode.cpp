@@ -1,3 +1,5 @@
+#include <array>
+#include <iterator>
 #include <type_traits>
 
 #include "detail.hpp"
@@ -265,6 +267,248 @@ result<void> put_response(ber::writer& w, const other_service& s) {
   return {};
 }
 
+// ----- journal services -----
+
+void write_time_of_day(ber::writer& w, ber::tag t, const binary_time& v) {
+  std::array<std::uint8_t, 6> b{};
+  for (std::size_t i = 0; i < 4; ++i) b[i] = static_cast<std::uint8_t>(v.ms_of_day >> (24 - 8 * i));
+  std::size_t n = 4;
+  if (v.days) {
+    b[4] = static_cast<std::uint8_t>(*v.days >> 8);
+    b[5] = static_cast<std::uint8_t>(*v.days);
+    n = 6;
+  }
+  w.write_tlv(t, byte_view{b.data(), n});
+}
+
+result<void> write_strings(ber::writer& w, ber::tag t, const list_view<std::string_view>& l,
+                           ber::tag element) {
+  return write_list(w, t, l, [&](std::string_view s) -> result<void> {
+    w.write_tlv(element, detail::as_bytes(s));
+    return {};
+  });
+}
+
+result<void> write_file_name(ber::writer& w, ber::tag t, const list_view<std::string_view>& l) {
+  return write_strings(w, t, l, ber::tags::graphic_string);
+}
+
+void write_file_attributes(ber::writer& w, ber::tag t, const file_attributes& a) {
+  const auto m = w.begin(t);
+  w.write_unsigned(a.size, context(0));
+  if (a.last_modified) w.write_generalized_time(*a.last_modified, context(1));
+  w.end(m);
+}
+
+result<void> put_request(ber::writer& w, const read_journal_request& r) {
+  if ((r.starting_time && r.starting_entry) || (r.ending_time && r.number_of_entries)) {
+    return errc::invalid_state;
+  }
+  const auto m = w.begin(service(confirmed_service::read_journal));
+  write_wrapped_name(w, context(0, true), r.journal_name);
+  if (r.starting_time || r.starting_entry) {
+    const auto s = w.begin(context(1, true));
+    if (r.starting_time) {
+      write_time_of_day(w, context(0), *r.starting_time);
+    } else {
+      w.write_octet_string(*r.starting_entry, context(1));
+    }
+    w.end(s);
+  }
+  if (r.ending_time || r.number_of_entries) {
+    const auto s = w.begin(context(2, true));
+    if (r.ending_time) {
+      write_time_of_day(w, context(0), *r.ending_time);
+    } else {
+      w.write_integer(*r.number_of_entries, context(1));
+    }
+    w.end(s);
+  }
+  if (r.variables) {
+    if (auto e = write_strings(w, context(4, true), *r.variables, ber::tags::visible_string); !e) {
+      return e;
+    }
+  }
+  if (r.start_after) {
+    const auto s = w.begin(context(5, true));
+    write_time_of_day(w, context(0), r.start_after->time);
+    w.write_octet_string(r.start_after->entry, context(1));
+    w.end(s);
+  }
+  w.end(m);
+  return {};
+}
+
+result<void> put_request(ber::writer& w, const initialize_journal_request& r) {
+  if (r.limiting_entry && !r.limiting_time) return errc::invalid_state;
+  const auto m = w.begin(service(confirmed_service::initialize_journal));
+  write_wrapped_name(w, context(0, true), r.journal_name);
+  if (r.limiting_time) {
+    const auto s = w.begin(context(1, true));
+    write_time_of_day(w, context(0), *r.limiting_time);
+    if (r.limiting_entry) w.write_octet_string(*r.limiting_entry, context(1));
+    w.end(s);
+  }
+  w.end(m);
+  return {};
+}
+
+result<void> put_request(ber::writer& w, const report_journal_status_request& r) {
+  write_wrapped_name(w, service(confirmed_service::report_journal_status), r.journal_name);
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const read_journal_response& r) {
+  const auto m = w.begin(service(confirmed_service::read_journal));
+  auto e = write_list(w, context(0, true), r.entries, [&](const journal_entry& j) -> result<void> {
+    const auto seq = w.begin(ber::tags::sequence);
+    w.write_octet_string(j.entry_id, context(0));
+    if (j.originating_application.empty()) {
+      const auto app = w.begin(context(1, true));
+      w.write_tlv(ber::tags::sequence, {});
+      w.end(app);
+    } else {
+      w.write_tlv(context(1, true), j.originating_application);
+    }
+    const auto content = w.begin(context(2, true));
+    write_time_of_day(w, context(0), j.occurrence_time);
+    if (j.annotation) {
+      const auto a = w.begin(context(3, true));
+      w.write_utf8_string(*j.annotation);
+      w.end(a);
+    } else {
+      const auto data = w.begin(context(2, true));
+      if (!j.event.empty()) w.write_tlv(context(0, true), j.event);
+      if (!j.variables.empty()) {
+        auto ve = write_list(w, context(1, true), j.variables,
+                             [&](const journal_variable& v) -> result<void> {
+                               const auto var = w.begin(ber::tags::sequence);
+                               w.write_utf8_string(v.tag, context(0));
+                               const auto val = w.begin(context(1, true));
+                               if (auto r2 = v.value.encode(w); !r2) return r2;
+                               w.end(val);
+                               w.end(var);
+                               return {};
+                             });
+        if (!ve) return ve;
+      }
+      w.end(data);
+    }
+    w.end(content);
+    w.end(seq);
+    return {};
+  });
+  if (!e) return e;
+  if (r.more_follows) w.write_boolean(true, context(1));
+  w.end(m);
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const initialize_journal_response& r) {
+  w.write_unsigned(r.deleted, service(confirmed_service::initialize_journal, false));
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const report_journal_status_response& r) {
+  const auto m = w.begin(service(confirmed_service::report_journal_status));
+  w.write_unsigned(r.current_entries, context(0));
+  w.write_boolean(r.mms_deletable, context(1));
+  w.end(m);
+  return {};
+}
+
+// ----- file services -----
+
+result<void> put_request(ber::writer& w, const file_open_request& r) {
+  const auto m = w.begin(service(confirmed_service::file_open));
+  if (auto e = write_file_name(w, context(0, true), r.file_name); !e) return e;
+  w.write_unsigned(r.initial_position, context(1));
+  w.end(m);
+  return {};
+}
+
+result<void> put_request(ber::writer& w, const file_read_request& r) {
+  w.write_integer(r.frsm_id, service(confirmed_service::file_read, false));
+  return {};
+}
+
+result<void> put_request(ber::writer& w, const file_close_request& r) {
+  w.write_integer(r.frsm_id, service(confirmed_service::file_close, false));
+  return {};
+}
+
+result<void> put_request(ber::writer& w, const file_rename_request& r) {
+  const auto m = w.begin(service(confirmed_service::file_rename));
+  if (auto e = write_file_name(w, context(0, true), r.current_name); !e) return e;
+  if (auto e = write_file_name(w, context(1, true), r.new_name); !e) return e;
+  w.end(m);
+  return {};
+}
+
+result<void> put_request(ber::writer& w, const file_delete_request& r) {
+  return write_file_name(w, service(confirmed_service::file_delete), r.file_name);
+}
+
+result<void> put_request(ber::writer& w, const file_directory_request& r) {
+  const auto m = w.begin(service(confirmed_service::file_directory));
+  if (r.file_specification) {
+    if (auto e = write_file_name(w, context(0, true), *r.file_specification); !e) return e;
+  }
+  if (r.continue_after) {
+    if (auto e = write_file_name(w, context(1, true), *r.continue_after); !e) return e;
+  }
+  w.end(m);
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const file_open_response& r) {
+  const auto m = w.begin(service(confirmed_service::file_open));
+  w.write_integer(r.frsm_id, context(0));
+  write_file_attributes(w, context(1, true), r.attributes);
+  w.end(m);
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const file_read_response& r) {
+  const auto m = w.begin(service(confirmed_service::file_read));
+  w.write_octet_string(r.data, context(0));
+  if (!r.more_follows) w.write_boolean(false, context(1));
+  w.end(m);
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const file_close_response&) {
+  w.write_null(service(confirmed_service::file_close, false));
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const file_rename_response&) {
+  w.write_null(service(confirmed_service::file_rename, false));
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const file_delete_response&) {
+  w.write_null(service(confirmed_service::file_delete, false));
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const file_directory_response& r) {
+  const auto m = w.begin(service(confirmed_service::file_directory));
+  const auto outer = w.begin(context(0, true));
+  auto e = write_list(w, ber::tags::sequence, r.entries, [&](const directory_entry& d) -> result<void> {
+    const auto seq = w.begin(ber::tags::sequence);
+    if (auto r2 = write_file_name(w, context(0, true), d.file_name); !r2) return r2;
+    write_file_attributes(w, context(1, true), d.attributes);
+    w.end(seq);
+    return {};
+  });
+  if (!e) return e;
+  w.end(outer);
+  if (r.more_follows) w.write_boolean(true, context(1));
+  w.end(m);
+  return {};
+}
+
 // ----- PDUs -----
 
 constexpr ber::tag pdu_tag(pdu_type t, bool constructed = true) noexcept {
@@ -392,7 +636,10 @@ result<void> write_pdu(ber::writer& w, const conclude_error& p) {
   return {};
 }
 
-constexpr std::uint32_t service_tags[] = {2, 1, 4, 5, 6, 12, 11, 13};
+// By variant index; other_service (index 8) carries its own tag.
+constexpr std::uint32_t service_tags[] = {2, 1, 4, 5, 6, 12, 11, 13, 0, 65, 67, 68, 72, 73, 74, 75, 76, 77};
+static_assert(std::size(service_tags) == std::variant_size_v<confirmed_service_request>);
+static_assert(std::size(service_tags) == std::variant_size_v<confirmed_service_response>);
 
 }  // namespace
 

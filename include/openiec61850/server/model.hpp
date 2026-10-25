@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -50,7 +51,8 @@ enum class node_kind : std::uint8_t {
   logical_device,
   logical_node,
   data_object,     // DO or SDO
-  control_block,   // a report control block (its attributes are data attributes)
+  control_block,   // a control block: BRCB, URCB, LCB, GoCB or SGCB (its attributes are data
+                   // attributes)
   data_attribute,  // DA or BDA
 };
 
@@ -82,8 +84,13 @@ struct node {
   trigger_options triggers;
   // Leaf or array attributes: the initial value.
   mms::data value;
-  // Bit i set when the subtree holds a data attribute with functional_constraint(i).
+  // Bit i set when the subtree holds a data attribute with functional_constraint(i). In a logical
+  // device with a setting group control block, FC SG attributes also carry the SE bit: their
+  // edit buffer is seen as "LN$SE$..." (7-2 §16, 8-1 §16).
   std::uint32_t fc_mask = 0;
+  // FC SG leaf or array attributes: the value of each setting group (index 0 is group 1); empty
+  // when every group starts with `value`. Groups missing from a shorter vector take `value`.
+  std::vector<mms::data> group_values;
 
   [[nodiscard]] bool is_attribute() const noexcept { return kind == node_kind::data_attribute; }
   // Leaves and arrays store a value; constructed attributes and objects do not.
@@ -124,6 +131,75 @@ struct report_control_definition {
   report_control_settings settings;
 };
 
+// The setting group control block of a logical device (IEC 61850-7-2 §16, IEC 61850-8-1 §16):
+// LLN0$SP$SGCB with NumOfSG, ActSG, EditSG, CnfEdit, LActTm and (Ed.2) ResvTms.
+struct setting_group_settings {
+  std::uint8_t num_of_sgs = 1;
+  std::uint8_t act_sg = 1;
+  // Ed.2: seconds an edit selection stays reserved for its association without a
+  // SelectEditSG / SetEditSGValue / ConfirmEditSGValues; zero: until released or the
+  // association ends.
+  std::uint16_t resv_tms = 0;
+};
+
+struct setting_group_definition {
+  node_id ln = no_node;
+  node_id node = no_node;  // the SGCB node (FC SP)
+  setting_group_settings settings;
+};
+
+// A log of a logical node (7-2 §17.3.2), seen as the MMS journal "LN$name" of its domain.
+struct log_definition {
+  node_id ln = no_node;
+  std::string name;
+};
+
+// A log control block (7-2 §17.3.3, 8-1 §17.3, SCL LogControl): "LN$LG$name" with LogEna,
+// LogRef, DatSet, OldEntrTm, NewEntrTm, OldEnt, NewEnt, TrgOps and IntgPd.
+struct log_control_settings {
+  std::string name;
+  // Name of a data set of the same LN; empty: none.
+  std::string data_set;
+  // The log (declared with ln_handle::log()) of LN `log_ln` of the same LD (empty: this LN).
+  std::string log_name;
+  std::string log_ln;
+  bool log_ena = false;
+  model::trigger_conditions trg_ops;
+  std::uint32_t intg_pd = 0;
+};
+
+struct log_control_definition {
+  node_id ln = no_node;
+  node_id node = no_node;  // the LCB node (FC LG)
+  log_control_settings settings;
+};
+
+// A GOOSE control block (7-2 §18.2, 8-1 §18.1, SCL GSEControl and its GSE address):
+// "LN$GO$name" with GoEna, GoID, DatSet, ConfRev, NdsCom, DstAddress{Addr, PRIORITY, VID, APPID}
+// and (Ed.2) MinTime, MaxTime, FixedOffs. The server exposes it and reports changes
+// (server_options::on_goose_control); the publisher is separate.
+struct goose_control_settings {
+  std::string name;
+  std::string go_id;
+  // Name of a data set of the same LN; empty: none (NdsCom is then true).
+  std::string data_set;
+  std::uint32_t conf_rev = 1;
+  bool go_ena = false;
+  std::array<std::uint8_t, 6> dst_mac{0x01, 0x0C, 0xCD, 0x01, 0x00, 0x00};
+  std::uint8_t vlan_priority = 4;
+  std::uint16_t vlan_id = 0;
+  std::uint16_t app_id = 0;
+  std::uint32_t min_time = 0;  // ms
+  std::uint32_t max_time = 0;  // ms
+  bool fixed_offs = false;
+};
+
+struct goose_control_definition {
+  node_id ln = no_node;
+  node_id node = no_node;  // the GoCB node (FC GO)
+  goose_control_settings settings;
+};
+
 class model_builder;
 class ln_handle;
 class do_handle;
@@ -141,6 +217,16 @@ class data_model {
   [[nodiscard]] std::span<const data_set_definition> data_sets() const noexcept { return data_sets_; }
   [[nodiscard]] std::span<const report_control_definition> report_controls() const noexcept {
     return rcbs_;
+  }
+  [[nodiscard]] std::span<const setting_group_definition> setting_group_controls() const noexcept {
+    return sgcbs_;
+  }
+  [[nodiscard]] std::span<const log_definition> logs() const noexcept { return logs_; }
+  [[nodiscard]] std::span<const log_control_definition> log_controls() const noexcept {
+    return lcbs_;
+  }
+  [[nodiscard]] std::span<const goose_control_definition> goose_controls() const noexcept {
+    return gocbs_;
   }
 
   [[nodiscard]] node_id find_logical_device(std::string_view name) const noexcept;
@@ -173,6 +259,10 @@ class data_model {
   std::vector<node_id> lds_;
   std::vector<data_set_definition> data_sets_;
   std::vector<report_control_definition> rcbs_;
+  std::vector<setting_group_definition> sgcbs_;
+  std::vector<log_definition> logs_;
+  std::vector<log_control_definition> lcbs_;
+  std::vector<goose_control_definition> gocbs_;
 };
 
 // Options of a data attribute.
@@ -228,6 +318,14 @@ class ln_handle {
   ln_handle& data_set(std::string_view name, std::vector<model::object_reference> members);
   // A report control block of this LN, with its attributes (FC BR or RP).
   ln_handle& report_control(report_control_settings settings);
+  // The setting group control block "SGCB" (FC SP); LLN0 only, one per LD (checked by build()).
+  ln_handle& setting_group_control(setting_group_settings settings);
+  // A log of this LN.
+  ln_handle& log(std::string_view name);
+  // A log control block (FC LG); its log and data set are checked by build().
+  ln_handle& log_control(log_control_settings settings);
+  // A GOOSE control block (FC GO); its data set is checked by build().
+  ln_handle& goose_control(goose_control_settings settings);
   [[nodiscard]] node_id id() const noexcept { return id_; }
 
  private:
@@ -264,6 +362,9 @@ class da_handle {
   da_handle structure(std::string_view name, attribute_options options = {});
   // Sets the initial value of a leaf or array attribute (checked by build()).
   da_handle& value(mms::data v);
+  // FC SG leaf or array attributes: the initial value in setting group `sg` (1-based; checked by
+  // build() against the LD's NumOfSG). Groups without a value start with value().
+  da_handle& group_value(std::uint32_t sg, mms::data v);
   [[nodiscard]] node_id id() const noexcept { return id_; }
 
  private:
@@ -327,6 +428,7 @@ class model_builder {
                         std::optional<model::functional_constraint> fc,
                         std::optional<model::basic_type> type, attribute_options options);
   void add_report_control(node_id ln, report_control_settings settings);
+  node_id add_control_block(node_id ln, std::string_view name, model::functional_constraint f);
 
   data_model m_;
   std::error_code error_;

@@ -257,6 +257,117 @@ ln_handle& ln_handle::report_control(report_control_settings settings) {
   return *this;
 }
 
+ln_handle& ln_handle::setting_group_control(setting_group_settings settings) {
+  if (!b_->usable(id_, node_kind::logical_node)) {
+    b_->fail(openiec61850::errc::invalid_state);
+    return *this;
+  }
+  const auto cb = b_->add_control_block(id_, "SGCB", fc::SP);
+  if (cb == no_node) return *this;
+  const bool ed1 = b_->m_.edition_ == model::edition::ed1;
+  auto attr = [&](std::string_view name, basic_type t, mms::data v) {
+    attribute_options o;
+    o.value = std::move(v);
+    (void)b_->add_attribute(cb, name, fc::SP, t, std::move(o));
+  };
+  attr("NumOfSG", basic_type::int8u, mms::data::unsigned_integer(settings.num_of_sgs));
+  attr("ActSG", basic_type::int8u, mms::data::unsigned_integer(settings.act_sg));
+  attr("EditSG", basic_type::int8u, mms::data::unsigned_integer(0));
+  attr("CnfEdit", basic_type::boolean, mms::data::boolean(false));
+  attr("LActTm", basic_type::timestamp, mms::data::utc_time({}));
+  if (!ed1) attr("ResvTms", basic_type::int16u, mms::data::unsigned_integer(settings.resv_tms));
+  if (b_->error_) return *this;
+  b_->m_.sgcbs_.push_back({id_, cb, settings});
+  return *this;
+}
+
+ln_handle& ln_handle::log(std::string_view name) {
+  if (!b_->usable(id_, node_kind::logical_node)) {
+    b_->fail(openiec61850::errc::invalid_state);
+    return *this;
+  }
+  if (!model::is_identifier(name)) {
+    b_->fail(openiec61850::errc::malformed_encoding);
+    return *this;
+  }
+  for (const auto& l : b_->m_.logs_) {
+    if (l.ln == id_ && l.name == name) {
+      b_->fail(err(errc::object_exists));
+      return *this;
+    }
+  }
+  b_->m_.logs_.push_back({id_, std::string(name)});
+  return *this;
+}
+
+ln_handle& ln_handle::log_control(log_control_settings settings) {
+  if (!b_->usable(id_, node_kind::logical_node)) {
+    b_->fail(openiec61850::errc::invalid_state);
+    return *this;
+  }
+  const auto cb = b_->add_control_block(id_, settings.name, fc::LG);
+  if (cb == no_node) return *this;
+  const bool ed1 = b_->m_.edition_ == model::edition::ed1;
+  const std::int32_t ref_size = ed1 ? 65 : 129;
+  auto attr = [&](std::string_view name, basic_type t, mms::data v, std::int32_t size = 0) {
+    attribute_options o;
+    o.size = size;
+    o.value = std::move(v);
+    (void)b_->add_attribute(cb, name, fc::LG, t, std::move(o));
+  };
+  attr("LogEna", basic_type::boolean, mms::data::boolean(settings.log_ena));
+  attr("LogRef", basic_type::object_reference, mms::data::visible_string(""), ref_size);
+  attr("DatSet", basic_type::object_reference, mms::data::visible_string(""), ref_size);
+  attr("OldEntrTm", basic_type::entry_time, mms::data::binary_time({0, std::uint16_t{0}}));
+  attr("NewEntrTm", basic_type::entry_time, mms::data::binary_time({0, std::uint16_t{0}}));
+  attr("OldEnt", basic_type::entry_id, model::entry_id{}.to_mms());
+  attr("NewEnt", basic_type::entry_id, model::entry_id{}.to_mms());
+  attr("TrgOps", basic_type::trigger_conditions, settings.trg_ops.to_mms());
+  attr("IntgPd", basic_type::int32u, mms::data::unsigned_integer(settings.intg_pd));
+  if (b_->error_) return *this;
+  b_->m_.lcbs_.push_back({id_, cb, std::move(settings)});
+  return *this;
+}
+
+ln_handle& ln_handle::goose_control(goose_control_settings settings) {
+  if (!b_->usable(id_, node_kind::logical_node)) {
+    b_->fail(openiec61850::errc::invalid_state);
+    return *this;
+  }
+  const auto cb = b_->add_control_block(id_, settings.name, fc::GO);
+  if (cb == no_node) return *this;
+  const bool ed1 = b_->m_.edition_ == model::edition::ed1;
+  const std::int32_t ref_size = ed1 ? 65 : 129;
+  auto attr = [&](node_id parent, std::string_view name, basic_type t, mms::data v,
+                  std::int32_t size = 0) {
+    attribute_options o;
+    o.size = size;
+    o.value = std::move(v);
+    (void)b_->add_attribute(parent, name, parent == cb ? std::optional(fc::GO) : std::nullopt, t,
+                            std::move(o));
+  };
+  attr(cb, "GoEna", basic_type::boolean, mms::data::boolean(settings.go_ena));
+  attr(cb, "GoID", basic_type::visible_string, mms::data::visible_string(settings.go_id), ref_size);
+  attr(cb, "DatSet", basic_type::object_reference, mms::data::visible_string(""), ref_size);
+  attr(cb, "ConfRev", basic_type::int32u, mms::data::unsigned_integer(settings.conf_rev));
+  attr(cb, "NdsCom", basic_type::boolean, mms::data::boolean(settings.data_set.empty()));
+  const auto dst = b_->add_attribute(cb, "DstAddress", fc::GO, std::nullopt, {});
+  if (dst != no_node) {
+    attr(dst, "Addr", basic_type::octet_string, mms::data::octet_string(settings.dst_mac), 6);
+    attr(dst, "PRIORITY", basic_type::int8u, mms::data::unsigned_integer(settings.vlan_priority));
+    attr(dst, "VID", basic_type::int16u, mms::data::unsigned_integer(settings.vlan_id));
+    attr(dst, "APPID", basic_type::int16u, mms::data::unsigned_integer(settings.app_id));
+  }
+  if (!ed1) {
+    attr(cb, "MinTime", basic_type::int32u, mms::data::unsigned_integer(settings.min_time));
+    attr(cb, "MaxTime", basic_type::int32u, mms::data::unsigned_integer(settings.max_time));
+    attr(cb, "FixedOffs", basic_type::boolean, mms::data::boolean(settings.fixed_offs));
+  }
+  if (b_->error_) return *this;
+  b_->m_.gocbs_.push_back({id_, cb, std::move(settings)});
+  return *this;
+}
+
 do_handle do_handle::sub_object(std::string_view name) {
   if (!b_->usable(id_, node_kind::data_object)) {
     b_->fail(openiec61850::errc::invalid_state);
@@ -309,6 +420,24 @@ da_handle& da_handle::value(mms::data v) {
   return *this;
 }
 
+da_handle& da_handle::group_value(std::uint32_t sg, mms::data v) {
+  if (!b_->usable(id_, node_kind::data_attribute) || sg == 0 || sg > 255) {
+    b_->fail(openiec61850::errc::invalid_state);
+    return *this;
+  }
+  auto& g = b_->m_.nodes_[id_].group_values;
+  if (g.size() < sg) g.resize(sg);
+  g[sg - 1] = std::move(v);
+  return *this;
+}
+
+node_id model_builder::add_control_block(node_id ln, std::string_view name,
+                                         model::functional_constraint f) {
+  const auto cb = add(ln, name, node_kind::control_block);
+  if (cb != no_node) m_.nodes_[cb].fc = f;
+  return cb;
+}
+
 node_id model_builder::add_attribute(node_id parent, std::string_view name,
                                      std::optional<model::functional_constraint> f,
                                      std::optional<model::basic_type> type,
@@ -331,9 +460,8 @@ node_id model_builder::add_attribute(node_id parent, std::string_view name,
 
 void model_builder::add_report_control(node_id ln, report_control_settings s) {
   const auto f = s.buffered ? fc::BR : fc::RP;
-  const auto cb = add(ln, s.name, node_kind::control_block);
+  const auto cb = add_control_block(ln, s.name, f);
   if (cb == no_node) return;
-  m_.nodes_[cb].fc = f;
   const bool ed1 = m_.edition_ == model::edition::ed1;
   const std::int32_t ref_size = ed1 ? 65 : 129;
   auto attr = [&](std::string_view name, basic_type t, mms::data v, std::int32_t size = 0) {
@@ -375,9 +503,25 @@ result<data_model> model_builder::build() {
     if (!n.type && n.children.empty()) return err(errc::invalid_model);
     if (!n.fc) return err(errc::invalid_model);
   }
+  // Setting groups: one SGCB per LD, in LLN0.
+  std::vector<std::uint8_t> sg_count(nodes.size(), 0);  // by LD
+  for (const auto& sg : m_.sgcbs_) {
+    const node_id ld = m_.logical_device_of(sg.ln);
+    if (nodes[sg.ln].name != "LLN0" || sg_count[ld] != 0) return err(errc::invalid_model);
+    if (sg.settings.num_of_sgs == 0 || sg.settings.act_sg == 0 ||
+        sg.settings.act_sg > sg.settings.num_of_sgs) {
+      return err(errc::invalid_model);
+    }
+    sg_count[ld] = sg.settings.num_of_sgs;
+  }
   for (std::size_t i = nodes.size(); i-- > 0;) {
     auto& n = nodes[i];
-    if (n.kind == node_kind::data_attribute) n.fc_mask |= fc_bit(*n.fc);
+    if (n.kind == node_kind::data_attribute) {
+      n.fc_mask |= fc_bit(*n.fc);
+      if (*n.fc == fc::SG && sg_count[m_.logical_device_of(static_cast<node_id>(i))] > 0) {
+        n.fc_mask |= fc_bit(fc::SE);
+      }
+    }
     if (n.parent != no_node) nodes[n.parent].fc_mask |= n.fc_mask;
   }
   for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -421,6 +565,19 @@ result<data_model> model_builder::build() {
     auto c = detail::conform(n.value, *t);
     if (std::holds_alternative<mms::data_access_error>(c)) return err(errc::type_mismatch);
     n.value = std::move(std::get<mms::data>(c));
+    if (!n.group_values.empty()) {
+      const auto groups = sg_count[m_.logical_device_of(static_cast<node_id>(i))];
+      if (*n.fc != fc::SG || n.group_values.size() > groups) return err(errc::invalid_model);
+      for (auto& g : n.group_values) {
+        if (!g.valid()) {
+          g = n.value;
+          continue;
+        }
+        auto gc = detail::conform(g, *t);
+        if (std::holds_alternative<mms::data_access_error>(gc)) return err(errc::type_mismatch);
+        g = std::move(std::get<mms::data>(gc));
+      }
+    }
   }
 
   for (const auto& ds : m_.data_sets_) {
@@ -437,6 +594,28 @@ result<data_model> model_builder::build() {
       return ds.ln == r.ln && ds.name == r.settings.data_set;
     });
     if (!found) return err(errc::invalid_model);
+  }
+
+  auto has_data_set = [&](node_id ln, const std::string& name) {
+    return name.empty() ||
+           std::any_of(m_.data_sets_.begin(), m_.data_sets_.end(),
+                       [&](const auto& ds) { return ds.ln == ln && ds.name == name; });
+  };
+  for (const auto& l : m_.lcbs_) {
+    if (!has_data_set(l.ln, l.settings.data_set)) return err(errc::invalid_model);
+    if (l.settings.log_name.empty()) continue;
+    node_id log_ln = l.ln;
+    if (!l.settings.log_ln.empty()) {
+      log_ln = m_.find_child(m_.logical_device_of(l.ln), l.settings.log_ln);
+      if (log_ln == no_node) return err(errc::invalid_model);
+    }
+    const bool found = std::any_of(m_.logs_.begin(), m_.logs_.end(), [&](const auto& lg) {
+      return lg.ln == log_ln && lg.name == l.settings.log_name;
+    });
+    if (!found) return err(errc::invalid_model);
+  }
+  for (const auto& g : m_.gocbs_) {
+    if (!has_data_set(g.ln, g.settings.data_set)) return err(errc::invalid_model);
   }
 
   data_model out = std::move(m_);

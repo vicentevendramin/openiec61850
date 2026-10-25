@@ -336,6 +336,479 @@ result<delete_named_variable_list_request> decode_delete_nvl_request(ber::reader
   return req;
 }
 
+// ----- journal and file services -----
+
+result<binary_time> decode_time_of_day(const ber::tlv& e) noexcept {
+  if (e.tag.constructed) return errc::malformed_encoding;
+  const auto c = e.value;
+  if (c.size() != 4 && c.size() != 6) return errc::malformed_encoding;
+  binary_time t;
+  t.ms_of_day = (std::uint32_t{c[0]} << 24) | (std::uint32_t{c[1]} << 16) |
+                (std::uint32_t{c[2]} << 8) | std::uint32_t{c[3]};
+  if (c.size() == 6) t.days = static_cast<std::uint16_t>((c[4] << 8) | c[5]);
+  return t;
+}
+
+result<binary_time> read_time_of_day(ber::reader& rd, ber::tag t) {
+  auto e = rd.expect(t);
+  if (!e) return e.error();
+  return decode_time_of_day(*e);
+}
+
+result<std::string_view> decode_graphic_string(const ber::tlv& e) noexcept {
+  if (!e.tag.same_id(ber::tags::graphic_string) && !e.tag.same_id(ber::tags::visible_string)) {
+    return errc::malformed_encoding;
+  }
+  return ber::decode_visible_string(e);
+}
+
+result<std::string_view> decode_mms_string_element(const ber::tlv& e) noexcept {
+  if (!e.tag.same_id(ber::tags::utf8_string)) return errc::malformed_encoding;
+  return ber::decode_utf8_string(e);
+}
+
+result<list_view<std::string_view>> decode_file_name(const ber::tlv& e) noexcept {
+  if (!e.tag.constructed) return errc::malformed_encoding;
+  return decode_list<std::string_view>(e.value, &decode_graphic_string);
+}
+
+result<file_attributes> decode_file_attributes(const ber::tlv& e) noexcept {
+  if (!e.tag.constructed) return errc::malformed_encoding;
+  ber::reader rd{e.value};
+  file_attributes a;
+  auto size = read_int<std::uint32_t>(rd, context(0));
+  if (!size) return size.error();
+  a.size = *size;
+  if (rd.next_is(context(1))) {
+    auto t = rd.read_generalized_time(context(1));
+    if (!t) return t.error();
+    a.last_modified = *t;
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return a;
+}
+
+result<directory_entry> decode_directory_entry(const ber::tlv& e) noexcept {
+  if (e.tag != ber::tags::sequence) return errc::malformed_encoding;
+  ber::reader rd{e.value};
+  auto name = rd.expect(context(0, true));
+  if (!name) return name.error();
+  auto n = decode_file_name(*name);
+  if (!n) return n.error();
+  auto attrs = rd.expect(context(1, true));
+  if (!attrs) return attrs.error();
+  auto a = decode_file_attributes(*attrs);
+  if (!a) return a.error();
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return directory_entry{*n, *a};
+}
+
+// Unchecked part of a Journal-Variable (the Data value is validated by validate_journal_entry).
+result<journal_variable> decode_journal_variable(const ber::tlv& e) noexcept {
+  if (e.tag != ber::tags::sequence) return errc::malformed_encoding;
+  ber::reader rd{e.value};
+  auto tag = rd.expect(context(0));
+  if (!tag) return tag.error();
+  auto value = rd.expect(context(1, true));
+  if (!value) return value.error();
+  auto inner = single(*value);
+  if (!inner) return inner.error();
+  if (auto r = rd.expect_end(); !r) return r.error();
+  auto text = ber::decode_utf8_string(tag->value);
+  if (!text) return text.error();
+  return journal_variable{*text, data_ref{data_view::unchecked(*inner)}};
+}
+
+result<journal_entry> decode_journal_entry(const ber::tlv& e) noexcept {
+  if (e.tag != ber::tags::sequence) return errc::malformed_encoding;
+  ber::reader rd{e.value};
+  journal_entry j;
+  auto id = rd.read_octet_string(context(0));
+  if (!id) return id.error();
+  j.entry_id = *id;
+  auto app = rd.expect(context(1, true));
+  if (!app) return app.error();
+  j.originating_application = app->value;
+  auto content = rd.expect(context(2, true));
+  if (!content) return content.error();
+  if (auto r = rd.expect_end(); !r) return r.error();
+
+  ber::reader c{content->value};
+  auto t = read_time_of_day(c, context(0));
+  if (!t) return t.error();
+  j.occurrence_time = *t;
+  if (c.next_is(context(1, true)) || c.next_is(context(1))) {  // additionalDetail
+    if (auto r = c.skip(); !r) return r.error();
+  }
+  auto form = c.next();
+  if (!form) return form.error();
+  if (form->tag == context(2, true)) {
+    ber::reader d{form->value};
+    auto ev = next_if(d, context(0, true));
+    if (!ev) return ev.error();
+    if (*ev) j.event = (*ev)->value;
+    auto vars = next_if(d, context(1, true));
+    if (!vars) return vars.error();
+    if (*vars) {
+      auto l = decode_list<journal_variable>((*vars)->value, &decode_journal_variable);
+      if (!l) return l.error();
+      j.variables = *l;
+    }
+    if (auto r = d.expect_end(); !r) return r.error();
+  } else if (form->tag.same_id(context(3))) {
+    // annotation [3] MMSString: explicit tag (also accepted implicit).
+    if (form->tag.constructed) {
+      auto inner = single(*form);
+      if (!inner) return inner.error();
+      auto s = decode_mms_string_element(*inner);
+      if (!s) return s.error();
+      j.annotation = *s;
+    } else {
+      auto s = ber::decode_utf8_string(form->value);
+      if (!s) return s.error();
+      j.annotation = *s;
+    }
+  } else {
+    return errc::malformed_encoding;
+  }
+  if (auto r = c.expect_end(); !r) return r.error();
+  return j;
+}
+
+// Validates the Data values of a JournalEntry (decode_journal_entry checks everything else).
+result<void> validate_journal_entry(const ber::tlv& e, const decode_options& opts) {
+  auto j = decode_journal_entry(e);
+  if (!j) return j.error();
+  for (const auto v : j->variables) {
+    const auto& view = v.value.view();
+    auto tlv = ber::decode_tlv(view.encoding());
+    if (!tlv) return tlv.error();
+    if (auto r = detail::validate_data(*tlv, opts, 0); !r) return r.error();
+  }
+  return {};
+}
+
+result<read_journal_request> decode_read_journal_request(ber::reader rd) {
+  read_journal_request req;
+  auto name = rd.expect(context(0, true));
+  if (!name) return name.error();
+  auto n = decode_wrapped_name(*name);
+  if (!n) return n.error();
+  req.journal_name = *n;
+  auto start = next_if(rd, context(1, true));
+  if (!start) return start.error();
+  if (*start) {
+    auto inner = single(**start);
+    if (!inner) return inner.error();
+    if (inner->tag.same_id(context(0))) {
+      auto t = decode_time_of_day(*inner);
+      if (!t) return t.error();
+      req.starting_time = *t;
+    } else if (inner->tag.same_id(context(1))) {
+      auto o = ber::decode_octet_string(*inner);
+      if (!o) return o.error();
+      req.starting_entry = *o;
+    } else {
+      return errc::malformed_encoding;
+    }
+  }
+  auto stop = next_if(rd, context(2, true));
+  if (!stop) return stop.error();
+  if (*stop) {
+    auto inner = single(**stop);
+    if (!inner) return inner.error();
+    if (inner->tag.same_id(context(0))) {
+      auto t = decode_time_of_day(*inner);
+      if (!t) return t.error();
+      req.ending_time = *t;
+    } else if (inner->tag == context(1)) {
+      auto v = ber::decode_integer_as<std::int32_t>(inner->value);
+      if (!v) return v.error();
+      req.number_of_entries = *v;
+    } else {
+      return errc::malformed_encoding;
+    }
+  }
+  auto vars = next_if(rd, context(4, true));
+  if (!vars) return vars.error();
+  if (*vars) {
+    auto l = decode_list<std::string_view>((*vars)->value, &decode_identifier);
+    if (!l) return l.error();
+    req.variables = *l;
+  }
+  auto after = next_if(rd, context(5, true));
+  if (!after) return after.error();
+  if (*after) {
+    ber::reader a{(*after)->value};
+    auto t = read_time_of_day(a, context(0));
+    if (!t) return t.error();
+    auto entry = a.read_octet_string(context(1));
+    if (!entry) return entry.error();
+    if (auto r = a.expect_end(); !r) return r.error();
+    req.start_after = journal_start_after{*t, *entry};
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return req;
+}
+
+result<initialize_journal_request> decode_initialize_journal_request(ber::reader rd) {
+  initialize_journal_request req;
+  auto name = rd.expect(context(0, true));
+  if (!name) return name.error();
+  auto n = decode_wrapped_name(*name);
+  if (!n) return n.error();
+  req.journal_name = *n;
+  auto limit = next_if(rd, context(1, true));
+  if (!limit) return limit.error();
+  if (*limit) {
+    ber::reader l{(*limit)->value};
+    auto t = read_time_of_day(l, context(0));
+    if (!t) return t.error();
+    req.limiting_time = *t;
+    if (l.next_is(context(1))) {
+      auto entry = l.read_octet_string(context(1));
+      if (!entry) return entry.error();
+      req.limiting_entry = *entry;
+    }
+    if (auto r = l.expect_end(); !r) return r.error();
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return req;
+}
+
+result<file_open_request> decode_file_open_request(ber::reader rd) {
+  file_open_request req;
+  auto name = rd.expect(context(0, true));
+  if (!name) return name.error();
+  auto n = decode_file_name(*name);
+  if (!n) return n.error();
+  req.file_name = *n;
+  auto pos = read_int<std::uint32_t>(rd, context(1));
+  if (!pos) return pos.error();
+  req.initial_position = *pos;
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return req;
+}
+
+result<file_rename_request> decode_file_rename_request(ber::reader rd) {
+  file_rename_request req;
+  auto cur = rd.expect(context(0, true));
+  if (!cur) return cur.error();
+  auto c = decode_file_name(*cur);
+  if (!c) return c.error();
+  auto next = rd.expect(context(1, true));
+  if (!next) return next.error();
+  auto n = decode_file_name(*next);
+  if (!n) return n.error();
+  if (auto r = rd.expect_end(); !r) return r.error();
+  req.current_name = *c;
+  req.new_name = *n;
+  return req;
+}
+
+result<file_directory_request> decode_file_directory_request(ber::reader rd) {
+  file_directory_request req;
+  auto spec = next_if(rd, context(0, true));
+  if (!spec) return spec.error();
+  if (*spec) {
+    auto n = decode_file_name(**spec);
+    if (!n) return n.error();
+    req.file_specification = *n;
+  }
+  auto after = next_if(rd, context(1, true));
+  if (!after) return after.error();
+  if (*after) {
+    auto n = decode_file_name(**after);
+    if (!n) return n.error();
+    req.continue_after = *n;
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return req;
+}
+
+result<read_journal_response> decode_read_journal_response(ber::reader rd,
+                                                           const decode_options& opts) {
+  read_journal_response resp;
+  auto list = rd.expect(context(0, true));
+  if (!list) return list.error();
+  auto ok = for_each_element(list->value,
+                             [&](const ber::tlv& e) { return validate_journal_entry(e, opts); });
+  if (!ok) return ok.error();
+  resp.entries = list_view<journal_entry>::encoded(list->value, &decode_journal_entry);
+  if (rd.next_is(context(1))) {
+    auto more = rd.read_boolean(context(1));
+    if (!more) return more.error();
+    resp.more_follows = *more;
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return resp;
+}
+
+result<report_journal_status_response> decode_report_journal_status_response(ber::reader rd) {
+  report_journal_status_response resp;
+  auto n = read_int<std::uint32_t>(rd, context(0));
+  if (!n) return n.error();
+  auto del = rd.read_boolean(context(1));
+  if (!del) return del.error();
+  resp.current_entries = *n;
+  resp.mms_deletable = *del;
+  if (rd.next_is(context(2))) {  // accessControlList
+    if (auto r = rd.skip(); !r) return r.error();
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return resp;
+}
+
+result<file_open_response> decode_file_open_response(ber::reader rd) {
+  file_open_response resp;
+  auto id = read_int<std::int32_t>(rd, context(0));
+  if (!id) return id.error();
+  resp.frsm_id = *id;
+  auto attrs = rd.expect(context(1, true));
+  if (!attrs) return attrs.error();
+  auto a = decode_file_attributes(*attrs);
+  if (!a) return a.error();
+  resp.attributes = *a;
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return resp;
+}
+
+result<file_read_response> decode_file_read_response(ber::reader rd) {
+  file_read_response resp;
+  auto data = rd.read_octet_string(context(0));
+  if (!data) return data.error();
+  resp.data = *data;
+  if (rd.next_is(context(1))) {
+    auto more = rd.read_boolean(context(1));
+    if (!more) return more.error();
+    resp.more_follows = *more;
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return resp;
+}
+
+result<file_directory_response> decode_file_directory_response(ber::reader rd) {
+  file_directory_response resp;
+  auto outer = rd.expect(context(0, true));
+  if (!outer) return outer.error();
+  auto list = single(*outer);
+  if (!list) return list.error();
+  if (list->tag != ber::tags::sequence) return errc::malformed_encoding;
+  auto entries = decode_list<directory_entry>(list->value, &decode_directory_entry);
+  if (!entries) return entries.error();
+  resp.entries = *entries;
+  if (rd.next_is(context(1))) {
+    auto more = rd.read_boolean(context(1));
+    if (!more) return more.error();
+    resp.more_follows = *more;
+  }
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return resp;
+}
+
+bool is_ext_service(std::uint32_t tag) noexcept {
+  switch (static_cast<confirmed_service>(tag)) {
+    case confirmed_service::read_journal:
+    case confirmed_service::initialize_journal:
+    case confirmed_service::report_journal_status:
+    case confirmed_service::file_open:
+    case confirmed_service::file_read:
+    case confirmed_service::file_close:
+    case confirmed_service::file_rename:
+    case confirmed_service::file_delete:
+    case confirmed_service::file_directory:
+      return tag >= 65 && tag <= 77;
+    default:
+      return false;
+  }
+}
+
+template <typename T>
+result<confirmed_service_request> as_request(result<T> r);
+template <typename T>
+result<confirmed_service_response> as_response(result<T> r);
+
+result<std::int32_t> decode_i32(const ber::tlv& e) {
+  if (e.tag.constructed) return errc::malformed_encoding;
+  return ber::decode_integer_as<std::int32_t>(e.value);
+}
+
+result<confirmed_service_request> decode_ext_request(const ber::tlv& e) {
+  const auto svc = static_cast<confirmed_service>(e.tag.number);
+  if (svc == confirmed_service::file_read || svc == confirmed_service::file_close) {
+    auto id = decode_i32(e);
+    if (!id) return id.error();
+    if (svc == confirmed_service::file_read) return confirmed_service_request{file_read_request{*id}};
+    return confirmed_service_request{file_close_request{*id}};
+  }
+  if (!e.tag.constructed) return errc::malformed_encoding;
+  const ber::reader rd{e.value};
+  switch (svc) {
+    case confirmed_service::read_journal:
+      return as_request(decode_read_journal_request(rd));
+    case confirmed_service::initialize_journal:
+      return as_request(decode_initialize_journal_request(rd));
+    case confirmed_service::report_journal_status: {
+      auto name = decode_wrapped_name(e);
+      if (!name) return name.error();
+      return confirmed_service_request{report_journal_status_request{*name}};
+    }
+    case confirmed_service::file_open:
+      return as_request(decode_file_open_request(rd));
+    case confirmed_service::file_rename:
+      return as_request(decode_file_rename_request(rd));
+    case confirmed_service::file_delete: {
+      auto n = decode_file_name(e);
+      if (!n) return n.error();
+      return confirmed_service_request{file_delete_request{*n}};
+    }
+    case confirmed_service::file_directory:
+      return as_request(decode_file_directory_request(rd));
+    default:
+      return errc::malformed_encoding;
+  }
+}
+
+result<confirmed_service_response> decode_ext_response(const ber::tlv& e,
+                                                       const decode_options& opts) {
+  const auto svc = static_cast<confirmed_service>(e.tag.number);
+  switch (svc) {
+    case confirmed_service::initialize_journal: {
+      if (e.tag.constructed) return errc::malformed_encoding;
+      auto n = ber::decode_integer_as<std::uint32_t>(e.value);
+      if (!n) return n.error();
+      return confirmed_service_response{initialize_journal_response{*n}};
+    }
+    case confirmed_service::file_close:
+    case confirmed_service::file_rename:
+    case confirmed_service::file_delete:
+      if (auto r = ber::decode_null(e); !r) return r.error();
+      if (svc == confirmed_service::file_close) return confirmed_service_response{file_close_response{}};
+      if (svc == confirmed_service::file_rename) {
+        return confirmed_service_response{file_rename_response{}};
+      }
+      return confirmed_service_response{file_delete_response{}};
+    default:
+      break;
+  }
+  if (!e.tag.constructed) return errc::malformed_encoding;
+  const ber::reader rd{e.value};
+  switch (svc) {
+    case confirmed_service::read_journal:
+      return as_response(decode_read_journal_response(rd, opts));
+    case confirmed_service::report_journal_status:
+      return as_response(decode_report_journal_status_response(rd));
+    case confirmed_service::file_open:
+      return as_response(decode_file_open_response(rd));
+    case confirmed_service::file_read:
+      return as_response(decode_file_read_response(rd));
+    case confirmed_service::file_directory:
+      return as_response(decode_file_directory_response(rd));
+    default:
+      return errc::malformed_encoding;
+  }
+}
+
 template <typename T>
 result<confirmed_service_request> as_request(result<T> r) {
   if (!r) return r.error();
@@ -359,7 +832,10 @@ result<confirmed_service_request> decode_service_request(const ber::tlv& e,
                       svc == confirmed_service::define_named_variable_list ||
                       svc == confirmed_service::get_named_variable_list_attributes ||
                       svc == confirmed_service::delete_named_variable_list);
-  if (!known) return confirmed_service_request{other_service{e.tag.number, e.encoding}};
+  if (!known) {
+    if (is_ext_service(e.tag.number)) return decode_ext_request(e);
+    return confirmed_service_request{other_service{e.tag.number, e.encoding}};
+  }
   if (svc == confirmed_service::identify) {
     if (auto r = ber::decode_null(e); !r) return r.error();
     return confirmed_service_request{identify_request{}};
@@ -522,7 +998,10 @@ result<confirmed_service_response> decode_service_response(const ber::tlv& e,
                       svc == confirmed_service::define_named_variable_list ||
                       svc == confirmed_service::get_named_variable_list_attributes ||
                       svc == confirmed_service::delete_named_variable_list);
-  if (!known) return confirmed_service_response{other_service{e.tag.number, e.encoding}};
+  if (!known) {
+    if (is_ext_service(e.tag.number)) return decode_ext_response(e, opts);
+    return confirmed_service_response{other_service{e.tag.number, e.encoding}};
+  }
   if (svc == confirmed_service::define_named_variable_list) {
     if (auto r = ber::decode_null(e); !r) return r.error();
     return confirmed_service_response{define_named_variable_list_response{}};

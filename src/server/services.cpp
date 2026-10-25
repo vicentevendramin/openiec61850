@@ -93,6 +93,24 @@ std::optional<dae> server_state::write_one(session& s, const target& t, const mm
     return write_rcb(s, *it->second, n.name, value);
   }
   if (f == fc::CO) return control_write(s, t, value);
+  if (sgcb_of.contains(t.node)) return dae::object_access_denied;
+  if (f == fc::LG || f == fc::GO || (f == fc::SP && n.parent != no_node && sgcb_of.contains(n.parent))) {
+    if (!t.path.empty() || n.parent == no_node) return dae::object_access_denied;
+    if (const auto it = lcb_of.find(n.parent); it != lcb_of.end()) {
+      return write_lcb(s, *it->second, n.name, value);
+    }
+    if (const auto it = gocb_of.find(n.parent); it != gocb_of.end()) {
+      return write_gocb(s, *it->second, n.name, value);
+    }
+    if (const auto it = sgcb_of.find(n.parent); it != sgcb_of.end()) {
+      return write_sgcb(s, *it->second, n.name, value);
+    }
+    return dae::object_access_denied;
+  }
+  if (f == fc::SE && n.kind != node_kind::logical_node && !holders_under(t).empty() &&
+      sgcb_of_holder.contains(holders_under(t).front())) {
+    return write_edit(s, t, value);
+  }
   if (!writable(f) || n.kind == node_kind::logical_node) return dae::object_access_denied;
   auto type = type_of(t);
   if (!type) return dae::object_non_existent;
@@ -136,6 +154,13 @@ void server_state::dispatch(session& s, const mms::confirmed_service_request& re
                 break;
               case mms::object_class::named_variable:
                 if (domain_scope) list = &variable_names[ld];
+                break;
+              case mms::object_class::journal:
+                if (domain_scope) {
+                  for (const auto& [key, lg] : logs) {
+                    if (key.first == r.domain_id) tmp.push_back(key.second);
+                  }
+                }
                 break;
               case mms::object_class::named_variable_list:
                 if (domain_scope) {
@@ -360,7 +385,11 @@ void server_state::dispatch(session& s, const mms::confirmed_service_request& re
             std::uint32_t deleted = 0;
             auto referenced = [&](const std::shared_ptr<data_set>& ds) {
               return std::any_of(rcbs.begin(), rcbs.end(),
-                                 [&](const auto& rc) { return rc->ds == ds; });
+                                 [&](const auto& rc) { return rc->ds == ds; }) ||
+                     std::any_of(lcbs.begin(), lcbs.end(),
+                                 [&](const auto& lc) { return lc->ds == ds; }) ||
+                     std::any_of(gocbs.begin(), gocbs.end(),
+                                 [&](const auto& gc) { return gc->ds == ds; });
             };
             auto try_domain = [&](decltype(data_sets)::iterator it) {
               ++matched;
@@ -409,6 +438,7 @@ void server_state::dispatch(session& s, const mms::confirmed_service_request& re
           [&](const mms::other_service&) {
             out.reject(mms::reject_code::confirmed_request::unrecognized_service);
           },
+          [&](const auto& ext) { dispatch_ext(s, ext, out); },
       },
       req);
 }

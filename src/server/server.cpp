@@ -110,6 +110,9 @@ result<void> server_state::init() {
     data_sets.emplace(std::make_pair((*ds)->domain, (*ds)->item), std::move(*ds));
   }
   for (const auto& def : model.report_controls()) init_rcb(def);
+  for (const auto& def : model.setting_group_controls()) init_sgcb(def);
+  init_logs();
+  for (const auto& def : model.goose_controls()) init_gocb(def);
 
   // EntryIDs grow across restarts: the start time in the high bits, a counter below.
   const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
@@ -138,6 +141,14 @@ void server_state::shutdown() {
     r->buf_timer.cancel();
     r->intg_timer.cancel();
     r->resv_timer.cancel();
+  }
+  for (auto& g : sgcbs) {
+    ++g->resv_gen;
+    g->resv_timer.cancel();
+  }
+  for (auto& l : lcbs) {
+    ++l->intg_gen;
+    l->intg_timer.cancel();
   }
   control_shutdown();
   for (auto* w : stop_waiters) w->cancel();
@@ -207,6 +218,8 @@ void session_closed(server_state& st, session& s) {
   s.closed = true;
   s.wake.cancel();
   st.control_session_closed(s);
+  st.setting_groups_session_closed(s);
+  s.files.clear();
   std::vector<std::shared_ptr<data_set>> lists;
   for (auto& [name, ds] : s.aa_sets) lists.push_back(ds);
   s.aa_sets.clear();
@@ -325,10 +338,19 @@ node_id sibling(const server_state& st, node_id owner, std::string_view name,
 result<resolved_update> resolve_update(const server_state& st, const data_update& u) {
   auto t = st.resolve_ref(u.reference);
   if (!t) return t.error();
-  if (t->fc == fc::BR || t->fc == fc::RP || !t->fc ||
-      st.at(t->node).kind == node_kind::logical_node) {
-    return make_error_code(t->fc == fc::BR || t->fc == fc::RP ? errc::access_denied
-                                                              : errc::object_not_found);
+  if (!t->fc || st.at(t->node).kind == node_kind::logical_node) {
+    return make_error_code(errc::object_not_found);
+  }
+  {
+    // Control blocks and the edit buffer of setting groups are managed by the server.
+    const auto f = *t->fc;
+    bool managed = f == fc::BR || f == fc::RP || f == fc::LG || f == fc::GO;
+    for (node_id n = t->node; n != no_node && !managed; n = st.at(n).parent) {
+      if (st.sgcb_of.contains(n)) managed = true;
+      if (st.at(n).kind != node_kind::data_attribute) break;
+    }
+    if (f == fc::SE && st.at(t->node).has_fc(fc::SG)) managed = true;
+    if (managed) return make_error_code(errc::access_denied);
   }
   auto type = st.type_of(*t);
   if (!type) return type.error();
@@ -372,6 +394,9 @@ server::~server() { stop(); }
 result<server> server::start(asio::any_io_executor ex, data_model model,
                              const asio::ip::tcp::endpoint& endpoint, server_options options) {
   if (model.logical_devices().empty()) return make_error_code(errc::invalid_model);
+  if (options.association.limits.detail.services == mms::iec61850_services) {
+    options.association.limits.detail.services = mms::iec61850_server_services;
+  }
   auto st = std::make_shared<server_state>(ex, std::move(model), std::move(options));
   if (auto r = st->init(); !r) return r.error();
   auto l = association::association_listener::listen(ex, endpoint, st->options.association);
@@ -461,6 +486,92 @@ asio::awaitable<result<mms::data>> server::read(model::object_reference ref) con
     co_return s->value_of(*t);
   };
   co_return co_await transport::run_on(state_->strand, op(state_, std::move(ref)));
+}
+
+result<void> server::select_active_setting_group(std::string_view ld, std::uint8_t sg) {
+  if (!state_ || state_->stopped) return make_error_code(errc::not_running);
+  const node_id ld_id = state_->model.find_logical_device(ld);
+  for (const auto& g : state_->sgcbs) {
+    if (g->ld != ld_id) continue;
+    if (sg == 0 || sg > g->num) return openiec61850::errc::value_out_of_range;
+    asio::post(state_->strand, [s = state_, p = g.get(), sg] {
+      if (s->stopped) return;
+      ++s->tick;
+      s->activate_group(*p, sg);
+    });
+    return {};
+  }
+  return make_error_code(errc::object_not_found);
+}
+
+asio::awaitable<result<mms::data>> server::read_setting_group(model::object_reference ref,
+                                                              std::uint8_t sg) const {
+  if (!state_) co_return make_error_code(errc::not_running);
+  auto op = [](std::shared_ptr<server_state> s, model::object_reference r,
+               std::uint8_t group) -> asio::awaitable<result<mms::data>> {
+    if (r.fc() != model::fc::SG) co_return make_error_code(errc::object_not_found);
+    auto t = s->resolve_ref(r);
+    if (!t) co_return t.error();
+    auto v = s->value_of(*t);
+    if (!v) co_return v.error();
+    // Rebuild the value from the stored group of each holder below the target.
+    const auto holders = s->holders_under(*t);
+    if (holders.empty()) co_return make_error_code(errc::object_not_found);
+    const auto it = s->sgcb_of_holder.find(holders.front());
+    if (it == s->sgcb_of_holder.end()) co_return make_error_code(errc::object_not_found);
+    const auto& g = *it->second;
+    if (group == 0 || group > g.num) co_return openiec61850::errc::value_out_of_range;
+    if (holders.size() == 1 && t->path.empty() && s->at(t->node).holds_value()) {
+      co_return g.groups[group - 1U][g.index.at(holders.front())];
+    }
+    if (!t->path.empty()) {
+      const mms::data* cur = &g.groups[group - 1U][g.index.at(t->node)];
+      for (const auto& sel : t->path) {
+        const auto elems = cur->elements();
+        if (sel.value >= elems.size()) co_return make_error_code(errc::object_not_found);
+        cur = &elems[sel.value];
+      }
+      co_return *cur;
+    }
+    // A structure: replace each leaf in the order holders_under() walks it.
+    std::size_t k = 0;
+    auto fill = [&](auto&& self, mms::data& d) -> void {
+      if (k < holders.size() && d.type() != mms::data_type::structure) {
+        d = g.groups[group - 1U][g.index.at(holders[k++])];
+        return;
+      }
+      auto elems = d.mutable_elements();
+      if (!elems) return;
+      for (auto& e : **elems) self(self, e);
+    };
+    fill(fill, *v);
+    co_return std::move(*v);
+  };
+  co_return co_await transport::run_on(state_->strand, op(state_, std::move(ref), sg));
+}
+
+asio::awaitable<result<goose_control_state>> server::goose_control(model::object_reference ref) const {
+  if (!state_) co_return make_error_code(errc::not_running);
+  auto op = [](std::shared_ptr<server_state> s,
+               model::object_reference r) -> asio::awaitable<result<goose_control_state>> {
+    for (const auto& g : s->gocbs) {
+      if (g->reference == r) co_return s->state_of(*g);
+    }
+    co_return make_error_code(errc::object_not_found);
+  };
+  co_return co_await transport::run_on(state_->strand, op(state_, std::move(ref)));
+}
+
+asio::awaitable<std::vector<goose_control_state>> server::goose_controls() const {
+  if (!state_) co_return std::vector<goose_control_state>{};
+  auto op = [](std::shared_ptr<server_state> s) -> asio::awaitable<result<std::vector<goose_control_state>>> {
+    std::vector<goose_control_state> out;
+    for (const auto& g : s->gocbs) out.push_back(s->state_of(*g));
+    co_return out;
+  };
+  auto r = co_await transport::run_on(state_->strand, op(state_));
+  if (!r) co_return std::vector<goose_control_state>{};
+  co_return std::move(*r);
 }
 
 std::size_t server::association_count() const noexcept {

@@ -217,4 +217,92 @@ struct report_settings {
   bool general_interrogation = false;
 };
 
+// ---------------------------------------------------------------------------------------------
+// Setting groups (7-2 §16, 8-1 §16): the SGCB "LD/LLN0.SGCB[SP]"
+
+struct sgcb_values {
+  std::uint8_t num_of_sgs = 0;
+  std::uint8_t act_sg = 0;
+  std::uint8_t edit_sg = 0;
+  bool cnf_edit = false;
+  std::optional<model::timestamp> lact_tm;
+  std::optional<std::uint16_t> resv_tms;  // Ed.2
+};
+
+// ---------------------------------------------------------------------------------------------
+// Logs (7-2 §17.3, 8-1 §17.3)
+
+// Attributes of an LCB as read with get_lcb_values(); absent ones are unset.
+struct lcb_values {
+  std::optional<bool> log_ena;
+  std::optional<std::string> log_ref;  // MMS form "LD/LN$Log"
+  std::optional<std::string> dat_set;  // MMS form "LD/LN$DS"; empty: none
+  std::optional<model::entry_time> old_entr_tm;
+  std::optional<model::entry_time> new_entr_tm;
+  std::optional<model::entry_id> old_ent;
+  std::optional<model::entry_id> new_ent;
+  std::optional<model::trigger_conditions> trg_ops;
+  std::optional<std::uint32_t> intg_pd;
+};
+
+// Written by set_lcb_values() in this order (one Write each): DatSet, TrgOps, IntgPd, LogEna.
+struct lcb_settings {
+  std::optional<model::object_reference> dat_set;
+  std::optional<model::trigger_conditions> trg_ops;
+  std::optional<std::uint32_t> intg_pd;
+  std::optional<bool> log_ena;
+};
+
+// One value of a log entry: a Journal-Variable, with the ReasonCode variable that follows it.
+struct log_entry_data {
+  std::string reference;  // the variable tag, e.g. "LD/LN$ST$Ind1$stVal"
+  mms::data value;
+  std::optional<model::trigger_conditions> reason;
+};
+
+struct log_entry {
+  model::entry_id entry_id;
+  model::entry_time time{0, std::uint16_t{0}};
+  std::vector<log_entry_data> data;
+};
+
+// ---------------------------------------------------------------------------------------------
+// Files (7-2 §23, 8-1 §23)
+
+struct file_entry {
+  std::string name;
+  std::uint32_t size = 0;
+  std::optional<std::chrono::system_clock::time_point> last_modified;
+};
+
+// ---------------------------------------------------------------------------------------------
+// GOOSE control blocks (7-2 §18.2, 8-1 §18.1)
+
+struct goose_address {
+  byte_buffer mac;  // 6 octets
+  std::uint8_t priority = 0;
+  std::uint16_t vid = 0;
+  std::uint16_t app_id = 0;
+};
+
+// Attributes of a GoCB as read with get_gocb_values(); absent ones (MinTime... in Ed.1) are unset.
+struct gocb_values {
+  std::optional<bool> go_ena;
+  std::optional<std::string> go_id;
+  std::optional<std::string> dat_set;  // MMS form
+  std::optional<std::uint32_t> conf_rev;
+  std::optional<bool> nds_com;
+  std::optional<goose_address> dst_address;
+  std::optional<std::uint32_t> min_time;
+  std::optional<std::uint32_t> max_time;
+  std::optional<bool> fixed_offs;
+};
+
+// Written by set_gocb_values() in this order (one Write each): GoID, DatSet, GoEna.
+struct gocb_settings {
+  std::optional<std::string> go_id;
+  std::optional<model::object_reference> dat_set;
+  std::optional<bool> go_ena;
+};
+
 }  // namespace openiec61850::client

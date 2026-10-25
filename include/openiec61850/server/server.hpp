@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -7,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <asio/any_io_executor.hpp>
@@ -26,6 +28,7 @@
 #include "openiec61850/model/quality.hpp"
 #include "openiec61850/model/timestamp.hpp"
 #include "openiec61850/server/error.hpp"
+#include "openiec61850/server/files.hpp"
 #include "openiec61850/server/model.hpp"
 
 // The IEC 61850 ACSI Servidor over MMS (IEC 61850-7-2 services mapped per IEC 61850-8-1).
@@ -36,7 +39,12 @@
 // GetNamedVariableListAttributes, Read / Write of a list, association-specific "@" lists);
 // reporting (BRCB and URCB, 7-2 §17.2 / 8-1 §17.2); control with the four control models
 // (direct / sbo, normal / enhanced security, 7-2 §20 / 8-1 §20) through an application handler,
-// with asynchronous completion of enhanced-security operations (CommandTermination).
+// with asynchronous completion of enhanced-security operations (CommandTermination); setting
+// groups (SGCB: SelectActiveSG, SelectEditSG, SetEditSGValue, ConfirmEditSGValues,
+// GetEditSGValue, GetSGCBValues, 7-2 §16 / 8-1 §16); logs (LCBs and bounded in-memory logs fed by
+// the reporting triggers, read with ReadJournal, 7-2 §17.3 / 8-1 §17.3); file transfer (MMS file
+// services over a file_store, 7-2 §23 / 8-1 §23); GOOSE control blocks as MMS variables
+// (7-2 §18 / 8-1 §18, publishing is done elsewhere).
 //
 // Threading (ADR 0004): all the server state lives on one strand on the given executor
 // (typically a transport::io_runtime). update() and stop() may be called from any thread; the
@@ -96,6 +104,40 @@ enum class add_cause : std::uint8_t {
 enum class control_action : std::uint8_t { select, operate, cancel };
 
 struct control_result;
+
+// A setting group service invoked by a client (7-2 §16.3), before it is applied.
+enum class setting_group_action : std::uint8_t { select_active, select_edit, confirm_edit };
+
+struct setting_group_event {
+  std::uint64_t association = 0;
+  std::string logical_device;
+  setting_group_action action = setting_group_action::select_active;
+  std::uint8_t group = 0;  // the group selected (0 for SelectEditSG releasing the edit buffer)
+};
+
+// The current attributes of a GOOSE control block.
+struct goose_control_state {
+  model::object_reference reference;  // "LD/LN.name[GO]"
+  bool go_ena = false;
+  std::string go_id;
+  std::string dat_set;  // MMS form "LD/LN$DS"; empty: none
+  std::vector<model::object_reference> members;  // of the data set (FCD / FCDA)
+  std::uint32_t conf_rev = 0;
+  bool nds_com = false;
+  std::array<std::uint8_t, 6> dst_mac{};
+  std::uint8_t vlan_priority = 0;
+  std::uint16_t vlan_id = 0;
+  std::uint16_t app_id = 0;
+  std::uint32_t min_time = 0;
+  std::uint32_t max_time = 0;
+  bool fixed_offs = false;
+};
+
+// A GoCB changed through a client's write (GoEna, GoID or DatSet).
+struct goose_control_event {
+  std::uint64_t association = 0;
+  goose_control_state state;
+};
 
 namespace detail {
 struct completion_state;
@@ -206,6 +248,19 @@ struct server_options {
   // (command-already-in-execution), the Test flag (check_test_mode). Unset: every Select /
   // Operate / Cancel is refused with not_supported.
   std::function<control_result(const control_request&)> on_control;
+  // Setting groups: called before SelectActiveSG, SelectEditSG and ConfirmEditSGValues are
+  // applied (the server has already checked the group range and the edit reservation);
+  // returning a DataAccessError refuses the write. Unset: accepted.
+  std::function<std::optional<mms::data_access_error>(const setting_group_event&)> on_setting_group;
+  // Entries kept per log; on overflow the oldest are dropped.
+  std::size_t log_capacity = 1024;
+  // GoCB attributes written by a client (after the change, on the strand).
+  std::function<void(const goose_control_event&)> on_goose_control;
+  // The file store behind the MMS file services; unset: the services are rejected
+  // (unrecognized-service).
+  std::shared_ptr<file_store> files;
+  // Files open at once per association (FileOpen beyond it: resource/capability-unavailable).
+  std::size_t max_open_files = 8;
 };
 
 // One value change by the application (see server::update()).
@@ -259,6 +314,20 @@ class server {
 
   // The current value of a functionally constrained reference (or of an LN without FC).
   [[nodiscard]] asio::awaitable<result<mms::data>> read(model::object_reference ref) const;
+
+  // Local SelectActiveSG (e.g. from an HMI), from any thread: `ld` must have an SGCB
+  // (errc::object_not_found) and 1 <= sg <= NumOfSG (openiec61850::errc::value_out_of_range).
+  // Applied on the strand like update(); the changed SG values trigger reports and logs.
+  [[nodiscard]] result<void> select_active_setting_group(std::string_view ld, std::uint8_t sg);
+  // The values of setting group `sg` (1-based) of an FC SG reference, as stored (the active group
+  // equals the SG values read by clients).
+  [[nodiscard]] asio::awaitable<result<mms::data>> read_setting_group(model::object_reference ref,
+                                                                      std::uint8_t sg) const;
+
+  // The GoCB "LD/LN.name[GO]" (errc::object_not_found), or all of them.
+  [[nodiscard]] asio::awaitable<result<goose_control_state>> goose_control(
+      model::object_reference ref) const;
+  [[nodiscard]] asio::awaitable<std::vector<goose_control_state>> goose_controls() const;
 
   // Any thread.
   [[nodiscard]] std::size_t association_count() const noexcept;
