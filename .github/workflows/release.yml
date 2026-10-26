@@ -1,0 +1,93 @@
+# Public release (ADR 0006, docs/guides/releasing.md): a v* tag pushed to the GitHub mirror builds
+# the sdist and the wheels, publishes them to PyPI with trusted publishing (OIDC, no token in the
+# repository) and creates the GitHub release with the CHANGELOG section.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # dry run: builds everything, publishes nothing
+
+permissions:
+  contents: read
+
+env:
+  CIBUILDWHEEL_VERSION: "4.3.4"
+
+jobs:
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the version against the tag and the CHANGELOG
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python packaging/check_version.py --tag "$GITHUB_REF_NAME"
+      - run: python -m pip install -q build && python -m build --sdist --outdir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  wheels:
+    name: wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux x86_64 is the only platform validated locally; aarch64, macOS arm64 and Windows
+        # AMD64 use the same pyproject.toml configuration but have not been run yet.
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheels
+        shell: bash
+        run: |
+          python -m pip install -q "cibuildwheel==$CIBUILDWHEEL_VERSION"
+          python -m cibuildwheel --output-dir wheelhouse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  pypi:
+    needs: [sdist, wheels]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    # Trusted publishing: the PyPI project trusts this repository, this workflow file and this
+    # environment (configure the "pypi" environment with required reviewers).
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openiec61850/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: [pypi]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {p=1; next} /^## \[/ {p=0} p' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "openiec61850 $version" --notes-file notes.md

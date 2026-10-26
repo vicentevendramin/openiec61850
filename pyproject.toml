@@ -4,13 +4,20 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "openiec61850"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Clean-room IEC 61850 implementation with a high-performance native core"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
+authors = [{ name = "Vicente Vendramin" }]
+keywords = ["iec61850", "mms", "goose", "sampled-values", "substation-automation", "asyncio"]
 classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
   "Programming Language :: C++",
   "Programming Language :: Python :: 3",
   "Framework :: AsyncIO",
@@ -26,11 +33,23 @@ minimum-version = "build-system.requires"
 cmake.version = ">=3.25"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["python/openiec61850"]
+# The sdist must stay buildable on its own: keep only what the build reads.
+sdist.exclude = [".gitlab-ci.yml", ".github", "benchmarks", "fuzz", "interop", "build*", "wheelhouse"]
+
+# Single source of truth for the version: project(... VERSION x.y.z) in the top-level
+# CMakeLists.txt. The C++ library (openiec61850::version()) and the Python module
+# (openiec61850.__version__) both derive from it.
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = 'project\(openiec61850\s+VERSION\s+(?P<value>[0-9]+\.[0-9]+\.[0-9]+)'
 
 [tool.scikit-build.cmake.define]
 OPENIEC61850_BUILD_PYTHON = "ON"
 OPENIEC61850_BUILD_TESTS = "OFF"
 OPENIEC61850_BUILD_TOOLS = "OFF"
+# No C++ headers, static library or CMake package files in the wheel.
+OPENIEC61850_INSTALL = "OFF"
 # The test-only openiec61850._testing extension is never part of a release wheel. Local and CI
 # test runs enable it with: pip install . -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON
 OPENIEC61850_BUILD_PYTHON_TESTING = "OFF"
@@ -42,9 +61,35 @@ asyncio_mode = "auto"
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-*"
 skip = "*-musllinux_* *-win32 *_i686"
+build-verbosity = 1
 test-extras = ["test"]
-test-command = "pytest {project}/tests/python"
+# Release wheels never contain openiec61850._testing, so the tests that need the fake server skip;
+# what runs is import, types, values and the server tests that need no fake server.
+test-command = "pytest -q -p no:cacheprovider {project}/tests/python"
 
 [tool.cibuildwheel.linux]
-before-all = "yum install -y zip unzip curl tar git && git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics"
-environment = { VCPKG_ROOT = "/opt/vcpkg" }
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+# Runs once per container: install the vcpkg prerequisites and vcpkg itself, pinned to the
+# manifest baseline. The vcpkg binary cache lives in the container and is shared by all the
+# CPython versions of one cibuildwheel run.
+before-all = "bash {project}/packaging/cibuildwheel/install-vcpkg.sh /opt/vcpkg"
+environment = { VCPKG_ROOT = "/opt/vcpkg", VCPKG_FORCE_SYSTEM_BINARIES = "1" }
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel} && auditwheel show {wheel}"
+
+# macOS and Windows: configured but not exercised locally (see docs/guides/releasing.md).
+[tool.cibuildwheel.macos]
+archs = ["native"]
+before-all = "bash {project}/packaging/cibuildwheel/install-vcpkg.sh $HOME/vcpkg"
+environment = { VCPKG_ROOT = "$HOME/vcpkg", MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+# GitHub's Windows runners ship a full vcpkg clone (VCPKG_INSTALLATION_ROOT); the manifest's
+# builtin-baseline pins the port versions regardless of its checkout.
+environment = { VCPKG_ROOT = "$VCPKG_INSTALLATION_ROOT" }
+
+# Link the vcpkg dependencies statically into the extension on Windows (no DLLs to bundle).
+[[tool.scikit-build.overrides]]
+if.platform-system = "win32"
+cmake.define.VCPKG_TARGET_TRIPLET = "x64-windows-static-md"

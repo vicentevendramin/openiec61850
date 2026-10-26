@@ -1,0 +1,30 @@
+{
+  "name": "openiec61850",
+  "version": "0.1.0",
+  "description": "Clean-room IEC 61850 (MMS client/server, GOOSE, Sampled Values) in C++20",
+  "license": "Apache-2.0",
+  "supports": "!uwp",
+  "dependencies": [
+    "asio",
+    "pugixml",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "tls": {
+      "description": "TLS (IEC 62351) via OpenSSL 3",
+      "dependencies": [
+        "openssl"
+      ]
+    },
+    "tools": {
+      "description": "Command-line tools (openiec61850-server, openiec61850-client)"
+    }
+  }
+}

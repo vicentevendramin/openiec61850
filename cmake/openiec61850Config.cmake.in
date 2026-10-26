@@ -1,0 +1,19 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Public headers include Asio; OpenSSL is public when the library was built with TLS. pugixml is a
+# private dependency that only a static library passes on to the final link.
+set(openiec61850_WITH_TLS @OPENIEC61850_ENABLE_TLS@)
+set(openiec61850_SHARED @BUILD_SHARED_LIBS@)
+
+find_dependency(asio CONFIG)
+if(NOT openiec61850_SHARED)
+  find_dependency(pugixml CONFIG)
+endif()
+if(openiec61850_WITH_TLS)
+  find_dependency(OpenSSL 3)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/openiec61850Targets.cmake")
+check_required_components(openiec61850)

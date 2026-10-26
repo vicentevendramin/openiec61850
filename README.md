@@ -93,6 +93,8 @@ asyncio.run(main())
 - [Glossary](GLOSSARY.md)
 - [Architecture decision records](docs/adr/)
 - [Contributing](CONTRIBUTING.md)
+- [Guides](docs/guides/) (getting started, architecture, contributing, releasing)
+- [Changelog](CHANGELOG.md)
 
 ## License
 

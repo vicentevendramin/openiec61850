@@ -1,0 +1,4 @@
+openiec61850 provides CMake targets:
+
+  find_package(openiec61850 CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE openiec61850::openiec61850)

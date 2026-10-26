@@ -49,7 +49,7 @@ async def test_connection_refused():
 
 
 async def test_authentication():
-    from openiec61850._testing import FakeServer
+    FakeServer = pytest.importorskip("openiec61850._testing").FakeServer
 
     s = FakeServer(password="secret")
     try:
@@ -79,7 +79,7 @@ async def test_discovery(client, server):
 
 
 async def test_name_list_continuations():
-    from openiec61850._testing import FakeServer
+    FakeServer = pytest.importorskip("openiec61850._testing").FakeServer
 
     s = FakeServer(name_list_page=2)
     try:

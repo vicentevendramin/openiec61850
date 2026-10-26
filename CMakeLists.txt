@@ -12,6 +12,12 @@ option(OPENIEC61850_BUILD_TOOLS "Build the command-line tools (openiec61850-serv
 option(OPENIEC61850_BUILD_BENCHMARKS "Build the Google Benchmark suite (benchmarks/)" OFF)
 option(OPENIEC61850_ENABLE_TLS "Enable TLS (IEC 62351) via OpenSSL 3" OFF)
 option(OPENIEC61850_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(_openiec61850_top_level ON)
+else()
+  set(_openiec61850_top_level OFF)
+endif()
+option(OPENIEC61850_INSTALL "Generate install rules (headers, library, CMake package)" ${_openiec61850_top_level})
 set(OPENIEC61850_SANITIZERS "" CACHE STRING "Semicolon-separated list of sanitizers (e.g. address;undefined)")
 
 if(OPENIEC61850_BUILD_TESTS)

@@ -13,9 +13,11 @@ foreach(tool openiec61850_server_tool openiec61850_client_tool)
   openiec61850_set_warnings(${tool})
 endforeach()
 
-include(GNUInstallDirs)
-install(TARGETS openiec61850_server_tool openiec61850_client_tool
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(OPENIEC61850_INSTALL)
+  include(GNUInstallDirs)
+  install(TARGETS openiec61850_server_tool openiec61850_client_tool
+          RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 if(OPENIEC61850_BUILD_TESTS)
   find_program(OPENIEC61850_BASH bash)
