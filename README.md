@@ -88,6 +88,44 @@ async def main():
 asyncio.run(main())
 ```
 
+Setting groups, logs, files and GoCBs on the client side; SGCB, LCBs, logs, GoCBs and a file
+store on the server side:
+
+```python
+async with await iec.Client.connect("10.0.0.5") as client:
+    await client.select_active_sg("IED1LD0", 2)
+    await client.select_edit_sg("IED1LD0", 3)
+    await client.set_edit_sg_value("IED1LD0/PTOC1.StrVal.setMag.f[SE]", 3.5)
+    await client.confirm_edit_sg_values("IED1LD0")
+    for entry in await client.query_log_by_time("IED1LD0/LLN0.EventLog"):
+        print(entry.entry_id, entry.time, entry.values())
+    for f in await client.list_files("COMTRADE"):
+        await client.download_file(f.name, f.name.replace("/", "_"))    # streamed to disk
+    await client.set_gocb_values("IED1LD0/LLN0.gcb01[GO]", go_ena=True)
+
+server = await iec.Server.start(model, port=102, files=iec.DirectoryFileStore("/var/comtrade"),
+                               on_goose_control=lambda state: print(state.go_ena))
+```
+
+GOOSE and Sampled Values live in `openiec61850.goose` (loopback network for tests, raw sockets on
+Linux):
+
+```python
+from openiec61850 import goose
+
+link = goose.RawSocketLink.open("eth1")                       # needs CAP_NET_RAW
+pub = goose.GoosePublisher(link, goose.GoosePublisherConfig.from_scl("bay.cid", "BAY1", "LD0", "gcb01"),
+                           [False, iec.Quality()])
+pub.start()
+pub.publish([True, iec.Quality()])                            # stNum + 1, fast retransmissions
+
+async with goose.Receiver(link) as rx:
+    async for event in rx.subscribe(gocb_ref="BAY1LD0/LLN0$GO$gcb01"):
+        print(event.kind, event.message.st_num, event.message.values)
+    async for batch in rx.subscribe_sv(sv_id="MU01").batches():  # lists of SvSample
+        currents = [s.le.currents for s in batch]
+```
+
 ## Documentation
 
 - [Glossary](GLOSSARY.md)

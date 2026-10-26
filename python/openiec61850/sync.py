@@ -15,13 +15,22 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import threading
+from datetime import datetime
 from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
-from typing import Any, Generic, TypeVar
+from typing import IO, Any, Generic, TypeVar
 
 from openiec61850 import _client, _control, _server
 from openiec61850._client import (
     AssociationInfo,
+    FileEntry,
+    GoCBSettings,
+    GoCBValues,
+    LcbSettings,
+    LcbValues,
+    LogEntry,
+    SgcbValues,
     ConnectionEvent,
     ConnectionState,
     DataDefinition,
@@ -35,7 +44,7 @@ from openiec61850._client import (
 )
 from openiec61850._errors import Iec61850Error
 from openiec61850._control import LastApplError
-from openiec61850._types import CtlModel, EntryID, ObjectClass, ObjectReference
+from openiec61850._types import CtlModel, EntryID, EntryTime, ObjectClass, ObjectReference
 
 __all__ = ["Client", "Control", "ReportSubscription", "ReportStream", "EventStream", "Server"]
 
@@ -335,6 +344,73 @@ class Client:
     def last_entry_id(self, rcb: Ref) -> EntryID | None:
         return self._c.last_entry_id(rcb)
 
+    # setting groups
+
+    def sgcb_values(self, ld: str) -> SgcbValues:
+        return _run(self._c.sgcb_values(ld))
+
+    def select_active_sg(self, ld: str, sg: int) -> None:
+        _run(self._c.select_active_sg(ld, sg))
+
+    def select_edit_sg(self, ld: str, sg: int) -> None:
+        _run(self._c.select_edit_sg(ld, sg))
+
+    def set_edit_sg_value(self, ref: Ref, value: Any) -> None:
+        _run(self._c.set_edit_sg_value(ref, value))
+
+    def confirm_edit_sg_values(self, ld: str) -> None:
+        _run(self._c.confirm_edit_sg_values(ld))
+
+    def edit_sg_value(self, ref: Ref) -> Any:
+        return _run(self._c.edit_sg_value(ref))
+
+    # logs
+
+    def lcb_values(self, lcb: Ref) -> LcbValues:
+        return _run(self._c.lcb_values(lcb))
+
+    def set_lcb_values(self, lcb: Ref, settings: LcbSettings | None = None, **changes: Any) -> None:
+        _run(self._c.set_lcb_values(lcb, settings, **changes))
+
+    def query_log_by_time(
+        self, log: Ref, start: EntryTime | datetime | None = None, stop: EntryTime | datetime | None = None
+    ) -> list[LogEntry]:
+        return _run(self._c.query_log_by_time(log, start, stop))
+
+    def query_log_after(self, log: Ref, time: EntryTime | datetime, entry_id: EntryID | bytes) -> list[LogEntry]:
+        return _run(self._c.query_log_after(log, time, entry_id))
+
+    def log_status(self, log: Ref) -> int:
+        return _run(self._c.log_status(log))
+
+    # files
+
+    def list_files(self, path: str = "") -> list[FileEntry]:
+        return _run(self._c.list_files(path))
+
+    def read_file(self, name: str) -> bytes:
+        return _run(self._c.read_file(name))
+
+    def download_file(
+        self, name: str, dest: str | os.PathLike[str] | IO[bytes], *, on_chunk: Callable[[int], Any] | None = None
+    ) -> int:
+        """Chunks are written (and ``on_chunk`` called) on the facade's loop thread."""
+        return _run(self._c.download_file(name, dest, on_chunk=on_chunk))
+
+    def delete_file(self, name: str) -> None:
+        _run(self._c.delete_file(name))
+
+    def rename_file(self, current: str, new: str) -> None:
+        _run(self._c.rename_file(current, new))
+
+    # GOOSE control blocks
+
+    def gocb_values(self, gocb: Ref) -> GoCBValues:
+        return _run(self._c.gocb_values(gocb))
+
+    def set_gocb_values(self, gocb: Ref, settings: GoCBSettings | None = None, **changes: Any) -> None:
+        _run(self._c.set_gocb_values(gocb, settings, **changes))
+
     @property
     def reports_dropped(self) -> int:
         return self._c.reports_dropped
@@ -409,3 +485,16 @@ class Server:
 
     def read(self, ref: Ref) -> Any:
         return _run(self._s.read(ref))
+
+    def select_active_setting_group(self, ld: str, sg: int) -> None:
+        """Non-blocking; any thread."""
+        self._s.select_active_setting_group(ld, sg)
+
+    def read_setting_group(self, ref: Ref, sg: int) -> Any:
+        return _run(self._s.read_setting_group(ref, sg))
+
+    def goose_control(self, ref: Ref) -> _server.GooseControlState:
+        return _run(self._s.goose_control(ref))
+
+    def goose_controls(self) -> list[_server.GooseControlState]:
+        return _run(self._s.goose_controls())

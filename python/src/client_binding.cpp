@@ -376,6 +376,134 @@ class native_client {
                   c_.operate(ref(object), data_from_py(value), control_options_from_py(options), *det),
                   [] { return nb::none(); }, det);
   }
+  // --- setting groups
+
+  nb::object sgcb_values(std::string ld) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_sgcb_values(std::move(ld), *det),
+                  [](client::sgcb_values v) { return sgcb_values_to_py(v); }, det);
+  }
+  nb::object select_active_sg(std::string ld, int sg) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.select_active_sg(std::move(ld), group(sg), *det),
+                  [] { return nb::none(); }, det);
+  }
+  nb::object select_edit_sg(std::string ld, int sg) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.select_edit_sg(std::move(ld), group(sg), *det),
+                  [] { return nb::none(); }, det);
+  }
+  nb::object set_edit_sg_value(nb::handle r, nb::handle value) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.set_edit_sg_value(ref(r), data_from_py(value), *det),
+                  [] { return nb::none(); }, det);
+  }
+  nb::object confirm_edit_sg_values(std::string ld) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.confirm_edit_sg_values(std::move(ld), *det),
+                  [] { return nb::none(); }, det);
+  }
+  nb::object edit_sg_value(nb::handle r) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_edit_sg_value(ref(r), *det),
+                  [](mms::data d) { return data_to_py(d); }, det);
+  }
+
+  // --- logs
+
+  nb::object lcb_values(nb::handle lcb) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_lcb_values(ref(lcb), *det),
+                  [](client::lcb_values v) { return lcb_values_to_py(v); }, det);
+  }
+  nb::object set_lcb_values(nb::handle lcb, nb::handle settings) {
+    auto det = details();
+    return launch(c_.get_executor(),
+                  c_.set_lcb_values(ref(lcb), lcb_settings_from_py(settings, parse_), *det),
+                  [] { return nb::none(); }, det);
+  }
+  nb::object query_log_by_time(nb::handle log, nb::handle start, nb::handle stop) {
+    std::optional<model::entry_time> from;
+    std::optional<model::entry_time> to;
+    if (!start.is_none()) from = entry_time_from_py(start);
+    if (!stop.is_none()) to = entry_time_from_py(stop);
+    auto det = details();
+    return launch(c_.get_executor(), c_.query_log_by_time(ref(log), from, to, *det), log_entries_to_py,
+                  det);
+  }
+  nb::object query_log_after(nb::handle log, nb::handle time, nb::handle entry) {
+    auto det = details();
+    return launch(c_.get_executor(),
+                  c_.query_log_after(ref(log), entry_time_from_py(time), entry_id_from_py(entry), *det),
+                  log_entries_to_py, det);
+  }
+  nb::object log_status(nb::handle log) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_log_status(ref(log), *det),
+                  [](std::uint32_t n) { return nb::cast(n); }, det);
+  }
+
+  // --- files
+
+  nb::object file_directory(std::string path) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_file_directory(std::move(path), *det),
+                  [](std::vector<client::file_entry> v) {
+                    nb::list out;
+                    for (const auto& e : v) out.append(file_entry_to_py(e));
+                    return nb::object(std::move(out));
+                  }, det);
+  }
+  nb::object get_file(std::string name) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_file(std::move(name), *det),
+                  [](byte_buffer b) { return nb::object(to_bytes(b)); }, det);
+  }
+  // Streaming GetFile: every chunk is handed to on_chunk(bytes) on the asyncio loop (scheduled with
+  // call_soon_threadsafe from the client strand, in order and before the future resolves). The
+  // I/O thread holds the GIL only to schedule a chunk; nothing waits for the loop.
+  nb::object get_file_stream(std::string name, nb::handle on_chunk) {
+    auto loop = std::make_shared<py_ref>(nb::module_::import_("asyncio").attr("get_running_loop")());
+    auto cb = std::make_shared<py_ref>(on_chunk);
+    auto sink = [loop, cb](byte_buffer b) {
+      if (interpreter_finalizing()) return;
+      const nb::gil_scoped_acquire gil;
+      try {
+        nb::handle(loop->get()).attr("call_soon_threadsafe")(nb::handle(cb->get()), to_bytes(b));
+      } catch (nb::python_error&) {
+        // The loop is closed.
+      } catch (...) {
+      }
+    };
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_file(std::move(name), std::move(sink), *det),
+                  [](std::uint64_t n) { return nb::cast(n); }, det);
+  }
+  nb::object delete_file(std::string name) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.delete_file(std::move(name), *det), [] { return nb::none(); },
+                  det);
+  }
+  nb::object rename_file(std::string from, std::string to) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.rename_file(std::move(from), std::move(to), *det),
+                  [] { return nb::none(); }, det);
+  }
+
+  // --- GOOSE control blocks
+
+  nb::object gocb_values(nb::handle gocb) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.get_gocb_values(ref(gocb), *det),
+                  [](client::gocb_values v) { return gocb_values_to_py(v); }, det);
+  }
+  nb::object set_gocb_values(nb::handle gocb, nb::handle settings) {
+    auto det = details();
+    return launch(c_.get_executor(),
+                  c_.set_gocb_values(ref(gocb), gocb_settings_from_py(settings, parse_), *det),
+                  [] { return nb::none(); }, det);
+  }
+
   [[nodiscard]] std::uint64_t reports_dropped() const noexcept { return c_.reports_dropped(); }
   nb::object next_event() {
     return launch(c_.get_executor(), c_.next_event(),
@@ -383,6 +511,10 @@ class native_client {
   }
 
  private:
+  static std::uint8_t group(int sg) {
+    if (sg < 0 || sg > 255) throw nb::value_error("setting group out of range");
+    return static_cast<std::uint8_t>(sg);
+  }
   model::object_reference ref(nb::handle h) const { return ref_from_py(h, parse_); }
   std::vector<model::object_reference> refs_of(nb::handle seq) const {
     std::vector<model::object_reference> v;
@@ -435,7 +567,27 @@ void bind_client(nb::module_& m) {
       .def("control", &native_client::control, nb::arg("object"), nb::arg("ctl_model") = nb::none(),
            nb::arg("read_sbo_timeout") = true, nb::arg("read_structure") = true)
       .def("operate", &native_client::operate, nb::arg("object"), nb::arg("value"),
-           nb::arg("options") = nb::none());
+           nb::arg("options") = nb::none())
+      .def("sgcb_values", &native_client::sgcb_values, nb::arg("ld"))
+      .def("select_active_sg", &native_client::select_active_sg, nb::arg("ld"), nb::arg("sg"))
+      .def("select_edit_sg", &native_client::select_edit_sg, nb::arg("ld"), nb::arg("sg"))
+      .def("set_edit_sg_value", &native_client::set_edit_sg_value, nb::arg("ref"), nb::arg("value"))
+      .def("confirm_edit_sg_values", &native_client::confirm_edit_sg_values, nb::arg("ld"))
+      .def("edit_sg_value", &native_client::edit_sg_value, nb::arg("ref"))
+      .def("lcb_values", &native_client::lcb_values, nb::arg("lcb"))
+      .def("set_lcb_values", &native_client::set_lcb_values, nb::arg("lcb"), nb::arg("settings"))
+      .def("query_log_by_time", &native_client::query_log_by_time, nb::arg("log"),
+           nb::arg("start").none(), nb::arg("stop").none())
+      .def("query_log_after", &native_client::query_log_after, nb::arg("log"), nb::arg("time"),
+           nb::arg("entry_id"))
+      .def("log_status", &native_client::log_status, nb::arg("log"))
+      .def("file_directory", &native_client::file_directory, nb::arg("path") = "")
+      .def("get_file", &native_client::get_file, nb::arg("name"))
+      .def("get_file_stream", &native_client::get_file_stream, nb::arg("name"), nb::arg("on_chunk"))
+      .def("delete_file", &native_client::delete_file, nb::arg("name"))
+      .def("rename_file", &native_client::rename_file, nb::arg("from_"), nb::arg("to"))
+      .def("gocb_values", &native_client::gocb_values, nb::arg("gocb"))
+      .def("set_gocb_values", &native_client::set_gocb_values, nb::arg("gocb"), nb::arg("settings"));
 
   nb::class_<native_control>(m, "Control",
                              "Native control handle. Use openiec61850.Control instead.")

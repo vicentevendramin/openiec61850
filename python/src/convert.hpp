@@ -3,7 +3,9 @@
 #include <nanobind/nanobind.h>
 
 #include <chrono>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "openiec61850/client/report.hpp"
 #include "openiec61850/client/types.hpp"
@@ -51,6 +53,17 @@ nb::object rcb_values_to_py(const client::rcb_values& v);
 nb::object report_to_py(const client::report& r);
 nb::object event_to_py(const client::connection_event& e);
 nb::object association_info_to_py(const association::association_info& i);
+
+// Setting groups, logs, files and GoCBs (client/types.hpp). Times of files are POSIX seconds.
+nb::object timestamp_to_py(const std::optional<model::timestamp>& t);
+nb::object sgcb_values_to_py(const client::sgcb_values& v);
+nb::object lcb_values_to_py(const client::lcb_values& v);
+// [(entry_id bytes, (ms_of_day, days), [(reference, tagged value, reason raw | None)])]
+nb::object log_entries_to_py(std::vector<client::log_entry> v);
+nb::object file_entry_to_py(const client::file_entry& e);
+nb::object gocb_values_to_py(const client::gocb_values& v);
+client::lcb_settings lcb_settings_from_py(nb::handle d, const model::parse_options& opts);
+client::gocb_settings gocb_settings_from_py(nb::handle d, const model::parse_options& opts);
 
 client::report_settings report_settings_from_py(nb::handle d, const model::parse_options& opts);
 client::rcb_settings rcb_settings_from_py(nb::handle d, const model::parse_options& opts);

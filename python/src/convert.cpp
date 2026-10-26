@@ -372,6 +372,77 @@ nb::object association_info_to_py(const association::association_info& i) {
   return o;
 }
 
+nb::object timestamp_to_py(const std::optional<model::timestamp>& t) {
+  return t ? data_to_py(t->to_mms()) : none();
+}
+
+nb::object sgcb_values_to_py(const client::sgcb_values& v) {
+  nb::dict o;
+  o["num_of_sgs"] = v.num_of_sgs;
+  o["act_sg"] = v.act_sg;
+  o["edit_sg"] = v.edit_sg;
+  o["cnf_edit"] = v.cnf_edit;
+  o["lact_tm"] = timestamp_to_py(v.lact_tm);
+  o["resv_tms"] = opt_to_py(v.resv_tms);
+  return o;
+}
+
+nb::object lcb_values_to_py(const client::lcb_values& v) {
+  nb::dict o;
+  o["log_ena"] = opt_to_py(v.log_ena);
+  o["log_ref"] = v.log_ref ? text_to_py(*v.log_ref) : none();
+  o["dat_set"] = v.dat_set ? text_to_py(*v.dat_set) : none();
+  o["old_entr_tm"] = v.old_entr_tm ? entry_time_to_py(*v.old_entr_tm) : none();
+  o["new_entr_tm"] = v.new_entr_tm ? entry_time_to_py(*v.new_entr_tm) : none();
+  o["old_ent"] = v.old_ent ? nb::object(to_bytes(v.old_ent->bytes())) : none();
+  o["new_ent"] = v.new_ent ? nb::object(to_bytes(v.new_ent->bytes())) : none();
+  o["trg_ops"] = v.trg_ops ? nb::cast(v.trg_ops->raw()) : none();
+  o["intg_pd"] = opt_to_py(v.intg_pd);
+  return o;
+}
+
+nb::object log_entries_to_py(std::vector<client::log_entry> v) {
+  nb::list out;
+  for (const auto& e : v) {
+    nb::list data;
+    for (const auto& d : e.data) {
+      data.append(nb::make_tuple(text_to_py(d.reference), data_to_py(d.value),
+                                 d.reason ? nb::cast(d.reason->raw()) : none()));
+    }
+    out.append(nb::make_tuple(to_bytes(e.entry_id.bytes()), entry_time_to_py(e.time), data));
+  }
+  return out;
+}
+
+nb::object file_entry_to_py(const client::file_entry& e) {
+  nb::object mtime = none();
+  if (e.last_modified) {
+    const auto d = std::chrono::duration_cast<std::chrono::duration<double>>(
+        e.last_modified->time_since_epoch());
+    mtime = nb::cast(d.count());
+  }
+  return nb::make_tuple(text_to_py(e.name), e.size, mtime);
+}
+
+nb::object gocb_values_to_py(const client::gocb_values& v) {
+  nb::dict o;
+  o["go_ena"] = opt_to_py(v.go_ena);
+  o["go_id"] = v.go_id ? text_to_py(*v.go_id) : none();
+  o["dat_set"] = v.dat_set ? text_to_py(*v.dat_set) : none();
+  o["conf_rev"] = opt_to_py(v.conf_rev);
+  o["nds_com"] = opt_to_py(v.nds_com);
+  if (v.dst_address) {
+    const auto& a = *v.dst_address;
+    o["dst_address"] = nb::make_tuple(to_bytes(a.mac), a.priority, a.vid, a.app_id);
+  } else {
+    o["dst_address"] = none();
+  }
+  o["min_time"] = opt_to_py(v.min_time);
+  o["max_time"] = opt_to_py(v.max_time);
+  o["fixed_offs"] = opt_to_py(v.fixed_offs);
+  return o;
+}
+
 namespace {
 
 struct dict_reader {
@@ -500,6 +571,25 @@ client::client_options client_options_from_py(nb::handle h) {
   d.read("report_queue_capacity", o.report_queue_capacity);
   d.read("event_queue_capacity", o.event_queue_capacity);
   return o;
+}
+
+client::lcb_settings lcb_settings_from_py(nb::handle h, const model::parse_options& opts) {
+  const auto d = reader(h);
+  client::lcb_settings s;
+  if (d.given("dat_set")) s.dat_set = ref_from_py(d.at("dat_set"), opts);
+  if (d.given("trg_ops")) s.trg_ops = model::trigger_conditions::from_raw(nb::cast<std::uint8_t>(d.at("trg_ops")));
+  d.read_opt("intg_pd", s.intg_pd);
+  d.read_opt("log_ena", s.log_ena);
+  return s;
+}
+
+client::gocb_settings gocb_settings_from_py(nb::handle h, const model::parse_options& opts) {
+  const auto d = reader(h);
+  client::gocb_settings s;
+  d.read_opt("go_id", s.go_id);
+  if (d.given("dat_set")) s.dat_set = ref_from_py(d.at("dat_set"), opts);
+  d.read_opt("go_ena", s.go_ena);
+  return s;
 }
 
 }  // namespace openiec61850::python

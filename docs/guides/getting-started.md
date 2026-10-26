@@ -85,6 +85,73 @@ asyncio.run(main())
   Cancel must be answered at once.
 - `openiec61850.sync.Server.start(...)` is the blocking variant.
 
+### Setting groups, logs, files and GOOSE control blocks
+
+The builder declares the SGCB (LLN0 only), logs, log control blocks and GoCBs; FC SG attributes
+take one value per group:
+
+```python
+lln0.setting_group_control(num_of_sgs=3, act_sg=1)
+ld.logical_node("PTOC1").data_object("StrVal").structure("setMag", FC.SG) \
+    .attribute("f", B.FLOAT32).group_value(1, 1.0).group_value(2, 2.0).group_value(3, 3.0)
+lln0.log("EventLog")
+lln0.log_control(iec.LogControl("lcb01", data_set="DS1", log_name="EventLog", log_ena=True,
+                                trg_ops=TrgOps.DATA_CHANGE))
+lln0.goose_control(iec.GooseControl("gcb01", go_id="GO1", data_set="DS1", app_id=0x1000))
+```
+
+`Server.start()` then takes `on_setting_group` (answers like `on_write`), `log_capacity`,
+`on_goose_control` (runs on the event loop), `files` and `max_open_files`. `files` is an
+`iec.MemoryFileStore()`, an `iec.DirectoryFileStore(root)` (confined to `root`) or your own
+`iec.FileStore` subclass; the methods of a Python store run synchronously on the I/O thread like
+the hooks, so they must return quickly. `server.select_active_setting_group(ld, sg)`,
+`await server.read_setting_group(ref, sg)` and `await server.goose_controls()` give local access.
+
+On the client: `sgcb_values`, `select_active_sg`, `select_edit_sg`, `set_edit_sg_value`,
+`confirm_edit_sg_values`, `edit_sg_value`; `lcb_values`, `set_lcb_values`, `query_log_by_time`,
+`query_log_after`, `log_status` (entries are `LogEntry` objects); `list_files`, `read_file`,
+`download_file(name, path_or_file)` (streamed chunk by chunk), `delete_file`, `rename_file`
+(failures raise `iec.FileError` with `file_error`); `gocb_values`, `set_gocb_values`. The
+`sync.Client` facade has the same methods.
+
+### GOOSE and Sampled Values
+
+```python
+import asyncio
+import openiec61850 as iec
+from openiec61850 import goose
+
+async def main():
+    net = goose.LoopbackNetwork()                      # or goose.RawSocketLink.open("eth1")
+    tx, rx = net.attach("02-00-00-00-00-01"), net.attach("02-00-00-00-00-02")
+    cfg = goose.GoosePublisherConfig(gocb_ref="IED1LD0/LLN0$GO$gcb01", dat_set="IED1LD0/LLN0$DS1",
+                                     go_id="GO1", app_id=0x1000)
+    async with goose.Receiver(rx) as receiver:
+        sub = receiver.subscribe(gocb_ref=cfg.gocb_ref)
+        with goose.GoosePublisher(tx, cfg, [False, iec.Quality()]) as pub:
+            pub.start()
+            pub.publish([True, iec.Quality()])
+            async for event in sub:
+                if event.kind is goose.GooseEventKind.MESSAGE and event.message.st_num == 2:
+                    print(event.message.values)
+                    break
+
+        sv_sub = receiver.subscribe_sv(sv_id="MU01", smp_cnt_wrap=4000)
+        sv_pub = goose.SvPublisher(tx, goose.SvPublisherConfig(sv_id="MU01"))
+        for i in range(80):
+            sv_pub.push(goose.LeSamples.from_measurements([100.0, -50.0, -50.0, 0], [230.0] * 4))
+        batch = await sv_sub.get_batch()
+        print(len(batch), batch[0].le.currents)
+
+asyncio.run(main())
+```
+
+Configurations can be read from SCL (`GoosePublisherConfig.from_scl(scl, ied, ld_inst, cb_name)`,
+and likewise for the subscriber and SV classes). Subscriptions deliver to the event loop in
+batches; at 9-2 LE rates (4000 samples/s and more per stream) consume `SvSubscriber.batches()`,
+keep the per-sample work small and watch `dropped`. Processing that needs every sample with a
+bounded latency belongs in C++.
+
 ## C++
 
 ### Building

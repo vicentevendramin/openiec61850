@@ -26,6 +26,7 @@ Hierarchy::
     │   │   InvalidAddress, TypeUnsupported, ObjectAttributeInconsistent,
     │   │   AccessUnsupported, NotDeleted
     │   ├── RequestRejected, ConcludeRefused
+    │   ├── FileError                  an MMS file service failed (``file_error``)
     │   └── ControlRefused, SelectFailed (also ControlError)
     ├── ControlError                   a control service failed
     │   ├── ControlRefused             LastApplError (refusal or negative CommandTermination)
@@ -40,7 +41,8 @@ Hierarchy::
     │   └── ServerStopped              server API used after Server.stop()
     ├── InvalidReference (ValueError)  malformed object reference
     ├── InvalidModel (ValueError)      inconsistent server data model
-    └── SclError (ValueError)          an SCL file could not be loaded (see ``diagnostics``)
+    ├── SclError (ValueError)          an SCL file could not be loaded (see ``diagnostics``)
+    └── FileStoreError (OSError)       a local file store operation failed (``errno`` set)
 """
 
 from __future__ import annotations
@@ -80,6 +82,9 @@ __all__ = [
     "NotDeleted",
     "RequestRejected",
     "ConcludeRefused",
+    "FileError",
+    "FileErrorCode",
+    "FileStoreError",
     "ControlError",
     "ControlRefused",
     "SelectFailed",
@@ -329,6 +334,35 @@ class SclError(Iec61850Error, ValueError):
     diagnostics: tuple[Any, ...] = ()
 
 
+class FileErrorCode(enum.IntEnum):
+    """MMS file errors (ISO 9506-2 §7.5.4, errorClass ``file``)."""
+
+    OTHER = 0
+    FILENAME_AMBIGUOUS = 1
+    FILE_BUSY = 2
+    FILENAME_SYNTAX_ERROR = 3
+    CONTENT_TYPE_INVALID = 4
+    POSITION_INVALID = 5
+    FILE_ACCESS_DENIED = 6
+    FILE_NON_EXISTENT = 7
+    DUPLICATE_FILENAME = 8
+    INSUFFICIENT_SPACE_IN_FILESTORE = 9
+
+
+class FileError(ServiceError):
+    """The server refused a file service; ``file_error`` (:class:`FileErrorCode`) says why."""
+
+    @property
+    def file_error(self) -> FileErrorCode | int | None:
+        return _enum(FileErrorCode, self.error_code)
+
+
+class FileStoreError(Iec61850Error, OSError):
+    """A local file store operation failed (:class:`~openiec61850.MemoryFileStore`,
+    :class:`~openiec61850.DirectoryFileStore`); ``errno`` is ENOENT, EACCES, EEXIST, EINVAL,
+    EBUSY or ENOSPC."""
+
+
 class ControlError(Iec61850Error):
     """A control service failed.
 
@@ -435,6 +469,17 @@ _SERVER = {
     6: AccessDenied,
 }
 
+# server::file_errc (server/files.hpp): not_found, access_denied, exists, invalid_name, busy,
+# no_space.
+_FILE_ERRNO = {
+    1: _errno.ENOENT,
+    2: _errno.EACCES,
+    3: _errno.EEXIST,
+    4: _errno.EINVAL,
+    5: _errno.EBUSY,
+    6: _errno.ENOSPC,
+}
+
 _BY_CATEGORY: dict[str, dict[int, type[Iec61850Error]]] = {
     "openiec61850.server": _SERVER,
     "openiec61850.client": _CLIENT,
@@ -447,6 +492,8 @@ def error_class_for(category: str, value: int) -> type[Iec61850Error]:
     """The exception class for a native error code."""
     if category == "openiec61850.control":
         return ControlRefused
+    if category == "openiec61850.server.file":
+        return FileStoreError
     table = _BY_CATEGORY.get(category)
     if table is not None:
         return table.get(value, Iec61850Error)
@@ -472,9 +519,13 @@ def _make_error(category: str, value: int, message: str, details: dict[str, Any]
     if category in ("system", "generic", "asio.system") and value == _errno.ENOMEM:
         return MemoryError(message)
     cls = error_class_for(category, value)
+    if cls is ServiceError and details and details.get("error_class") == ErrorClass.FILE:
+        cls = FileError
     exc = cls(message, category=category, code=value)
     if isinstance(exc, OSError) and category in ("system", "generic", "asio.system"):
         exc.errno = value
+    if isinstance(exc, FileStoreError):
+        exc.errno = _FILE_ERRNO.get(value, _errno.EIO)
     if category == "openiec61850.control" or details:
         from openiec61850._control import LastApplError, add_cause
 

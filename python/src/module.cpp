@@ -42,6 +42,7 @@ NB_MODULE(_core, m) {
   py::bind_model(m);
   py::bind_client(m);
   py::bind_server(m);
+  py::bind_goose(m);
 
   nb::module_::import_("atexit").attr("register")(m.attr("_shutdown"));
 }

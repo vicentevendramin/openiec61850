@@ -6,9 +6,11 @@ import asyncio
 import collections
 import enum
 import inspect
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar, Union
+from datetime import datetime, timezone
+from typing import IO, Any, Generic, TypeVar, Union
 
 from openiec61850 import _core
 from openiec61850._control import Control, Originator, _options
@@ -24,6 +26,7 @@ from openiec61850._types import (
     ObjectClass,
     ObjectReference,
     OptFlds,
+    Timestamp,
     TrgOps,
 )
 from openiec61850._values import TypeNeeded, TypeSpec, decode, encode, spec_from_definition, spec_from_tagged
@@ -49,6 +52,15 @@ __all__ = [
     "ReportEntry",
     "ReportSubscription",
     "ReportStream",
+    "SgcbValues",
+    "LcbValues",
+    "LcbSettings",
+    "LogEntry",
+    "LogEntryData",
+    "FileEntry",
+    "GoCBValues",
+    "GoCBSettings",
+    "GooseAddress",
     "DEFAULT_AP_TITLE",
     "DEFAULT_AE_QUALIFIER",
 ]
@@ -375,6 +387,174 @@ class Report:
     def values(self) -> dict[str, Any]:
         """Included values by member reference."""
         return {str(e.reference): e.value for e in self.entries if e.reference is not None}
+
+
+# ---------------------------------------------------------------------------------------------
+# Setting groups, logs, files and GOOSE control blocks
+
+
+@dataclass(frozen=True)
+class SgcbValues:
+    """GetSGCBValues (IEC 61850-7-2 §16.3.6): the setting group control block of an LD."""
+
+    num_of_sgs: int
+    act_sg: int
+    edit_sg: int  # 0: no group selected for editing
+    cnf_edit: bool
+    lact_tm: Timestamp | None = None
+    resv_tms: int | None = None  # Ed.2
+
+
+@dataclass(frozen=True)
+class LcbValues:
+    """Attributes of a log control block; those the server does not have are ``None``."""
+
+    log_ena: bool | None = None
+    log_ref: str | None = None  # MMS form "LD/LN$Log"
+    dat_set: str | None = None  # MMS form "LD/LN$DS"; empty: none
+    old_entr_tm: EntryTime | None = None
+    new_entr_tm: EntryTime | None = None
+    old_ent: EntryID | None = None
+    new_ent: EntryID | None = None
+    trg_ops: TrgOps | None = None
+    intg_pd: int | None = None
+
+    @property
+    def data_set(self) -> ObjectReference | None:
+        if not self.dat_set:
+            return None
+        try:
+            return ObjectReference.from_mms_data_set(self.dat_set)
+        except InvalidReference:
+            return None
+
+
+@dataclass(frozen=True)
+class LcbSettings:
+    """Attributes written by :meth:`Client.set_lcb_values` (one Write each, in this order:
+    DatSet, TrgOps, IntgPd, LogEna); ``None`` ones are not written."""
+
+    dat_set: Ref | None = None
+    trg_ops: TrgOps | int | None = None
+    intg_pd: int | None = None
+    log_ena: bool | None = None
+
+    def _native(self) -> dict[str, Any]:
+        return {
+            "dat_set": _ref_text(self.dat_set) if self.dat_set is not None else None,
+            "trg_ops": int(self.trg_ops) if self.trg_ops is not None else None,
+            "intg_pd": self.intg_pd,
+            "log_ena": self.log_ena,
+        }
+
+
+@dataclass(frozen=True)
+class LogEntryData:
+    """One value of a log entry."""
+
+    reference: str  # the MMS variable, e.g. "LD/LN$ST$Ind1$stVal"
+    value: Any
+    reason: TrgOps | None
+
+    @property
+    def object_reference(self) -> ObjectReference | None:
+        """``reference`` as an ACSI reference (None when it cannot be parsed)."""
+        try:
+            return ObjectReference.from_mms(self.reference)
+        except InvalidReference:
+            return None
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    """A log entry (IEC 61850-7-2 §17.3.2.3, an MMS journal entry)."""
+
+    entry_id: EntryID
+    time: EntryTime
+    data: tuple[LogEntryData, ...]
+
+    def values(self) -> dict[str, Any]:
+        """Values by MMS variable reference."""
+        return {d.reference: d.value for d in self.data}
+
+
+@dataclass(frozen=True)
+class FileEntry:
+    """An entry of the server's file directory."""
+
+    name: str
+    size: int
+    last_modified: datetime | None
+
+
+@dataclass(frozen=True)
+class GooseAddress:
+    """DstAddress of a GoCB."""
+
+    mac: bytes
+    priority: int
+    vid: int
+    app_id: int
+
+    @property
+    def mac_text(self) -> str:
+        return "-".join(f"{b:02X}" for b in self.mac)
+
+
+@dataclass(frozen=True)
+class GoCBValues:
+    """Attributes of a GOOSE control block; those the server does not have (MinTime... in Ed.1)
+    are ``None``."""
+
+    go_ena: bool | None = None
+    go_id: str | None = None
+    dat_set: str | None = None  # MMS form
+    conf_rev: int | None = None
+    nds_com: bool | None = None
+    dst_address: GooseAddress | None = None
+    min_time: int | None = None
+    max_time: int | None = None
+    fixed_offs: bool | None = None
+
+    @property
+    def data_set(self) -> ObjectReference | None:
+        if not self.dat_set:
+            return None
+        try:
+            return ObjectReference.from_mms_data_set(self.dat_set)
+        except InvalidReference:
+            return None
+
+
+@dataclass(frozen=True)
+class GoCBSettings:
+    """Attributes written by :meth:`Client.set_gocb_values` (one Write each, in this order:
+    GoID, DatSet, GoEna); ``None`` ones are not written."""
+
+    go_id: str | None = None
+    dat_set: Ref | None = None
+    go_ena: bool | None = None
+
+    def _native(self) -> dict[str, Any]:
+        return {
+            "go_id": self.go_id,
+            "dat_set": _ref_text(self.dat_set) if self.dat_set is not None else None,
+            "go_ena": self.go_ena,
+        }
+
+
+def _entry_time(t: EntryTime | datetime | None) -> tuple[int, int | None] | None:
+    if t is None:
+        return None
+    if isinstance(t, datetime):
+        t = EntryTime.from_datetime(t)
+    if not isinstance(t, EntryTime):
+        raise TypeError(f"expected an EntryTime or an aware datetime, got {type(t).__name__}")
+    return (t.ms_of_day, t.days)
+
+
+def _ts(t: tuple[Any, ...] | None) -> Timestamp | None:
+    return Timestamp.from_raw(t[1], t[2], t[3]) if t is not None else None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1006,6 +1186,211 @@ class Client:
             ctl = await self.control(ref)
             t = ctl._value(value)
         await self._native.operate(_ref_text(ref), t, opts)
+
+    # --- setting groups (IEC 61850-7-2 §16), on the SGCB "LD/LLN0.SGCB[SP]"
+
+    async def sgcb_values(self, ld: str) -> SgcbValues:
+        """GetSGCBValues of logical device ``ld``."""
+        d = await self._native.sgcb_values(ld)
+        return SgcbValues(
+            num_of_sgs=d["num_of_sgs"],
+            act_sg=d["act_sg"],
+            edit_sg=d["edit_sg"],
+            cnf_edit=d["cnf_edit"],
+            lact_tm=_ts(d["lact_tm"]),
+            resv_tms=d["resv_tms"],
+        )
+
+    async def select_active_sg(self, ld: str, sg: int) -> None:
+        """SelectActiveSG: activates setting group ``sg`` (1-based)."""
+        await self._native.select_active_sg(ld, int(sg))
+
+    async def select_edit_sg(self, ld: str, sg: int) -> None:
+        """SelectEditSG: copies group ``sg`` to the edit buffer and reserves it for this
+        association; 0 releases it."""
+        await self._native.select_edit_sg(ld, int(sg))
+
+    async def set_edit_sg_value(self, ref: Ref, value: Any) -> None:
+        """SetEditSGValue: writes an FC SE reference of the edit buffer. Plain values are typed
+        like :meth:`write` (the definition is read when needed)."""
+        t = await self._encode_for(ref, value)
+        await self._native.set_edit_sg_value(_ref_text(ref), t)
+
+    async def confirm_edit_sg_values(self, ld: str) -> None:
+        """ConfirmEditSGValues: stores the edit buffer into the group being edited."""
+        await self._native.confirm_edit_sg_values(ld)
+
+    async def edit_sg_value(self, ref: Ref) -> Any:
+        """GetEditSGValue: the value of an FC SE (edit buffer) or SG (active group) reference."""
+        t = await self._native.edit_sg_value(_ref_text(ref))
+        key = _canonical(ref, self._edition)
+        self._value_specs[key] = spec_from_tagged(t)
+        return decode(t, self._lookup_def(key))
+
+    # --- logs (IEC 61850-7-2 §17.3); ``lcb`` is "LD/LN.name[LG]", ``log`` is "LD/LN.LogName"
+
+    async def lcb_values(self, lcb: Ref) -> LcbValues:
+        """GetLCBValues."""
+        d = await self._native.lcb_values(_ref_text(lcb))
+        return LcbValues(
+            log_ena=d["log_ena"],
+            log_ref=d["log_ref"],
+            dat_set=d["dat_set"],
+            old_entr_tm=EntryTime(*d["old_entr_tm"]) if d["old_entr_tm"] is not None else None,
+            new_entr_tm=EntryTime(*d["new_entr_tm"]) if d["new_entr_tm"] is not None else None,
+            old_ent=EntryID(d["old_ent"]) if d["old_ent"] is not None else None,
+            new_ent=EntryID(d["new_ent"]) if d["new_ent"] is not None else None,
+            trg_ops=TrgOps(d["trg_ops"] & 0x7E) if d["trg_ops"] is not None else None,
+            intg_pd=d["intg_pd"],
+        )
+
+    async def set_lcb_values(self, lcb: Ref, settings: LcbSettings | None = None, **changes: Any) -> None:
+        """SetLCBValues; stops at the first failing attribute. Pass an :class:`LcbSettings` or its
+        fields as keywords."""
+        s = settings if settings is not None else LcbSettings(**changes)
+        await self._native.set_lcb_values(_ref_text(lcb), s._native())
+
+    async def query_log_by_time(
+        self,
+        log: Ref,
+        start: EntryTime | datetime | None = None,
+        stop: EntryTime | datetime | None = None,
+    ) -> list[LogEntry]:
+        """QueryLogByTime: the entries from ``start`` to ``stop`` (None: open ended), following
+        the server's continuations."""
+        raw = await self._native.query_log_by_time(_ref_text(log), _entry_time(start), _entry_time(stop))
+        return [self._log_entry(e) for e in raw]
+
+    async def query_log_after(self, log: Ref, time: EntryTime | datetime, entry_id: EntryID | bytes) -> list[LogEntry]:
+        """QueryLogAfter: the entries after ``entry_id`` (``time`` is used when the server no
+        longer has that entry)."""
+        raw = await self._native.query_log_after(_ref_text(log), _entry_time(time), bytes(entry_id))
+        return [self._log_entry(e) for e in raw]
+
+    async def log_entries(
+        self,
+        log: Ref,
+        start: EntryTime | datetime | None = None,
+        stop: EntryTime | datetime | None = None,
+    ) -> AsyncIterator[LogEntry]:
+        """The entries of :meth:`query_log_by_time` as an async iterator."""
+        for e in await self.query_log_by_time(log, start, stop):
+            yield e
+
+    async def log_status(self, log: Ref) -> int:
+        """GetLogStatus: the number of entries in the log."""
+        return int(await self._native.log_status(_ref_text(log)))
+
+    def _log_entry(self, e: tuple[Any, ...]) -> LogEntry:
+        entry_id, time, data = e
+        items = []
+        for reference, tagged, reason in data:
+            spec = None
+            try:
+                spec = self._lookup_def(str(ObjectReference.from_mms(reference)))
+            except (InvalidReference, ValueError):
+                pass
+            items.append(
+                LogEntryData(
+                    reference=reference,
+                    value=decode(tagged, spec),
+                    reason=TrgOps(reason & 0x7E) if reason is not None else None,
+                )
+            )
+        return LogEntry(EntryID(entry_id), EntryTime(*time), tuple(items))
+
+    # --- files (IEC 61850-7-2 §23); names are "/"-separated paths
+
+    async def list_files(self, path: str = "") -> list[FileEntry]:
+        """GetServerDirectory(FILE): the files below ``path`` ("" for every file)."""
+        out = []
+        for name, size, mtime in await self._native.file_directory(path):
+            when = datetime.fromtimestamp(mtime, timezone.utc) if mtime is not None else None
+            out.append(FileEntry(name, size, when))
+        return out
+
+    async def read_file(self, name: str) -> bytes:
+        """GetFile: the whole content (FileOpen, FileRead until the end, FileClose)."""
+        return bytes(await self._native.get_file(name))
+
+    async def download_file(
+        self,
+        name: str,
+        dest: str | os.PathLike[str] | IO[bytes],
+        *,
+        on_chunk: Callable[[int], Any] | None = None,
+    ) -> int:
+        """GetFile streamed into ``dest`` (a path, created or truncated, or a binary file object)
+        chunk by chunk as the FileRead responses arrive; returns the number of octets.
+
+        Chunks are written on the event loop thread (the native client never waits for it).
+        ``on_chunk(total_so_far)`` is called after each chunk. On failure a file created from a
+        path is removed.
+        """
+        own = isinstance(dest, (str, os.PathLike))
+        f: IO[bytes] = open(dest, "wb") if own else dest  # type: ignore[arg-type,assignment]  # noqa: SIM115
+        state = {"done": False, "total": 0, "error": None}
+
+        def chunk(data: bytes) -> None:
+            if state["done"] or state["error"] is not None:
+                return
+            try:
+                f.write(data)
+                state["total"] += len(data)  # type: ignore[operator]
+                if on_chunk is not None:
+                    on_chunk(state["total"])
+            except Exception as e:  # noqa: BLE001 - reported when the download ends
+                state["error"] = e
+
+        try:
+            n = int(await self._native.get_file_stream(name, chunk))
+            if state["error"] is not None:
+                raise state["error"]  # type: ignore[misc]
+        except BaseException:
+            state["done"] = True
+            if own:
+                f.close()
+                try:
+                    os.unlink(dest)  # type: ignore[arg-type]
+                except OSError:
+                    pass
+            raise
+        state["done"] = True
+        if own:
+            f.close()
+        return n
+
+    async def delete_file(self, name: str) -> None:
+        """FileDelete."""
+        await self._native.delete_file(name)
+
+    async def rename_file(self, current: str, new: str) -> None:
+        """FileRename."""
+        await self._native.rename_file(current, new)
+
+    # --- GOOSE control blocks (IEC 61850-7-2 §18.2); ``gocb`` is "LD/LN.name[GO]"
+
+    async def gocb_values(self, gocb: Ref) -> GoCBValues:
+        """GetGoCBValues."""
+        d = await self._native.gocb_values(_ref_text(gocb))
+        addr = d["dst_address"]
+        return GoCBValues(
+            go_ena=d["go_ena"],
+            go_id=d["go_id"],
+            dat_set=d["dat_set"],
+            conf_rev=d["conf_rev"],
+            nds_com=d["nds_com"],
+            dst_address=GooseAddress(bytes(addr[0]), addr[1], addr[2], addr[3]) if addr is not None else None,
+            min_time=d["min_time"],
+            max_time=d["max_time"],
+            fixed_offs=d["fixed_offs"],
+        )
+
+    async def set_gocb_values(self, gocb: Ref, settings: GoCBSettings | None = None, **changes: Any) -> None:
+        """SetGoCBValues; stops at the first failing attribute. Pass a :class:`GoCBSettings` or
+        its fields as keywords."""
+        s = settings if settings is not None else GoCBSettings(**changes)
+        await self._native.set_gocb_values(_ref_text(gocb), s._native())
 
     def last_entry_id(self, rcb: Ref) -> EntryID | None:
         """The EntryID of the last report received for a BRCB enabled by this client."""

@@ -3,9 +3,10 @@
 // references their string form; the pure Python layer (openiec61850/_server.py) builds the public
 // API on top.
 //
-// Application hooks (on_write, on_control, authorize). The C++ server calls them on its strand,
-// that is on the I/O thread, and needs their answer at once (a pending Operate excepted: it is
-// completed later through _ControlCompletion, from any thread). The binding therefore calls the
+// Application hooks (on_write, on_control, authorize, on_setting_group, on_goose_control) and
+// Python file stores. The C++ server calls them on its strand, that is on the I/O thread, and
+// needs their answer at once (a pending Operate excepted: it is completed later through
+// _ControlCompletion, from any thread). The binding therefore calls the
 // Python dispatcher synchronously on the I/O thread, holding the GIL only for that call; the
 // Python layer keeps the hooks short and moves asynchronous work (an awaitable returned for an
 // Operate) to the asyncio loop. Nothing here waits for the loop, so a busy or blocked loop
@@ -16,8 +17,13 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <span>
+#include <string_view>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -283,6 +289,60 @@ class native_model {
     }
     return out;
   }
+  // [(ln reference, num_of_sgs, act_sg, resv_tms)]
+  [[nodiscard]] nb::object setting_group_controls() const {
+    nb::list out;
+    for (const auto& sg : m_->setting_group_controls()) {
+      out.append(nb::make_tuple(m_->reference_of(sg.ln), sg.settings.num_of_sgs, sg.settings.act_sg,
+                                sg.settings.resv_tms));
+    }
+    return out;
+  }
+  // [(ln reference, name)]
+  [[nodiscard]] nb::object logs() const {
+    nb::list out;
+    for (const auto& l : m_->logs()) out.append(nb::make_tuple(m_->reference_of(l.ln), l.name));
+    return out;
+  }
+  [[nodiscard]] nb::object log_controls() const {
+    nb::list out;
+    for (const auto& lc : m_->log_controls()) {
+      const auto& s = lc.settings;
+      nb::dict d;
+      d["ln"] = m_->reference_of(lc.ln);
+      d["name"] = s.name;
+      d["data_set"] = s.data_set;
+      d["log_name"] = s.log_name;
+      d["log_ln"] = s.log_ln;
+      d["log_ena"] = s.log_ena;
+      d["trg_ops"] = s.trg_ops.raw();
+      d["intg_pd"] = s.intg_pd;
+      out.append(d);
+    }
+    return out;
+  }
+  [[nodiscard]] nb::object goose_controls() const {
+    nb::list out;
+    for (const auto& gc : m_->goose_controls()) {
+      const auto& s = gc.settings;
+      nb::dict d;
+      d["ln"] = m_->reference_of(gc.ln);
+      d["name"] = s.name;
+      d["go_id"] = s.go_id;
+      d["data_set"] = s.data_set;
+      d["conf_rev"] = s.conf_rev;
+      d["go_ena"] = s.go_ena;
+      d["dst_mac"] = nb::bytes(s.dst_mac.data(), s.dst_mac.size());
+      d["vlan_priority"] = s.vlan_priority;
+      d["vlan_id"] = s.vlan_id;
+      d["app_id"] = s.app_id;
+      d["min_time"] = s.min_time;
+      d["max_time"] = s.max_time;
+      d["fixed_offs"] = s.fixed_offs;
+      out.append(d);
+    }
+    return out;
+  }
   [[nodiscard]] nb::object report_controls() const {
     nb::list out;
     for (const auto& rc : m_->report_controls()) {
@@ -427,6 +487,57 @@ class native_builder {
     usable().logical_node_handle(ln).report_control(std::move(s));
     check();
   }
+  void setting_group_control(node_id ln, int num_of_sgs, int act_sg, int resv_tms) {
+    if (num_of_sgs < 1 || num_of_sgs > 255 || act_sg < 1 || act_sg > 255) {
+      throw nb::value_error("NumOfSG and ActSG must be in 1..255");
+    }
+    if (resv_tms < 0 || resv_tms > 65535) throw nb::value_error("ResvTms must be in 0..65535");
+    server::setting_group_settings sg;
+    sg.num_of_sgs = static_cast<std::uint8_t>(num_of_sgs);
+    sg.act_sg = static_cast<std::uint8_t>(act_sg);
+    sg.resv_tms = static_cast<std::uint16_t>(resv_tms);
+    usable().logical_node_handle(ln).setting_group_control(sg);
+    check();
+  }
+  void log(node_id ln, const std::string& name) {
+    usable().logical_node_handle(ln).log(name);
+    check();
+  }
+  void log_control(node_id ln, nb::dict d) {
+    server::log_control_settings s;
+    s.name = nb::cast<std::string>(d["name"]);
+    s.data_set = nb::cast<std::string>(d["data_set"]);
+    s.log_name = nb::cast<std::string>(d["log_name"]);
+    s.log_ln = nb::cast<std::string>(d["log_ln"]);
+    s.log_ena = nb::cast<bool>(d["log_ena"]);
+    s.trg_ops = model::trigger_conditions::from_raw(nb::cast<std::uint8_t>(d["trg_ops"]));
+    s.intg_pd = nb::cast<std::uint32_t>(d["intg_pd"]);
+    usable().logical_node_handle(ln).log_control(std::move(s));
+    check();
+  }
+  void goose_control(node_id ln, nb::dict d) {
+    server::goose_control_settings s;
+    s.name = nb::cast<std::string>(d["name"]);
+    s.go_id = nb::cast<std::string>(d["go_id"]);
+    s.data_set = nb::cast<std::string>(d["data_set"]);
+    s.conf_rev = nb::cast<std::uint32_t>(d["conf_rev"]);
+    s.go_ena = nb::cast<bool>(d["go_ena"]);
+    const auto mac = bytes_from_py(d["dst_mac"]);
+    if (mac.size() != 6) throw nb::value_error("a MAC address has 6 octets");
+    std::copy(mac.begin(), mac.end(), s.dst_mac.begin());
+    s.vlan_priority = nb::cast<std::uint8_t>(d["vlan_priority"]);
+    s.vlan_id = nb::cast<std::uint16_t>(d["vlan_id"]);
+    s.app_id = nb::cast<std::uint16_t>(d["app_id"]);
+    s.min_time = nb::cast<std::uint32_t>(d["min_time"]);
+    s.max_time = nb::cast<std::uint32_t>(d["max_time"]);
+    s.fixed_offs = nb::cast<bool>(d["fixed_offs"]);
+    usable().logical_node_handle(ln).goose_control(std::move(s));
+    check();
+  }
+  void group_value(node_id da, std::uint32_t sg, nb::handle value) {
+    usable().attribute_handle(da).group_value(sg, data_from_py(value));
+    check();
+  }
   native_model build() {
     auto& b = usable();
     auto m = b.build();
@@ -450,6 +561,221 @@ class native_builder {
   std::unordered_map<node_id, server::ld_handle> lds_;
   model::parse_options parse_;
 };
+
+// ---------------------------------------------------------------------------------------------
+// File stores (server/files.hpp)
+//
+// The native stores (memory, directory) are used directly. A Python store is reached through an
+// adapter object (openiec61850._server._FileStoreAdapter) whose methods return (code, value):
+// code 0 on success, a file_errc value, or -1 for an unexpected failure (already logged). The
+// server calls a store synchronously on its strand, i.e. on the I/O thread; the GIL is held only
+// for each call.
+
+using file_clock = std::chrono::system_clock;
+
+nb::object mtime_to_py(const std::optional<file_clock::time_point>& t) {
+  if (!t) return nb::none();
+  return nb::cast(std::chrono::duration_cast<std::chrono::duration<double>>(t->time_since_epoch()).count());
+}
+
+std::optional<file_clock::time_point> mtime_from_py(nb::handle h) {
+  if (h.is_none()) return std::nullopt;
+  const auto secs = nb::cast<double>(h);
+  if (!std::isfinite(secs)) throw nb::value_error("invalid modification time");
+  return file_clock::time_point(
+      std::chrono::duration_cast<file_clock::duration>(std::chrono::duration<double>(secs)));
+}
+
+nb::object file_info_to_py(const server::file_info& f) {
+  return nb::make_tuple(f.name, f.size, mtime_to_py(f.last_modified));
+}
+
+server::file_info file_info_from_py(nb::handle h) {
+  const auto t = nb::cast<nb::tuple>(h);
+  if (t.size() != 3) throw nb::type_error("expected (name, size, mtime)");
+  return {nb::cast<std::string>(t[0]), nb::cast<std::uint64_t>(t[1]), mtime_from_py(t[2])};
+}
+
+template <typename T>
+T value_or_raise(result<T> r) {
+  if (!r) raise_error(r.error());
+  return std::move(*r);
+}
+
+class native_file_store {
+ public:
+  static native_file_store memory() {
+    native_file_store s;
+    s.mem_ = std::make_shared<server::memory_file_store>();
+    s.store_ = s.mem_;
+    return s;
+  }
+  static native_file_store directory(const std::string& root) {
+    std::optional<result<std::shared_ptr<server::directory_file_store>>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(server::directory_file_store::open(std::filesystem::path(root)));
+    }
+    native_file_store s;
+    s.dir_ = value_or_raise(std::move(*r));
+    s.store_ = s.dir_;
+    return s;
+  }
+
+  [[nodiscard]] const std::shared_ptr<server::file_store>& store() const noexcept { return store_; }
+  [[nodiscard]] nb::object root() const {
+    if (!dir_) return nb::none();
+    return nb::cast(dir_->root().string());
+  }
+
+  void put(const std::string& path, nb::handle content, nb::handle mtime) {
+    auto& m = memory_only();
+    auto data = bytes_from_py(content);
+    const auto t = mtime_from_py(mtime);
+    std::optional<result<void>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(m.put(path, std::move(data), t));
+    }
+    if (!*r) raise_error(r->error());
+  }
+  nb::object get(const std::string& path) {
+    auto& m = memory_only();
+    std::optional<byte_buffer> b;
+    {
+      const nb::gil_scoped_release release;
+      b = m.get(path);
+    }
+    if (!b) return nb::none();
+    return to_bytes(*b);
+  }
+  nb::object list(const std::string& directory) {
+    std::optional<result<std::vector<server::file_info>>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(store_->list(directory));
+    }
+    nb::list out;
+    for (const auto& f : value_or_raise(std::move(*r))) out.append(file_info_to_py(f));
+    return out;
+  }
+  nb::object stat(const std::string& path) {
+    std::optional<result<server::file_info>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(store_->stat(path));
+    }
+    return file_info_to_py(value_or_raise(std::move(*r)));
+  }
+  nb::object read(const std::string& path, std::uint64_t offset, std::size_t size) {
+    byte_buffer buf(size);
+    std::optional<result<std::size_t>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(store_->read(path, offset, buf));
+    }
+    buf.resize(value_or_raise(std::move(*r)));
+    return to_bytes(buf);
+  }
+  void remove(const std::string& path) {
+    std::optional<result<void>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(store_->remove(path));
+    }
+    if (!*r) raise_error(r->error());
+  }
+  void rename(const std::string& from, const std::string& to) {
+    std::optional<result<void>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(store_->rename(from, to));
+    }
+    if (!*r) raise_error(r->error());
+  }
+
+ private:
+  server::memory_file_store& memory_only() {
+    if (!mem_) throw nb::type_error("only a memory file store has put() / get()");
+    return *mem_;
+  }
+
+  std::shared_ptr<server::file_store> store_;
+  std::shared_ptr<server::memory_file_store> mem_;
+  std::shared_ptr<server::directory_file_store> dir_;
+};
+
+class py_file_store final : public server::file_store {
+ public:
+  explicit py_file_store(nb::handle adapter) : adapter_(std::make_shared<py_ref>(adapter)) {}
+
+  result<std::vector<server::file_info>> list(std::string_view directory) override {
+    return call<std::vector<server::file_info>>("list", [](nb::handle v) {
+      std::vector<server::file_info> out;
+      for (nb::handle f : v) out.push_back(file_info_from_py(f));
+      return out;
+    }, std::string(directory));
+  }
+  result<server::file_info> stat(std::string_view path) override {
+    return call<server::file_info>("stat", [](nb::handle v) { return file_info_from_py(v); },
+                                   std::string(path));
+  }
+  result<std::size_t> read(std::string_view path, std::uint64_t offset,
+                           std::span<std::uint8_t> out) override {
+    return call<std::size_t>(
+        "read",
+        [out](nb::handle v) -> std::size_t {
+          const auto b = bytes_from_py(v);
+          const std::size_t n = b.size() < out.size() ? b.size() : out.size();
+          std::copy_n(b.begin(), n, out.begin());
+          return n;
+        },
+        std::string(path), offset, out.size());
+  }
+  result<void> remove(std::string_view path) override {
+    return status(call<bool>("remove", [](nb::handle) { return true; }, std::string(path)));
+  }
+  result<void> rename(std::string_view from, std::string_view to) override {
+    return status(call<bool>("rename", [](nb::handle) { return true; }, std::string(from),
+                             std::string(to)));
+  }
+
+ private:
+  static result<void> status(const result<bool>& r) {
+    if (!r) return r.error();
+    return {};
+  }
+
+  // The adapter answers (code, value). The arguments are C++ values: Python objects may only be
+  // created once the GIL is held.
+  template <typename T, typename Convert, typename... Args>
+  result<T> call(const char* method, Convert convert, const Args&... args) {
+    const auto failure = std::make_error_code(std::errc::io_error);
+    if (interpreter_finalizing()) return failure;
+    const nb::gil_scoped_acquire gil;
+    try {
+      nb::object r = nb::handle(adapter_->get()).attr(method)(nb::cast(args)...);
+      const auto t = nb::cast<nb::tuple>(r);
+      const int code = nb::cast<int>(t[0]);
+      if (code == 0) return convert(t[1]);
+      if (code > 0 && code <= static_cast<int>(server::file_errc::no_space)) {
+        return server::make_error_code(static_cast<server::file_errc>(code));
+      }
+    } catch (nb::python_error& e) {
+      e.discard_as_unraisable("openiec61850 file store");
+    } catch (...) {
+    }
+    return failure;
+  }
+
+  std::shared_ptr<py_ref> adapter_;
+};
+
+std::shared_ptr<server::file_store> file_store_from_py(nb::handle h) {
+  if (h.is_none()) return nullptr;
+  if (nb::isinstance<native_file_store>(h)) return nb::cast<native_file_store&>(h).store();
+  return std::make_shared<py_file_store>(h);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Server
@@ -505,6 +831,27 @@ nb::dict association_request_to_py(const association::association_request& r) {
   return d;
 }
 
+nb::dict goose_state_to_py(const server::goose_control_state& g) {
+  nb::dict d;
+  d["reference"] = g.reference.to_string();
+  d["go_ena"] = g.go_ena;
+  d["go_id"] = g.go_id;
+  d["dat_set"] = g.dat_set;
+  std::vector<std::string> members;
+  for (const auto& m : g.members) members.push_back(m.to_string());
+  d["members"] = members;
+  d["conf_rev"] = g.conf_rev;
+  d["nds_com"] = g.nds_com;
+  d["dst_mac"] = nb::bytes(g.dst_mac.data(), g.dst_mac.size());
+  d["vlan_priority"] = g.vlan_priority;
+  d["vlan_id"] = g.vlan_id;
+  d["app_id"] = g.app_id;
+  d["min_time"] = g.min_time;
+  d["max_time"] = g.max_time;
+  d["fixed_offs"] = g.fixed_offs;
+  return d;
+}
+
 using hook = std::shared_ptr<py_ref>;
 
 hook make_hook(nb::handle fn) {
@@ -517,7 +864,8 @@ void report_unraisable(nb::python_error& e, const char* where) {
 }
 
 server::server_options server_options_from_py(nb::dict d, hook on_write, hook on_control,
-                                              hook authorize) {
+                                              hook authorize, hook on_setting_group,
+                                              hook on_goose_control) {
   server::server_options o;
   auto given = [&](const char* k) { return d.contains(k) && !d[k].is_none(); };
   if (given("max_associations")) o.max_associations = nb::cast<std::size_t>(d["max_associations"]);
@@ -541,6 +889,9 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
   if (given("check_test_mode")) o.check_test_mode = nb::cast<bool>(d["check_test_mode"]);
   if (given("association_timeout")) o.association.association_timeout = seconds_from_py(d["association_timeout"]);
   if (given("handshake_timeout")) o.association.transport.handshake_timeout = seconds_from_py(d["handshake_timeout"]);
+  if (given("log_capacity")) o.log_capacity = nb::cast<std::size_t>(d["log_capacity"]);
+  if (given("max_open_files")) o.max_open_files = nb::cast<std::size_t>(d["max_open_files"]);
+  if (d.contains("files")) o.files = file_store_from_py(d["files"]);
 
   std::optional<std::string> password;
   if (given("password")) password = nb::cast<std::string>(d["password"]);
@@ -585,6 +936,38 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
       return refused;
     };
   }
+  if (on_setting_group) {
+    o.on_setting_group = [fn = std::move(on_setting_group)](const server::setting_group_event& e)
+        -> std::optional<mms::data_access_error> {
+      using dae = mms::data_access_error;
+      if (interpreter_finalizing()) return dae::temporarily_unavailable;
+      const nb::gil_scoped_acquire gil;
+      try {
+        nb::object r = nb::handle(fn->get())(e.association, e.logical_device, static_cast<int>(e.action),
+                                             e.group);
+        const int code = nb::cast<int>(r);
+        if (code < 0) return std::nullopt;
+        if (code > static_cast<int>(dae::object_value_invalid)) return dae::object_access_denied;
+        return static_cast<dae>(code);
+      } catch (nb::python_error& err) {
+        report_unraisable(err, "openiec61850 on_setting_group");
+      } catch (...) {
+      }
+      return dae::object_access_denied;
+    };
+  }
+  if (on_goose_control) {
+    o.on_goose_control = [fn = std::move(on_goose_control)](const server::goose_control_event& e) {
+      if (interpreter_finalizing()) return;
+      const nb::gil_scoped_acquire gil;
+      try {
+        nb::handle(fn->get())(e.association, goose_state_to_py(e.state));
+      } catch (nb::python_error& err) {
+        report_unraisable(err, "openiec61850 on_goose_control");
+      } catch (...) {
+      }
+    };
+  }
   if (authorize || password) {
     o.association.authorize = [fn = std::move(authorize), password = std::move(password)](
                                   const association::association_request& r,
@@ -619,6 +1002,21 @@ asio::awaitable<result<mms::data>> read_op(std::shared_ptr<server::server> s, mo
   co_return co_await s->read(std::move(r));
 }
 
+asio::awaitable<result<mms::data>> read_sg_op(std::shared_ptr<server::server> s, model::object_reference r,
+                                               std::uint8_t sg) {
+  co_return co_await s->read_setting_group(std::move(r), sg);
+}
+
+asio::awaitable<result<server::goose_control_state>> goose_control_op(std::shared_ptr<server::server> s,
+                                                                      model::object_reference r) {
+  co_return co_await s->goose_control(std::move(r));
+}
+
+asio::awaitable<result<std::vector<server::goose_control_state>>> goose_controls_op(
+    std::shared_ptr<server::server> s) {
+  co_return co_await s->goose_controls();
+}
+
 server::data_update update_from_py(nb::handle ref, nb::handle value, nb::handle quality,
                                    nb::handle timestamp, const model::parse_options& opts) {
   server::data_update u{ref_from_py(ref, opts), data_from_py(value), std::nullopt, std::nullopt};
@@ -635,13 +1033,15 @@ server::data_update update_from_py(nb::handle ref, nb::handle value, nb::handle 
 class native_server {
  public:
   static native_server start(const native_model& m, const std::string& host, int port, nb::dict options,
-                             nb::handle on_write, nb::handle on_control, nb::handle authorize) {
+                             nb::handle on_write, nb::handle on_control, nb::handle authorize,
+                             nb::handle on_setting_group, nb::handle on_goose_control) {
     if (port < 0 || port > 65535) throw nb::value_error("port out of range");
     std::error_code ec;
     const auto address = asio::ip::make_address(host, ec);
     if (ec) throw nb::value_error(("invalid listen address '" + host + "'").c_str());
     auto o = server_options_from_py(options, make_hook(on_write), make_hook(on_control),
-                                    make_hook(authorize));
+                                    make_hook(authorize), make_hook(on_setting_group),
+                                    make_hook(on_goose_control));
     server::data_model copy = m.get();
     const asio::ip::tcp::endpoint ep{address, static_cast<std::uint16_t>(port)};
     std::optional<result<server::server>> r;
@@ -702,6 +1102,32 @@ class native_server {
     return launch(s_->get_executor(), read_op(s_, ref_from_py(ref, parse_)),
                   [](mms::data d) { return data_to_py(d); });
   }
+  void select_active_setting_group(const std::string& ld, int sg) {
+    if (sg < 0 || sg > 255) throw nb::value_error("setting group out of range");
+    std::optional<result<void>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(s_->select_active_setting_group(ld, static_cast<std::uint8_t>(sg)));
+    }
+    if (!*r) raise_error(r->error());
+  }
+  nb::object read_setting_group(nb::handle ref, int sg) {
+    if (sg < 0 || sg > 255) throw nb::value_error("setting group out of range");
+    return launch(s_->get_executor(), read_sg_op(s_, ref_from_py(ref, parse_), static_cast<std::uint8_t>(sg)),
+                  [](mms::data d) { return data_to_py(d); });
+  }
+  nb::object goose_control(nb::handle ref) {
+    return launch(s_->get_executor(), goose_control_op(s_, ref_from_py(ref, parse_)),
+                  [](server::goose_control_state g) { return nb::object(goose_state_to_py(g)); });
+  }
+  nb::object goose_controls() {
+    return launch(s_->get_executor(), goose_controls_op(s_),
+                  [](std::vector<server::goose_control_state> v) {
+                    nb::list out;
+                    for (const auto& g : v) out.append(goose_state_to_py(g));
+                    return nb::object(std::move(out));
+                  });
+  }
 
  private:
   native_server(std::shared_ptr<server::server> s, model::edition e)
@@ -741,6 +1167,10 @@ void bind_server(nb::module_& m) {
       .def("node_definition", &native_model::node_definition, nb::arg("id"), nb::arg("fc") = nb::none())
       .def("data_sets", &native_model::data_sets)
       .def("report_controls", &native_model::report_controls)
+      .def("setting_group_controls", &native_model::setting_group_controls)
+      .def("logs", &native_model::logs)
+      .def("log_controls", &native_model::log_controls)
+      .def("goose_controls", &native_model::goose_controls)
       .def_static("load_scl", &load_scl, nb::arg("source"), nb::arg("is_text"), nb::arg("ied") = "",
                   nb::arg("access_point") = "", nb::arg("strict") = false,
                   nb::arg("setting_group") = 0,
@@ -758,6 +1188,12 @@ void bind_server(nb::module_& m) {
       .def("set_value", &native_builder::set_value, nb::arg("da"), nb::arg("value"))
       .def("data_set", &native_builder::data_set, nb::arg("ln"), nb::arg("name"), nb::arg("members"))
       .def("report_control", &native_builder::report_control, nb::arg("ln"), nb::arg("settings"))
+      .def("setting_group_control", &native_builder::setting_group_control, nb::arg("ln"),
+           nb::arg("num_of_sgs"), nb::arg("act_sg"), nb::arg("resv_tms"))
+      .def("log", &native_builder::log, nb::arg("ln"), nb::arg("name"))
+      .def("log_control", &native_builder::log_control, nb::arg("ln"), nb::arg("settings"))
+      .def("goose_control", &native_builder::goose_control, nb::arg("ln"), nb::arg("settings"))
+      .def("group_value", &native_builder::group_value, nb::arg("da"), nb::arg("sg"), nb::arg("value"))
       .def("build", &native_builder::build);
 
   nb::class_<native_completion>(m, "_ControlCompletion", "Completes a pending Operate (internal).")
@@ -767,7 +1203,8 @@ void bind_server(nb::module_& m) {
   nb::class_<native_server>(m, "Server", "Native IEC 61850 server. Use openiec61850.Server.")
       .def_static("start", &native_server::start, nb::arg("model"), nb::arg("host"), nb::arg("port"),
                   nb::arg("options"), nb::arg("on_write").none(), nb::arg("on_control").none(),
-                  nb::arg("authorize").none())
+                  nb::arg("authorize").none(), nb::arg("on_setting_group").none() = nb::none(),
+                  nb::arg("on_goose_control").none() = nb::none())
       .def("stop", &native_server::stop)
       .def("wait_stopped", &native_server::wait_stopped)
       .def_prop_ro("association_count", &native_server::association_count)
@@ -775,7 +1212,24 @@ void bind_server(nb::module_& m) {
       .def("update", &native_server::update, nb::arg("ref"), nb::arg("value"),
            nb::arg("quality").none() = nb::none(), nb::arg("timestamp").none() = nb::none())
       .def("update_many", &native_server::update_many, nb::arg("items"))
-      .def("read", &native_server::read, nb::arg("ref"));
+      .def("read", &native_server::read, nb::arg("ref"))
+      .def("select_active_setting_group", &native_server::select_active_setting_group, nb::arg("ld"),
+           nb::arg("sg"))
+      .def("read_setting_group", &native_server::read_setting_group, nb::arg("ref"), nb::arg("sg"))
+      .def("goose_control", &native_server::goose_control, nb::arg("ref"))
+      .def("goose_controls", &native_server::goose_controls);
+
+  nb::class_<native_file_store>(m, "FileStore", "Native file store. Use openiec61850.MemoryFileStore / DirectoryFileStore.")
+      .def_static("memory", &native_file_store::memory)
+      .def_static("directory", &native_file_store::directory, nb::arg("root"))
+      .def_prop_ro("root", &native_file_store::root)
+      .def("put", &native_file_store::put, nb::arg("path"), nb::arg("content"), nb::arg("mtime").none() = nb::none())
+      .def("get", &native_file_store::get, nb::arg("path"))
+      .def("list", &native_file_store::list, nb::arg("directory") = "")
+      .def("stat", &native_file_store::stat, nb::arg("path"))
+      .def("read", &native_file_store::read, nb::arg("path"), nb::arg("offset"), nb::arg("size"))
+      .def("remove", &native_file_store::remove, nb::arg("path"))
+      .def("rename", &native_file_store::rename, nb::arg("from_"), nb::arg("to"));
 }
 
 }  // namespace openiec61850::python

@@ -35,6 +35,19 @@ the operation (CommandTermination with enhanced security, LastApplError for a re
 Alternatively the hook returns :meth:`ControlResult.pending` and calls
 :meth:`ControlRequest.complete` later, from any thread.
 
+``on_setting_group`` answers at once like ``on_write``. ``on_goose_control`` needs no answer: it is
+scheduled on the event loop (it may be ``async def``).
+
+File stores
+-----------
+
+``Server.start(files=...)`` serves the MMS file services from a :class:`MemoryFileStore`, a
+:class:`DirectoryFileStore` (both native: no Python code runs per request) or a subclass of
+:class:`FileStore`. The methods of a Python store are called synchronously on the I/O thread
+for each FileOpen / FileRead / FileDirectory / FileDelete / FileRename, holding the GIL only for
+the call: they must be quick (a read returns at most ``size`` octets) and must never wait for the
+event loop or a blocking :mod:`openiec61850.sync` call.
+
 Exceptions raised by hooks are logged on the ``openiec61850.server`` logger; the write or command
 is then refused.
 """
@@ -48,13 +61,14 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+import errno
+from datetime import datetime, timezone
 from typing import Any, Union
 
 from openiec61850 import _core
 from openiec61850._client import DataDefinition
 from openiec61850._control import AddCause, Originator, add_cause
-from openiec61850._errors import InvalidOperation, ObjectNotFound, SclError, ServiceError
+from openiec61850._errors import FileStoreError, InvalidOperation, ObjectNotFound, SclError, ServiceError
 from openiec61850._types import (
     FC,
     BasicType,
@@ -77,7 +91,17 @@ __all__ = [
     "ControlResult",
     "DataAccessError",
     "DataSetDefinition",
+    "DirectoryFileStore",
+    "FileInfo",
+    "FileStore",
+    "GooseControl",
+    "GooseControlState",
     "Identity",
+    "LogControl",
+    "MemoryFileStore",
+    "SettingGroupAction",
+    "SettingGroupControl",
+    "SettingGroupEvent",
     "LogicalDeviceBuilder",
     "LogicalNodeBuilder",
     "DataObjectBuilder",
@@ -166,6 +190,112 @@ class ReportControl:
             "trg_ops": int(self.trg_ops),
             "intg_pd": int(self.intg_pd),
         }
+
+
+@dataclass(frozen=True)
+class SettingGroupControl:
+    """The setting group control block "SGCB" of an LD (IEC 61850-7-2 §16; LLN0 only).
+
+    ``resv_tms`` (Ed.2): seconds an edit selection stays reserved without activity (0: until
+    released or the association ends)."""
+
+    num_of_sgs: int = 1
+    act_sg: int = 1
+    resv_tms: int = 0
+
+
+@dataclass(frozen=True)
+class LogControl:
+    """A log control block (IEC 61850-7-2 §17.3.3). ``data_set`` names a data set of the same LN;
+    ``log_name`` a log declared with :meth:`LogicalNodeBuilder.log` in LN ``log_ln`` of the same
+    LD ("" for this LN); ``intg_pd`` in milliseconds."""
+
+    name: str
+    data_set: str = ""
+    log_name: str = ""
+    log_ln: str = ""
+    log_ena: bool = False
+    trg_ops: TrgOps = TrgOps(0)
+    intg_pd: int = 0
+
+    def _native(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "data_set": self.data_set,
+            "log_name": self.log_name,
+            "log_ln": self.log_ln,
+            "log_ena": bool(self.log_ena),
+            "trg_ops": int(self.trg_ops),
+            "intg_pd": int(self.intg_pd),
+        }
+
+
+def _mac_bytes(mac: str | bytes) -> bytes:
+    if isinstance(mac, (bytes, bytearray)):
+        b = bytes(mac)
+    else:
+        text = mac.replace("-", "").replace(":", "")
+        b = bytes.fromhex(text)
+    if len(b) != 6:
+        raise ValueError(f"a MAC address has 6 octets: {mac!r}")
+    return b
+
+
+def _mac_text(b: bytes) -> str:
+    return "-".join(f"{x:02X}" for x in b)
+
+
+@dataclass(frozen=True)
+class GooseControl:
+    """A GOOSE control block (IEC 61850-7-2 §18.2, SCL GSEControl + GSE address). The server
+    exposes it as MMS variables; publishing is done with :mod:`openiec61850.goose`. ``min_time``
+    / ``max_time`` in milliseconds; ``dst_mac`` as "01-0C-CD-01-00-00" or 6 octets."""
+
+    name: str
+    go_id: str = ""
+    data_set: str = ""
+    conf_rev: int = 1
+    go_ena: bool = False
+    dst_mac: str | bytes = "01-0C-CD-01-00-00"
+    vlan_priority: int = 4
+    vlan_id: int = 0
+    app_id: int = 0
+    min_time: int = 0
+    max_time: int = 0
+    fixed_offs: bool = False
+
+    def _native(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "go_id": self.go_id,
+            "data_set": self.data_set,
+            "conf_rev": int(self.conf_rev),
+            "go_ena": bool(self.go_ena),
+            "dst_mac": _mac_bytes(self.dst_mac),
+            "vlan_priority": int(self.vlan_priority),
+            "vlan_id": int(self.vlan_id),
+            "app_id": int(self.app_id),
+            "min_time": int(self.min_time),
+            "max_time": int(self.max_time),
+            "fixed_offs": bool(self.fixed_offs),
+        }
+
+    @staticmethod
+    def _from(d: Mapping[str, Any]) -> GooseControl:
+        return GooseControl(
+            name=d["name"],
+            go_id=d["go_id"],
+            data_set=d["data_set"],
+            conf_rev=d["conf_rev"],
+            go_ena=d["go_ena"],
+            dst_mac=_mac_text(d["dst_mac"]),
+            vlan_priority=d["vlan_priority"],
+            vlan_id=d["vlan_id"],
+            app_id=d["app_id"],
+            min_time=d["min_time"],
+            max_time=d["max_time"],
+            fixed_offs=d["fixed_offs"],
+        )
 
 
 @dataclass(frozen=True)
@@ -382,6 +512,39 @@ class Model:
             out.append((self._ref(d["ln"]), rc))
         return tuple(out)
 
+    @property
+    def setting_group_controls(self) -> tuple[tuple[ObjectReference, SettingGroupControl], ...]:
+        """``(LN reference, SettingGroupControl)`` for every SGCB."""
+        return tuple(
+            (self._ref(ln), SettingGroupControl(n, act, resv))
+            for ln, n, act, resv in self._native.setting_group_controls()
+        )
+
+    @property
+    def logs(self) -> tuple[ObjectReference, ...]:
+        """The logs, as "LD/LN.LogName"."""
+        return tuple(self._ref(f"{ln}.{name}") for ln, name in self._native.logs())
+
+    @property
+    def log_controls(self) -> tuple[tuple[ObjectReference, LogControl], ...]:
+        out = []
+        for d in self._native.log_controls():
+            lc = LogControl(
+                name=d["name"],
+                data_set=d["data_set"],
+                log_name=d["log_name"],
+                log_ln=d["log_ln"],
+                log_ena=d["log_ena"],
+                trg_ops=TrgOps(d["trg_ops"] & 0x7E),
+                intg_pd=d["intg_pd"],
+            )
+            out.append((self._ref(d["ln"]), lc))
+        return tuple(out)
+
+    @property
+    def goose_controls(self) -> tuple[tuple[ObjectReference, GooseControl], ...]:
+        return tuple((self._ref(d["ln"]), GooseControl._from(d)) for d in self._native.goose_controls())
+
     def _ref(self, text: str) -> ObjectReference:
         return ObjectReference(text, edition=self._edition, strict_ln_names=False)
 
@@ -532,6 +695,12 @@ class AttributeBuilder(_AttributeParent):
         self._b._native.set_value(self._id, encode(v, self._spec))
         return self
 
+    def group_value(self, sg: int, v: Any) -> AttributeBuilder:
+        """FC SG attributes: the initial value in setting group ``sg`` (1-based, checked by
+        :meth:`ModelBuilder.build` against NumOfSG); groups without one start with the value."""
+        self._b._native.group_value(self._id, int(sg), encode(v, self._spec))
+        return self
+
 
 class LogicalNodeBuilder(_Handle):
     __slots__ = ()
@@ -548,6 +717,29 @@ class LogicalNodeBuilder(_Handle):
     def report_control(self, rc: ReportControl) -> LogicalNodeBuilder:
         """A report control block of this LN."""
         self._b._native.report_control(self._id, rc._native())
+        return self
+
+    def setting_group_control(
+        self, sgcb: SettingGroupControl | None = None, *, num_of_sgs: int = 1, act_sg: int = 1, resv_tms: int = 0
+    ) -> LogicalNodeBuilder:
+        """The setting group control block "SGCB" (LLN0 only, one per LD)."""
+        c = sgcb if sgcb is not None else SettingGroupControl(num_of_sgs, act_sg, resv_tms)
+        self._b._native.setting_group_control(self._id, int(c.num_of_sgs), int(c.act_sg), int(c.resv_tms))
+        return self
+
+    def log(self, name: str) -> LogicalNodeBuilder:
+        """A log of this LN (the MMS journal "LN$name")."""
+        self._b._native.log(self._id, name)
+        return self
+
+    def log_control(self, lc: LogControl) -> LogicalNodeBuilder:
+        """A log control block of this LN."""
+        self._b._native.log_control(self._id, lc._native())
+        return self
+
+    def goose_control(self, gc: GooseControl) -> LogicalNodeBuilder:
+        """A GOOSE control block of this LN."""
+        self._b._native.goose_control(self._id, gc._native())
         return self
 
 
@@ -672,6 +864,250 @@ class Identity:
     revision: str = "0.1"
 
 
+class SettingGroupAction(enum.IntEnum):
+    SELECT_ACTIVE = 0  # SelectActiveSG
+    SELECT_EDIT = 1  # SelectEditSG (group 0 releases the edit buffer)
+    CONFIRM_EDIT = 2  # ConfirmEditSGValues
+
+
+@dataclass(frozen=True)
+class SettingGroupEvent:
+    """A setting group service invoked by a client, before it is applied (``on_setting_group``)."""
+
+    association: int
+    logical_device: str
+    action: SettingGroupAction
+    group: int
+
+
+@dataclass(frozen=True)
+class GooseControlState:
+    """The current attributes of a GoCB (:meth:`Server.goose_control`, ``on_goose_control``)."""
+
+    reference: ObjectReference  # "LD/LN.name[GO]"
+    go_ena: bool
+    go_id: str
+    dat_set: str  # MMS form "LD/LN$DS"; empty: none
+    members: tuple[ObjectReference, ...]
+    conf_rev: int
+    nds_com: bool
+    dst_mac: str
+    vlan_priority: int
+    vlan_id: int
+    app_id: int
+    min_time: int
+    max_time: int
+    fixed_offs: bool
+
+    @staticmethod
+    def _from(model: Model, d: Mapping[str, Any]) -> GooseControlState:
+        return GooseControlState(
+            reference=model._ref(d["reference"]),
+            go_ena=d["go_ena"],
+            go_id=d["go_id"],
+            dat_set=d["dat_set"],
+            members=tuple(model._ref(m) for m in d["members"]),
+            conf_rev=d["conf_rev"],
+            nds_com=d["nds_com"],
+            dst_mac=_mac_text(d["dst_mac"]),
+            vlan_priority=d["vlan_priority"],
+            vlan_id=d["vlan_id"],
+            app_id=d["app_id"],
+            min_time=d["min_time"],
+            max_time=d["max_time"],
+            fixed_offs=d["fixed_offs"],
+        )
+
+
+@dataclass(frozen=True)
+class FileInfo:
+    """A file of a :class:`FileStore`: its path relative to the root, size and modification time."""
+
+    name: str
+    size: int
+    last_modified: datetime | None = None
+
+
+def _mtime(t: datetime | float | None) -> float | None:
+    if t is None:
+        return None
+    if isinstance(t, datetime):
+        if t.tzinfo is None:
+            raise ValueError("modification times must be timezone-aware")
+        return t.timestamp()
+    return float(t)
+
+
+def _file_info(t: tuple[str, int, float | None]) -> FileInfo:
+    name, size, mtime = t
+    return FileInfo(name, size, datetime.fromtimestamp(mtime, timezone.utc) if mtime is not None else None)
+
+
+class FileStore:
+    """Base class of a Python file store served by :meth:`Server.start` (``files=``).
+
+    Paths are relative to the store root, "/"-separated, already normalised by the server (no
+    "..", "." or empty segments). Errors are raised as :class:`FileNotFoundError` (file
+    non-existent), :class:`PermissionError` / :class:`IsADirectoryError` (access denied),
+    :class:`FileExistsError` (duplicate name), :class:`BlockingIOError` (busy) or
+    :class:`ValueError` (invalid name); anything else is logged and reported as "other".
+
+    The methods run synchronously on the server's I/O thread (see the module documentation):
+    keep them quick and never wait for the event loop.
+    """
+
+    def list(self, directory: str) -> Iterable[FileInfo]:
+        """The files below ``directory`` ("" for all), recursively, or the single file it names;
+        sorted by name. :class:`FileNotFoundError` when nothing has that name."""
+        raise NotImplementedError
+
+    def stat(self, path: str) -> FileInfo:
+        raise NotImplementedError
+
+    def read(self, path: str, offset: int, size: int) -> bytes:
+        """At most ``size`` octets at ``offset`` (b"" at the end of the file)."""
+        raise NotImplementedError
+
+    def remove(self, path: str) -> None:
+        raise NotImplementedError
+
+    def rename(self, current: str, new: str) -> None:
+        """:class:`FileExistsError` when ``new`` exists."""
+        raise NotImplementedError
+
+
+class _NativeFileStore:
+    """A store implemented natively; also usable locally (any thread)."""
+
+    def __init__(self, native: Any) -> None:
+        self._native = native
+
+    def list(self, directory: str = "") -> list[FileInfo]:
+        return [_file_info(t) for t in self._native.list(directory)]
+
+    def stat(self, path: str) -> FileInfo:
+        return _file_info(self._native.stat(path))
+
+    def read(self, path: str, offset: int = 0, size: int = 1 << 20) -> bytes:
+        return bytes(self._native.read(path, int(offset), int(size)))
+
+    def remove(self, path: str) -> None:
+        self._native.remove(path)
+
+    def rename(self, current: str, new: str) -> None:
+        self._native.rename(current, new)
+
+
+class MemoryFileStore(_NativeFileStore):
+    """An in-memory file store (thread-safe), e.g. for generated files or tests."""
+
+    def __init__(self, files: Mapping[str, bytes] | None = None) -> None:
+        super().__init__(_core.FileStore.memory())
+        for name, content in (files or {}).items():
+            self.put(name, content)
+
+    def put(self, path: str, content: bytes, modified: datetime | float | None = None) -> None:
+        """Adds or replaces a file (``FileStoreError`` with EINVAL for an invalid name)."""
+        self._native.put(path, bytes(content), _mtime(modified))
+
+    def get(self, path: str) -> bytes | None:
+        b = self._native.get(path)
+        return bytes(b) if b is not None else None
+
+
+class DirectoryFileStore(_NativeFileStore):
+    """A directory of the local filesystem. Every operation stays inside ``root`` (symbolic links
+    are followed and must resolve below it); only regular files are served. Raises
+    :class:`InvalidOperation` when ``root`` is not an existing directory."""
+
+    def __init__(self, root: str | os.PathLike[str]) -> None:
+        super().__init__(_core.FileStore.directory(os.fspath(root)))
+
+    @property
+    def root(self) -> str:
+        return str(self._native.root)
+
+
+# file_errc (server/files.hpp)
+_FILE_NOT_FOUND, _FILE_ACCESS_DENIED, _FILE_EXISTS, _FILE_INVALID_NAME, _FILE_BUSY, _FILE_NO_SPACE = range(1, 7)
+
+
+def _file_errc(e: BaseException) -> int:
+    if isinstance(e, FileNotFoundError):
+        return _FILE_NOT_FOUND
+    if isinstance(e, FileExistsError):
+        return _FILE_EXISTS
+    if isinstance(e, (PermissionError, IsADirectoryError)):
+        return _FILE_ACCESS_DENIED
+    if isinstance(e, BlockingIOError):
+        return _FILE_BUSY
+    if isinstance(e, FileStoreError):
+        return {
+            errno.ENOENT: _FILE_NOT_FOUND,
+            errno.EACCES: _FILE_ACCESS_DENIED,
+            errno.EEXIST: _FILE_EXISTS,
+            errno.EINVAL: _FILE_INVALID_NAME,
+            errno.EBUSY: _FILE_BUSY,
+            errno.ENOSPC: _FILE_NO_SPACE,
+        }.get(e.errno or 0, -1)
+    if isinstance(e, OSError) and e.errno == errno.ENOSPC:
+        return _FILE_NO_SPACE
+    if isinstance(e, ValueError):
+        return _FILE_INVALID_NAME
+    return -1
+
+
+class _FileStoreAdapter:
+    """What the native server calls for a Python :class:`FileStore`: (code, value) answers."""
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    def _call(self, what: str, fn: Callable[[], Any]) -> tuple[int, Any]:
+        try:
+            return (0, fn())
+        except Exception as e:  # noqa: BLE001 - mapped to an MMS file error
+            code = _file_errc(e)
+            if code < 0:
+                _log.exception("file store %s failed", what)
+            return (code, None)
+
+    @staticmethod
+    def _info(f: Any) -> tuple[str, int, float | None]:
+        if isinstance(f, FileInfo):
+            return (f.name, int(f.size), _mtime(f.last_modified))
+        name, size, *rest = f
+        return (str(name), int(size), _mtime(rest[0]) if rest else None)
+
+    def list(self, directory: str) -> tuple[int, Any]:
+        return self._call("list", lambda: [self._info(f) for f in self._store.list(directory)])
+
+    def stat(self, path: str) -> tuple[int, Any]:
+        return self._call("stat", lambda: self._info(self._store.stat(path)))
+
+    def read(self, path: str, offset: int, size: int) -> tuple[int, Any]:
+        return self._call("read", lambda: bytes(self._store.read(path, offset, size)))
+
+    def remove(self, path: str) -> tuple[int, Any]:
+        return self._call("remove", lambda: self._store.remove(path))
+
+    def rename(self, current: str, new: str) -> tuple[int, Any]:
+        return self._call("rename", lambda: self._store.rename(current, new))
+
+
+def _native_files(files: Any) -> Any:
+    if files is None:
+        return None
+    if isinstance(files, _NativeFileStore):
+        return files._native
+    for m in ("list", "stat", "read", "remove", "rename"):
+        if not callable(getattr(files, m, None)):
+            raise TypeError(f"files must be a FileStore (missing {m}())")
+    return _FileStoreAdapter(files)
+
+
+SettingGroupHook = Callable[[SettingGroupEvent], Any]
+GooseControlHook = Callable[[GooseControlState], Any]
 WriteHook = Callable[[int, ObjectReference, Any], Any]
 ControlHook = Callable[[ControlRequest], Any]
 AuthorizeHook = Callable[[AssociationRequest], Any]
@@ -714,7 +1150,9 @@ def _make_dispatchers(
     on_write: WriteHook | None,
     on_control: ControlHook | None,
     authorize: AuthorizeHook | None,
-) -> tuple[Any, Any, Any]:
+    on_setting_group: SettingGroupHook | None = None,
+    on_goose_control: GooseControlHook | None = None,
+) -> tuple[Any, Any, Any, Any, Any]:
     # These closures are owned by the native server: they must not reference the Server object
     # (a cycle through native code is invisible to the garbage collector).
     tasks: set[asyncio.Future[Any]] = set()
@@ -831,10 +1269,52 @@ def _make_dispatchers(
             _log.exception("authorize hook failed")
             return False
 
+    def setting_group(association: int, ld: str, action: int, group: int) -> int:
+        try:
+            event = SettingGroupEvent(association, ld, SettingGroupAction(action), group)
+            r = _now(on_setting_group(event), "on_setting_group")  # type: ignore[misc]
+            if r is None or r is True:
+                return -1
+            if r is False:
+                return int(DataAccessError.OBJECT_ACCESS_DENIED)
+            if isinstance(r, ServiceError) and r.data_access_error is not None:
+                return int(r.data_access_error)
+            return int(DataAccessError(r))
+        except Exception:
+            _log.exception("on_setting_group hook failed for %s", ld)
+            return int(DataAccessError.OBJECT_ACCESS_DENIED)
+
+    def run_goose_hook(state: GooseControlState) -> None:
+        try:
+            r = on_goose_control(state)  # type: ignore[misc]
+            if inspect.isawaitable(r):
+                fut = asyncio.ensure_future(r)
+                tasks.add(fut)
+
+                def done(f: asyncio.Future[Any]) -> None:
+                    tasks.discard(f)
+                    if not f.cancelled() and f.exception() is not None:
+                        _log.error("on_goose_control hook failed", exc_info=f.exception())
+
+                fut.add_done_callback(done)
+        except Exception:
+            _log.exception("on_goose_control hook failed for %s", state.reference)
+
+    def goose_control(association: int, d: dict[str, Any]) -> None:
+        try:
+            state = GooseControlState._from(model, d)
+            loop.call_soon_threadsafe(run_goose_hook, state)
+        except RuntimeError:  # the loop is closed
+            pass
+        except Exception:
+            _log.exception("on_goose_control dispatch failed")
+
     return (
         write if on_write is not None else None,
         control if on_control is not None else None,
         auth if authorize is not None else None,
+        setting_group if on_setting_group is not None else None,
+        goose_control if on_goose_control is not None else None,
     )
 
 
@@ -900,6 +1380,11 @@ class Server:
         check_test_mode: bool = True,
         association_timeout: float = 10.0,
         handshake_timeout: float = 10.0,
+        on_setting_group: SettingGroupHook | None = None,
+        log_capacity: int = 1024,
+        on_goose_control: GooseControlHook | None = None,
+        files: FileStore | MemoryFileStore | DirectoryFileStore | None = None,
+        max_open_files: int = 8,
     ) -> Server:
         """Listens on ``host:port`` (port 0: ephemeral, see :attr:`local_endpoint`).
 
@@ -910,6 +1395,13 @@ class Server:
         not-supported); ``authorize(request)`` returns True to accept an association.
         ``password`` requires that ACSE password (checked before ``authorize``).
         ``operate_timeout`` (seconds, 0: none) refuses pending operations with time-limit-over.
+
+        ``on_setting_group(event)`` (:class:`SettingGroupEvent`) is called before SelectActiveSG,
+        SelectEditSG and ConfirmEditSGValues are applied and answers like ``on_write``.
+        ``log_capacity``: entries kept per log (the oldest are dropped). ``on_goose_control(state)``
+        (:class:`GooseControlState`) runs on the event loop after a client changed a GoCB.
+        ``files`` serves the MMS file services (unset: they are rejected); ``max_open_files``
+        bounds the files open at once per association.
         """
         if not isinstance(model, Model):
             raise TypeError("model must be an openiec61850.Model")
@@ -932,9 +1424,14 @@ class Server:
             "association_timeout": float(association_timeout),
             "handshake_timeout": float(handshake_timeout),
             "password": password,
+            "log_capacity": int(log_capacity),
+            "max_open_files": int(max_open_files),
+            "files": _native_files(files),
         }
-        write, control, auth = _make_dispatchers(model, loop, on_write, on_control, authorize)
-        native = _core.Server.start(model._native, host, int(port), options, write, control, auth)
+        write, control, auth, sg, gc = _make_dispatchers(
+            model, loop, on_write, on_control, authorize, on_setting_group, on_goose_control
+        )
+        native = _core.Server.start(model._native, host, int(port), options, write, control, auth, sg, gc)
         return cls(native, model)
 
     async def __aenter__(self) -> Server:
@@ -1012,6 +1509,25 @@ class Server:
         text = _text(ref)
         t = await self._native.read(text)
         return decode(t, self._model._spec_or_none(text))
+
+    def select_active_setting_group(self, ld: str, sg: int) -> None:
+        """Local SelectActiveSG (e.g. from an HMI); any thread. Raises :class:`ObjectNotFound`
+        when ``ld`` has no SGCB and :class:`ValueOutOfRange` unless 1 <= sg <= NumOfSG."""
+        self._native.select_active_setting_group(ld, int(sg))
+
+    async def read_setting_group(self, ref: Ref, sg: int) -> Any:
+        """The value of an FC SG reference in setting group ``sg`` (1-based), as stored."""
+        text = _text(ref)
+        t = await self._native.read_setting_group(text, int(sg))
+        return decode(t, self._model._spec_or_none(text))
+
+    async def goose_control(self, ref: Ref) -> GooseControlState:
+        """The current attributes of the GoCB "LD/LN.name[GO]" (:class:`ObjectNotFound`)."""
+        return GooseControlState._from(self._model, await self._native.goose_control(_text(ref)))
+
+    async def goose_controls(self) -> list[GooseControlState]:
+        """Every GoCB of the model."""
+        return [GooseControlState._from(self._model, d) for d in await self._native.goose_controls()]
 
     def __repr__(self) -> str:
         host, port = self.local_endpoint
