@@ -127,3 +127,94 @@ TEST_CASE("Values: defaults and SCL text", "[server]") {
         model::entry_id({0, 1, 2, 3, 4, 5, 6, 7}).to_mms());
   CHECK(srv::parse_value(basic_type::int8, "x").error() == srv::errc::type_mismatch);
 }
+
+TEST_CASE("Model builder: arrays of data objects", "[server]") {
+  auto fill = [](srv::do_handle e, basic_type t) { e.attribute("v", fc::SP, t); };
+  {
+    srv::model_builder b;
+    auto ln = b.logical_device("LD").logical_node("GGIO1");
+    auto arr = ln.data_object("Sig", 2);
+    fill(arr.element(1), basic_type::int32);  // creates element 0 too
+    fill(arr.element(0), basic_type::int32);
+    auto outer = ln.data_object("Out");
+    auto sub = outer.sub_object("Sub", 1);
+    sub.element(0).sub_object("In", 1).element(0).attribute("x", fc::ST, basic_type::boolean);
+    auto m = b.build();
+    REQUIRE(m);
+    CHECK(m->reference_of(*m->find(oref("LD/GGIO1.Sig(1).v[SP]"))) == "LD/GGIO1.Sig(1).v");
+    CHECK(m->reference_of(*m->find(oref("LD/GGIO1.Out.Sub(0).In(0).x"))) ==
+          "LD/GGIO1.Out.Sub(0).In(0).x");
+    const auto t = m->type_of(*m->find(oref("LD/GGIO1.Sig")), fc::SP);
+    REQUIRE(t);
+    CHECK(t->type == mms::data_type::array);
+  }
+  {
+    srv::model_builder b;  // attributes go to the elements
+    auto arr = b.logical_device("LD").logical_node("GGIO1").data_object("Sig", 2);
+    arr.attribute("v", fc::SP, basic_type::int32);
+    CHECK(b.error() == openiec61850::errc::invalid_state);
+  }
+  {
+    srv::model_builder b;  // past the end
+    auto arr = b.logical_device("LD").logical_node("GGIO1").data_object("Sig", 2);
+    arr.element(2);
+    CHECK(b.error() == openiec61850::errc::invalid_state);
+  }
+  {
+    srv::model_builder b;  // an element missing
+    auto arr = b.logical_device("LD").logical_node("GGIO1").data_object("Sig", 2);
+    fill(arr.element(0), basic_type::int32);
+    CHECK(b.build().error() == srv::errc::invalid_model);
+  }
+  {
+    srv::model_builder b;  // elements of different types
+    auto arr = b.logical_device("LD").logical_node("GGIO1").data_object("Sig", 2);
+    fill(arr.element(0), basic_type::int32);
+    fill(arr.element(1), basic_type::int16);
+    CHECK(b.build().error() == srv::errc::invalid_model);
+  }
+}
+
+TEST_CASE("Model builder: logs of other logical devices", "[server]") {
+  auto build = [](std::string_view ld, std::string_view ln) {
+    srv::model_builder b;
+    auto a = b.logical_device("A").logical_node("LLN0");
+    b.logical_device("B").logical_node("LLN0").log("L");
+    srv::log_control_settings lc;
+    lc.name = "lcb";
+    lc.log_name = "L";
+    lc.log_ld = ld;
+    lc.log_ln = ln;
+    a.log_control(lc);
+    return b.build();
+  };
+  CHECK(build("B", "LLN0"));
+  CHECK(build("B", "").error() == srv::errc::invalid_model);
+  CHECK(build("C", "LLN0").error() == srv::errc::invalid_model);
+  CHECK(build("", "LLN0").error() == srv::errc::invalid_model);  // not in this LD
+}
+
+TEST_CASE("Model values: Timestamp and EntryTime text", "[server]") {
+  auto seconds = [](std::string_view text) {
+    return srv::parse_value(basic_type::timestamp, text)->as_utc_time()->seconds;
+  };
+  CHECK(seconds("1970-01-01T00:00:10Z") == 10);
+  CHECK(seconds(" 1970-01-01T01:00:10 ") == 3610);
+  CHECK(seconds("1970-01-01T01:00:10+01:00") == 10);
+  CHECK(seconds("1970-01-01T00:00:10-00:30") == 1810);
+  CHECK(srv::parse_value(basic_type::timestamp, "2020-01-01T00:00:00.25Z")->as_utc_time()->fraction ==
+        1U << 22);
+  const auto et = srv::parse_value(basic_type::entry_time, "1984-01-02T00:00:01.5Z");
+  REQUIRE(et);
+  REQUIRE(et->as_binary_time());
+  CHECK(et->as_binary_time()->days == 1);
+  CHECK(et->as_binary_time()->ms_of_day == 1500);
+  for (const auto* bad : {"", "2020-13-01T00:00:00Z", "2020-02-30T00:00:00Z", "2020-01-01 00:00:00",
+                          "2020-01-01T24:00:00Z", "2020-01-01T00:00:00.Z", "2020-01-01T00:00:00Zx",
+                          "2020-01-01T00:00:00+1", "1969-12-31T23:59:59Z"}) {
+    INFO(bad);
+    CHECK(srv::parse_value(basic_type::timestamp, bad).error() == srv::errc::type_mismatch);
+  }
+  CHECK(srv::parse_value(basic_type::entry_time, "1980-01-01T00:00:00Z").error() ==
+        srv::errc::type_mismatch);
+}

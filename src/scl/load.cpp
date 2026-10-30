@@ -592,6 +592,7 @@ void parser::parse_templates(xml_node n, const ns_scope& s, data_type_templates&
         d.name = required(c, "name");
         d.type = required(c, "type");
         d.desc = attr(c, "desc");
+        d.count = number<std::uint32_t>(c, "count", 0);
         d.transient = boolean(c, "transient", false);
         d.line = line(c);
         if (!d.name.empty() && !d.type.empty()) lt.data_objects.push_back(std::move(d));

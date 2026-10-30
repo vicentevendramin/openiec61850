@@ -100,8 +100,9 @@ class client {
   // (GetVariableAccessAttributes "LN") and the domain's named variable lists "LN$...".
   [[nodiscard]] asio::awaitable<result<logical_node_directory>> get_logical_node_directory(
       model::object_reference ln);
-  // GetDataDirectory: the children of an LN, DO or structured DA. With an FC only that FC is
-  // considered; without one the children under every FC are merged.
+  // GetDataDirectory: the children of an LN, DO or structured DA (of the elements for an array of
+  // data objects). With an FC only that FC is considered; without one the children under every FC
+  // are merged.
   [[nodiscard]] asio::awaitable<result<std::vector<data_directory_entry>>> get_data_directory(
       model::object_reference ref);
   // GetDataDefinition, same FC rule as get_data_directory().

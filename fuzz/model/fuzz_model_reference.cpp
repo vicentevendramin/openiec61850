@@ -53,6 +53,10 @@ void exercise(std::string_view text, const model::parse_options& opts) {
     auto back = model::from_mms_reference(*s, opts);
     check(back.has_value() && *back == *r);
   }
+  if (auto s = model::to_mms_data_reference(*r, opts.limits)) {
+    auto back = model::from_mms_data_reference(*s, opts);
+    check(back.has_value() && *back == *r);
+  }
   if (auto n2 = model::to_mms_named_variable_list(*r, opts.limits)) {
     auto back = model::from_mms_named_variable_list(n2->view(), opts);
     check(back.has_value() && *back == *r);

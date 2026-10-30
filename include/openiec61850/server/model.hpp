@@ -41,6 +41,11 @@
 // Arrays (attribute_options::count) hold their whole value at the array attribute; elements are
 // addressed with an index (MMS AlternateAccess) and are not separate nodes. Their sub-attributes,
 // when the element is a structure, are a template describing the element type.
+//
+// Arrays of data objects (a DO or SDO with a count, IEC 61850-6) differ: an object spans several
+// FCs, so each element is a node of its own (a data object named "(i)", child i of the array) with
+// its attributes below it. Seen under an FC, "LN$FC$DO" is an ARRAY of the elements' structures
+// and "LD/LN.DO(i).DA" is that variable with the AlternateAccess "(i) DA" (8-1 §8.1.3).
 
 namespace openiec61850::server {
 
@@ -93,6 +98,14 @@ struct node {
   std::vector<mms::data> group_values;
 
   [[nodiscard]] bool is_attribute() const noexcept { return kind == node_kind::data_attribute; }
+  // An array of data objects: `children` are its `count` elements, in index order.
+  [[nodiscard]] bool is_object_array() const noexcept {
+    return kind == node_kind::data_object && count > 0;
+  }
+  // An element of an array of data objects: the only nodes whose name is not an identifier.
+  [[nodiscard]] bool is_object_element() const noexcept {
+    return kind == node_kind::data_object && name.starts_with('(');
+  }
   // Leaves and arrays store a value; constructed attributes and objects do not.
   [[nodiscard]] bool holds_value() const noexcept {
     return kind == node_kind::data_attribute && (count > 0 || type.has_value());
@@ -160,9 +173,11 @@ struct log_control_settings {
   std::string name;
   // Name of a data set of the same LN; empty: none.
   std::string data_set;
-  // The log (declared with ln_handle::log()) of LN `log_ln` of the same LD (empty: this LN).
+  // The log (declared with ln_handle::log()) of LN `log_ln` (empty: this LN) of LD `log_ld`
+  // (empty: this LD; a log of another LD needs `log_ln`).
   std::string log_name;
   std::string log_ln;
+  std::string log_ld;
   bool log_ena = false;
   model::trigger_conditions trg_ops;
   std::uint32_t intg_pd = 0;
@@ -232,11 +247,12 @@ class data_model {
   [[nodiscard]] node_id find_logical_device(std::string_view name) const noexcept;
   [[nodiscard]] node_id find_child(node_id parent, std::string_view name) const noexcept;
   // The node named by an object reference: LD, LN, DO, control block or DA. With an FC, only
-  // attributes with that FC are considered below the LN (a DO matches when it has some). Array
-  // indices are not nodes: a reference with an index fails (errc::object_not_found).
+  // attributes with that FC are considered below the LN (a DO matches when it has some). An index
+  // selects an element of an array of data objects; elements of array attributes are not nodes,
+  // so a reference with such an index fails (errc::object_not_found).
   [[nodiscard]] result<node_id> find(const model::object_reference& ref) const;
 
-  // The ACSI reference "LD/LN.DO.DA" of a node.
+  // The ACSI reference "LD/LN.DO.DA" of a node ("LD/LN.DO(i).DA" below an array of objects).
   [[nodiscard]] std::string reference_of(node_id id) const;
   // The logical node / device containing a node (the node itself when it is one); no_node above.
   [[nodiscard]] node_id logical_node_of(node_id id) const noexcept;
@@ -244,7 +260,8 @@ class data_model {
 
   // The MMS TypeDescription of a node seen under `fc` (8-1 §8.1.3): for an LN without an FC the
   // structure of its FCs; for an LN with an FC, a DO or a control block, the structure of the
-  // components having that FC; for an attribute its type (`fc` is then ignored).
+  // components having that FC (an ARRAY of them for an array of data objects); for an attribute
+  // its type (`fc` is then ignored).
   [[nodiscard]] result<mms::type_description> type_of(
       node_id id, std::optional<model::functional_constraint> fc = std::nullopt) const;
 
@@ -313,7 +330,8 @@ class ld_handle {
 
 class ln_handle {
  public:
-  do_handle data_object(std::string_view name);
+  // `count` > 0: an array of data objects; fill its elements through do_handle::element().
+  do_handle data_object(std::string_view name, std::uint32_t count = 0);
   // A persistent data set of this LN; members are FCD/FCDA references (checked by build()).
   ln_handle& data_set(std::string_view name, std::vector<model::object_reference> members);
   // A report control block of this LN, with its attributes (FC BR or RP).
@@ -338,7 +356,10 @@ class ln_handle {
 
 class do_handle {
  public:
-  do_handle sub_object(std::string_view name);
+  do_handle sub_object(std::string_view name, std::uint32_t count = 0);
+  // Element `index` of an array of data objects (created on first use). Attributes and
+  // sub-objects go to the elements, which build() checks are all present and of the same type.
+  do_handle element(std::uint32_t index);
   // A leaf data attribute.
   da_handle attribute(std::string_view name, model::functional_constraint fc,
                       model::basic_type type, attribute_options options = {});
@@ -424,6 +445,9 @@ class model_builder {
     if (!error_) error_ = ec;
   }
   [[nodiscard]] bool usable(node_id id, node_kind kind) const noexcept;
+  // A data object that takes attributes: not an array (its elements do).
+  [[nodiscard]] bool plain_object(node_id id) const noexcept;
+  node_id add_object(node_id parent, std::string_view name, std::uint32_t count);
   node_id add_attribute(node_id parent, std::string_view name,
                         std::optional<model::functional_constraint> fc,
                         std::optional<model::basic_type> type, attribute_options options);
@@ -442,8 +466,9 @@ class model_builder {
 // Parses the text form of a value as found in SCL Val elements: "true"/"false"/"1"/"0" for
 // BOOLEAN, decimal integers (ENUMERATED: the ordinal), floats, strings as is, bit strings as '0'/'1'
 // digits (bit 0 first) or, for Dbpos/Tcmd, "intermediate-state"/"off"/"on"/"bad-state" and
-// "stop"/"lower"/"higher"/"reserved", EntryID / OCTET STRING as hex digits. TimeStamp and
-// EntryTime are not parsed (errc::unsupported). errc::type_mismatch for an unparsable text.
+// "stop"/"lower"/"higher"/"reserved", EntryID / OCTET STRING as hex digits, TimeStamp and EntryTime
+// as "YYYY-MM-DDThh:mm:ss[.fraction][Z|+hh:mm|-hh:mm]" (UTC when no offset is given).
+// errc::type_mismatch for an unparsable text.
 [[nodiscard]] result<mms::data> parse_value(model::basic_type type, std::string_view text,
                                             std::int32_t size = 0);
 

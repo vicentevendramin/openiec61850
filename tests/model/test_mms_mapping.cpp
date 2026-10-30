@@ -254,6 +254,21 @@ TEST_CASE("MMS textual references", "[model]") {
   CHECK(*s == "LD0/LLN0$GO$gcb01");
   CHECK(model::to_mms_reference(parsed("LD0/LLN0.Arr(1)[ST]")).error() == errc::invalid_state);
 
+  auto indexed = model::to_mms_data_reference(parsed("LD0/LLN0.Arr(1).sub(20).x[ST]"));
+  REQUIRE(indexed);
+  CHECK(*indexed == "LD0/LLN0$ST$Arr(1)$sub(20)$x");
+  auto back = model::from_mms_data_reference(*indexed);
+  REQUIRE(back);
+  CHECK(*back == parsed("LD0/LLN0.Arr(1).sub(20).x[ST]"));
+  CHECK(model::from_mms_data_reference("LD0/LLN0$ST$Mod$stVal"));
+  for (const auto* bad : {"LD0/LLN0$ST$Arr(", "LD0/LLN0$ST$Arr)", "LD0/LLN0$ST$Arr()",
+                          "LD0/LLN0$ST$Arr(01)", "LD0/LLN0$ST$Arr(x)", "LD0/LLN0$ST$(1)",
+                          "LD0/LLN0(1)$ST$Arr", "LD0/LLN0$ST$Arr(1)x", "LLN0$ST$Arr(1)"}) {
+    INFO(bad);
+    CHECK_FALSE(model::from_mms_data_reference(bad));
+  }
+  CHECK_FALSE(model::from_mms_reference("LD0/LLN0$ST$Arr(1)"));
+
   auto r = model::from_mms_reference("LD0/LLN0$BR$brcb01");
   REQUIRE(r);
   CHECK(r->to_string() == "LD0/LLN0.brcb01[BR]");

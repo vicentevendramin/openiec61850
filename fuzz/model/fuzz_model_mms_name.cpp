@@ -61,6 +61,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       auto s = model::to_mms_reference(*r, opts.limits);
       check(s.has_value() && *s == input);
     }
+    if (auto r = model::from_mms_data_reference(input, opts)) {
+      auto s = model::to_mms_data_reference(*r, opts.limits);
+      check(s.has_value() && *s == input);
+    }
     if (auto r = model::from_mms_data_set_reference(input, opts)) {
       auto s = model::to_mms_data_set_reference(*r, opts.limits);
       check(s.has_value() && *s == input);

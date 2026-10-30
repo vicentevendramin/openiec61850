@@ -53,7 +53,7 @@ std::optional<target> server_state::resolve_mms(const mms::object_name& name,
   node_id cur = ln;
   for (std::size_t k = 2; k < parts.size(); ++k) {
     const auto& n = at(cur);
-    if (n.holds_value()) return std::nullopt;
+    if (n.holds_value() || n.is_object_array()) return std::nullopt;
     const node_id child = model.find_child(cur, parts[k]);
     if (child == no_node || !visible(n, at(child), f)) return std::nullopt;
     cur = child;
@@ -83,6 +83,10 @@ result<target> server_state::resolve_ref(const model::object_reference& ref) con
       cur = child;
       if (pe.index) {
         if (at(cur).count == 0 || *pe.index >= at(cur).count) return not_found();
+        if (at(cur).is_object_array()) {  // its elements are nodes
+          cur = at(cur).children[*pe.index];
+          continue;
+        }
         t.path.push_back({true, *pe.index});
         in_value = true;
         tmpl = cur;
@@ -137,6 +141,7 @@ mms::data build(const server_state& s, node_id id, std::optional<model::function
     if (!visible(n, s.at(c), f)) continue;
     comps.push_back(build(s, c, f));
   }
+  if (n.is_object_array()) return mms::data::array(std::move(comps));
   return mms::data::structure(std::move(comps));
 }
 
@@ -280,7 +285,7 @@ std::string server_state::mms_reference(const target& t) const {
   target base{t.node, t.fc, {}};
   auto ref = acsi_reference(base);
   if (!ref) return {};
-  auto text = model::to_mms_reference(*ref, model::name_limits::unlimited());
+  auto text = model::to_mms_data_reference(*ref, model::name_limits::unlimited());
   return text ? std::move(*text) : std::string{};
 }
 

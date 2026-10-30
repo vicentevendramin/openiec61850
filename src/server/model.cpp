@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -40,6 +41,22 @@ std::int32_t effective_size(basic_type t, std::int32_t size) noexcept {
   }
 }
 
+// Whether two elements of an array of data objects have the same type (their names differ).
+bool same_type(const std::vector<node>& nodes, node_id a, node_id b) {
+  const auto& x = nodes[a];
+  const auto& y = nodes[b];
+  if (x.kind != y.kind || x.fc != y.fc || x.type != y.type || x.size != y.size ||
+      x.count != y.count || x.children.size() != y.children.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < x.children.size(); ++i) {
+    const auto& cx = nodes[x.children[i]];
+    const auto& cy = nodes[y.children[i]];
+    if (cx.name != cy.name || !same_type(nodes, x.children[i], y.children[i])) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 // --- data_model
@@ -69,11 +86,16 @@ result<node_id> data_model::find(const model::object_reference& ref) const {
   const auto f = ref.fc();
   if (f && *f == fc::XX) return err(errc::object_not_found);
   for (const auto pe : ref.path()) {
-    if (pe.index) return err(errc::object_not_found);
     const bool filtered = !nodes_[cur].is_attribute();
     cur = find_child(cur, pe.name);
     if (cur == no_node) return err(errc::object_not_found);
     if (f && filtered && !nodes_[cur].has_fc(*f)) return err(errc::object_not_found);
+    if (pe.index) {
+      if (!nodes_[cur].is_object_array() || *pe.index >= nodes_[cur].count) {
+        return err(errc::object_not_found);
+      }
+      cur = nodes_[cur].children[*pe.index];
+    }
   }
   if (f && !nodes_[cur].has_fc(*f)) return err(errc::object_not_found);
   return cur;
@@ -87,7 +109,7 @@ std::string data_model::reference_of(node_id id) const {
     const auto& nd = nodes_[*it];
     if (nd.kind == node_kind::logical_node) {
       out.push_back('/');
-    } else if (nd.kind != node_kind::logical_device) {
+    } else if (nd.kind != node_kind::logical_device && !nd.is_object_element()) {
       out.push_back('.');
     }
     out.append(nd.name);
@@ -132,6 +154,11 @@ result<mms::type_description> data_model::type_of(node_id id,
     case node_kind::data_object:
     case node_kind::control_block: {
       if (!f || !nd.has_fc(*f)) return err(errc::object_not_found);
+      if (nd.is_object_array()) {
+        auto t = type_of(nd.children.front(), f);
+        if (!t) return t.error();
+        return mms::type_description::array(nd.count, std::move(*t));
+      }
       std::vector<mms::type_component> comps;
       for (const auto c : nd.children) {
         if (!nodes_[c].has_fc(*f)) continue;
@@ -169,6 +196,16 @@ model_builder::model_builder(model::edition edition) { m_.edition_ = edition; }
 
 bool model_builder::usable(node_id id, node_kind kind) const noexcept {
   return !error_ && id < m_.nodes_.size() && m_.nodes_[id].kind == kind;
+}
+
+bool model_builder::plain_object(node_id id) const noexcept {
+  return usable(id, node_kind::data_object) && m_.nodes_[id].count == 0;
+}
+
+node_id model_builder::add_object(node_id parent, std::string_view name, std::uint32_t count) {
+  const auto id = add(parent, name, node_kind::data_object);
+  if (id != no_node) m_.nodes_[id].count = count;
+  return id;
 }
 
 node_id model_builder::add(node_id parent, std::string_view name, node_kind kind) {
@@ -221,12 +258,12 @@ ln_handle ld_handle::logical_node(std::string_view name) {
   return {b_, b_->add(id_, name, node_kind::logical_node)};
 }
 
-do_handle ln_handle::data_object(std::string_view name) {
+do_handle ln_handle::data_object(std::string_view name, std::uint32_t count) {
   if (!b_->usable(id_, node_kind::logical_node)) {
     b_->fail(openiec61850::errc::invalid_state);
     return {b_, no_node};
   }
-  return {b_, b_->add(id_, name, node_kind::data_object)};
+  return {b_, b_->add_object(id_, name, count)};
 }
 
 ln_handle& ln_handle::data_set(std::string_view name, std::vector<model::object_reference> members) {
@@ -368,17 +405,35 @@ ln_handle& ln_handle::goose_control(goose_control_settings settings) {
   return *this;
 }
 
-do_handle do_handle::sub_object(std::string_view name) {
-  if (!b_->usable(id_, node_kind::data_object)) {
+do_handle do_handle::sub_object(std::string_view name, std::uint32_t count) {
+  if (!b_->plain_object(id_)) {
     b_->fail(openiec61850::errc::invalid_state);
     return {b_, no_node};
   }
-  return {b_, b_->add(id_, name, node_kind::data_object)};
+  return {b_, b_->add_object(id_, name, count)};
+}
+
+do_handle do_handle::element(std::uint32_t index) {
+  if (!b_->usable(id_, node_kind::data_object) || index >= b_->m_.nodes_[id_].count) {
+    b_->fail(openiec61850::errc::invalid_state);
+    return {b_, no_node};
+  }
+  auto& nodes = b_->m_.nodes_;
+  while (nodes[id_].children.size() <= index) {
+    const auto id = static_cast<node_id>(nodes.size());
+    node n;
+    n.name = "(" + std::to_string(nodes[id_].children.size()) + ")";
+    n.kind = node_kind::data_object;
+    n.parent = id_;
+    nodes.push_back(std::move(n));
+    nodes[id_].children.push_back(id);
+  }
+  return {b_, nodes[id_].children[index]};
 }
 
 da_handle do_handle::attribute(std::string_view name, model::functional_constraint f,
                                model::basic_type type, attribute_options options) {
-  if (!b_->usable(id_, node_kind::data_object)) {
+  if (!b_->plain_object(id_)) {
     b_->fail(openiec61850::errc::invalid_state);
     return {b_, no_node};
   }
@@ -387,7 +442,7 @@ da_handle do_handle::attribute(std::string_view name, model::functional_constrai
 
 da_handle do_handle::structure(std::string_view name, model::functional_constraint f,
                                attribute_options options) {
-  if (!b_->usable(id_, node_kind::data_object)) {
+  if (!b_->plain_object(id_)) {
     b_->fail(openiec61850::errc::invalid_state);
     return {b_, no_node};
   }
@@ -499,6 +554,12 @@ result<data_model> model_builder::build() {
 
   // Values and leaf types; then the FC masks, children before parents (children have larger ids).
   for (auto& n : nodes) {
+    if (n.is_object_array()) {
+      if (n.children.size() != n.count) return err(errc::invalid_model);
+      for (const auto e : n.children) {
+        if (!same_type(nodes, n.children.front(), e)) return err(errc::invalid_model);
+      }
+    }
     if (n.kind != node_kind::data_attribute) continue;
     if (!n.type && n.children.empty()) return err(errc::invalid_model);
     if (!n.fc) return err(errc::invalid_model);
@@ -606,8 +667,12 @@ result<data_model> model_builder::build() {
     if (l.settings.log_name.empty()) continue;
     node_id log_ln = l.ln;
     if (!l.settings.log_ln.empty()) {
-      log_ln = m_.find_child(m_.logical_device_of(l.ln), l.settings.log_ln);
+      const node_id ld = l.settings.log_ld.empty() ? m_.logical_device_of(l.ln)
+                                                   : m_.find_logical_device(l.settings.log_ld);
+      log_ln = ld == no_node ? no_node : m_.find_child(ld, l.settings.log_ln);
       if (log_ln == no_node) return err(errc::invalid_model);
+    } else if (!l.settings.log_ld.empty()) {
+      return err(errc::invalid_model);
     }
     const bool found = std::any_of(m_.logs_.begin(), m_.logs_.end(), [&](const auto& lg) {
       return lg.ln == log_ln && lg.name == l.settings.log_name;
@@ -705,6 +770,59 @@ std::optional<byte_buffer> parse_hex(std::string_view s) {
   return out;
 }
 
+// "YYYY-MM-DDThh:mm:ss[.fraction][Z|+hh:mm|-hh:mm]" (xs:dateTime) as UTC. The fraction is kept to
+// the microsecond.
+std::optional<std::chrono::sys_time<std::chrono::microseconds>> parse_date_time(std::string_view s) {
+  using namespace std::chrono;
+  while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())) != 0) s.remove_prefix(1);
+  while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())) != 0) s.remove_suffix(1);
+  auto number = [&](std::size_t pos, std::size_t len) -> std::optional<int> {
+    if (pos + len > s.size()) return std::nullopt;
+    int v = 0;
+    for (std::size_t i = pos; i < pos + len; ++i) {
+      if (s[i] < '0' || s[i] > '9') return std::nullopt;
+      v = v * 10 + (s[i] - '0');
+    }
+    return v;
+  };
+  if (s.size() < 19 || s[4] != '-' || s[7] != '-' || s[10] != 'T' || s[13] != ':' || s[16] != ':') {
+    return std::nullopt;
+  }
+  const auto yr = number(0, 4);
+  const auto mo = number(5, 2);
+  const auto dy = number(8, 2);
+  const auto hh = number(11, 2);
+  const auto mi = number(14, 2);
+  const auto se = number(17, 2);
+  if (!yr || !mo || !dy || !hh || !mi || !se || *hh > 23 || *mi > 59 || *se > 59) return std::nullopt;
+  const year_month_day date{year{*yr}, month{static_cast<unsigned>(*mo)},
+                            day{static_cast<unsigned>(*dy)}};
+  if (!date.ok()) return std::nullopt;
+  sys_time<microseconds> t = sys_days{date} + hours{*hh} + minutes{*mi} + seconds{*se};
+  std::size_t pos = 19;
+  if (pos < s.size() && s[pos] == '.') {
+    const std::size_t from = ++pos;
+    std::int64_t us = 0;
+    std::int64_t unit = 100'000;
+    for (; pos < s.size() && s[pos] >= '0' && s[pos] <= '9'; ++pos) {
+      us += (s[pos] - '0') * unit;
+      unit /= 10;
+    }
+    if (pos == from) return std::nullopt;
+    t += microseconds{us};
+  }
+  if (pos == s.size()) return t;
+  if (s[pos] == 'Z') return pos + 1 == s.size() ? std::optional(t) : std::nullopt;
+  if ((s[pos] != '+' && s[pos] != '-') || pos + 6 != s.size() || s[pos + 3] != ':') {
+    return std::nullopt;
+  }
+  const auto oh = number(pos + 1, 2);
+  const auto om = number(pos + 4, 2);
+  if (!oh || !om || *oh > 23 || *om > 59) return std::nullopt;
+  const minutes offset = hours{*oh} + minutes{*om};
+  return s[pos] == '+' ? t - offset : t + offset;
+}
+
 result<mms::data> parse_bits(std::string_view s, std::size_t count) {
   std::vector<bool> bits(count, false);
   if (s.size() > count) return err(errc::type_mismatch);
@@ -787,9 +905,20 @@ result<mms::data> parse_value(model::basic_type type, std::string_view text, std
     case basic_type::packed_list:
       if (size <= 0) return openiec61850::errc::invalid_state;
       return parse_bits(text, static_cast<std::size_t>(size));
-    case basic_type::timestamp:
-    case basic_type::entry_time:
-      return openiec61850::errc::unsupported;
+    case basic_type::timestamp: {
+      const auto t = parse_date_time(text);
+      if (!t) return mismatch;
+      auto v = mms::utc_time::from_time_point(*t);
+      if (!v) return mismatch;
+      return mms::data::utc_time(*v);
+    }
+    case basic_type::entry_time: {
+      const auto t = parse_date_time(text);
+      if (!t) return mismatch;
+      auto v = mms::binary_time::from_time_point(*t);
+      if (!v) return mismatch;
+      return mms::data::binary_time(*v);
+    }
   }
   return mismatch;
 }

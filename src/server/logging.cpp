@@ -83,7 +83,8 @@ void server_state::init_logs() {
     const node_id ld = model.logical_device_of(def.ln);
     if (!s.log_name.empty()) {
       const std::string ln_name = s.log_ln.empty() ? at(def.ln).name : s.log_ln;
-      const auto it = logs.find({at(ld).name, ln_name + "$" + s.log_name});
+      const std::string ld_name = s.log_ld.empty() ? at(ld).name : s.log_ld;
+      const auto it = logs.find({ld_name, ln_name + "$" + s.log_name});
       if (it != logs.end()) {
         l->log = it->second.get();
         l->log_ref = it->first.first + "/" + it->first.second;

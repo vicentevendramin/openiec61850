@@ -72,6 +72,12 @@ void bind_model(nb::module_& m) {
       },
       nb::arg("ln"));
   m.def(
+      "from_mms_data_reference",
+      [](const std::string& text, int edition, bool strict) {
+        return check(model::from_mms_data_reference(text, options(edition, strict)), text).to_string();
+      },
+      nb::arg("text"), nb::arg("edition") = 2, nb::arg("strict_ln_names") = false);
+  m.def(
       "to_mms_reference",
       [](const std::string& text, int edition) {
         return check(model::to_mms_reference(parse(text, edition, false), limits(edition)), text);

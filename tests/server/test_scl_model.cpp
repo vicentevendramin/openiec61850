@@ -325,7 +325,7 @@ TEST_CASE("SCL model: unmappable content, lenient and strict", "[server][scl]") 
   for (const auto& d : diags) UNSCOPED_INFO(scl::to_string(d));
   REQUIRE(m);
   CHECK(diags.error_count() == 0);
-  CHECK(diags.warning_count() >= 5);  // big, stVal value, t value, member, Gone, max
+  CHECK(diags.warning_count() >= 5);  // big, stVal value, member, Gone, max
   CHECK(m->find(oref("XLD/LLN0.Cnt.big[ST]")).error() == srv::errc::object_not_found);
   REQUIRE(m->data_sets().size() == 1);
   CHECK(m->data_sets()[0].name == "Both");
@@ -347,4 +347,199 @@ TEST_CASE("SCL model: unmappable content, lenient and strict", "[server][scl]") 
   CHECK_FALSE(missing);
   auto no_file = srv::load_model_file(data_path("does_not_exist.icd"));
   CHECK_FALSE(no_file);
+}
+
+namespace {
+
+srv::data_model load_object_arrays(scl::diagnostics* diags = nullptr) {
+  auto m = srv::load_model_file(data_path("object_arrays.icd"), "A", {}, {}, diags);
+  REQUIRE(m);
+  return std::move(*m);
+}
+
+}  // namespace
+
+TEST_CASE("SCL model: arrays of data objects", "[server][scl]") {
+  scl::diagnostics diags;
+  const auto m = load_object_arrays(&diags);
+  CHECK(diags.error_count() == 0);
+  const auto arr = m.find(oref("AProt/GGIO1.Sig"));
+  REQUIRE(arr);
+  CHECK(m.at(*arr).is_object_array());
+  CHECK(m.at(*arr).children.size() == 3);
+  const auto el = m.find(oref("AProt/GGIO1.Sig(1).stVal[ST]"));
+  REQUIRE(el);
+  CHECK(m.reference_of(*el) == "AProt/GGIO1.Sig(1).stVal");
+  CHECK(m.find(oref("AProt/GGIO1.Sig(3)")).error() == srv::errc::object_not_found);
+  CHECK(m.find(oref("AProt/GGIO1.Sig.stVal[ST]")).error() == srv::errc::object_not_found);
+  // The member crossing the array without an index is dropped, the others kept.
+  std::size_t members = 0;
+  for (const auto& ds : m.data_sets()) {
+    if (ds.name == "DS") CHECK(ds.members.size() == 3);
+    if (ds.name == "Whole") members = ds.members.size();
+  }
+  CHECK(members == 1);
+
+  auto t = m.type_of(*arr, fc::SP);
+  REQUIRE(t);
+  CHECK(t->type == mms::data_type::array);
+  CHECK(t->number_of_elements == 3);
+  REQUIRE(t->components.size() == 1);
+  REQUIRE(t->components[0].type.components.size() == 1);
+  CHECK(t->components[0].type.components[0].name == "setVal");
+
+  run([]() -> awaitable<void> {
+    auto s = srv::server::start(co_await asio::this_coro::executor, load_object_arrays(), loopback);
+    REQUIRE(s);
+    auto c = co_await connect(options_for(*s));
+
+    // Initial values: for all the elements, and the DOI / SDI ix ones.
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(0).setVal[SP]") == mms::data::integer(7));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1).setVal[SP]") == mms::data::integer(8));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(2).setVal[SP]") == mms::data::integer(7));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1).stVal[ST]") == mms::data::integer(21));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1).hist(1)[ST]") == mms::data::integer(9));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(2).hist(1)[ST]") == mms::data::integer(0));
+    CHECK(co_await read_ok(c, "AProt/MHAI1.HA.phsAHar(1).mag[MX]") == mms::data::floating_point(2.5F));
+    CHECK(co_await read_ok(c, "AProt/MHAI1.HA.phsAHar(0).mag[MX]") == mms::data::floating_point(0.0F));
+    CHECK(co_await read_ok(c, "AProt/MHAI1.HA.phsAHar(1).db[CF]") ==
+          mms::data::unsigned_integer(100));
+    const auto since = co_await read_ok(c, "AProt/GGIO1.Sig(2).since[ST]");
+    REQUIRE(since.as_utc_time());
+    CHECK(since.as_utc_time()->seconds == 1577934245U);
+    CHECK(since.as_utc_time()->fraction == 1U << 23);
+
+    // Whole array, one element, element of an inner array of attributes.
+    const auto whole = co_await read_ok(c, "AProt/GGIO1.Sig[SP]");
+    CHECK(whole == mms::data::array({mms::data::structure({mms::data::integer(7)}),
+                                     mms::data::structure({mms::data::integer(8)}),
+                                     mms::data::structure({mms::data::integer(7)})}));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1)[SP]") ==
+          mms::data::structure({mms::data::integer(8)}));
+    CHECK_FALSE(co_await c.read(oref("AProt/GGIO1.Sig(3)[SP]")));
+
+    // Writes: an attribute of an element, an element, the array, and bad ones.
+    CHECK(co_await c.write(oref("AProt/GGIO1.Sig(0).setVal[SP]"), mms::data::integer(1)));
+    const auto element = mms::data::structure({mms::data::integer(2)});
+    CHECK(co_await c.write(oref("AProt/GGIO1.Sig(1)[SP]"), element));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(0).setVal[SP]") == mms::data::integer(1));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1).setVal[SP]") == mms::data::integer(2));
+    const auto all = mms::data::array({mms::data::structure({mms::data::integer(4)}),
+                                       mms::data::structure({mms::data::integer(5)}),
+                                       mms::data::structure({mms::data::integer(6)})});
+    CHECK(co_await c.write(oref("AProt/GGIO1.Sig[SP]"), all));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(2).setVal[SP]") == mms::data::integer(6));
+    const auto short_array = mms::data::array({element});
+    CHECK_FALSE(co_await c.write(oref("AProt/GGIO1.Sig[SP]"), short_array));
+    CHECK_FALSE(co_await c.write(oref("AProt/GGIO1.Sig(0).stVal[ST]"), mms::data::integer(1)));
+
+    // Directory: the array is one name, no name reaches past it.
+    auto names = co_await c.get_name_list(mms::object_class::named_variable, "AProt");
+    REQUIRE(names);
+    CHECK(std::count(names->begin(), names->end(), "GGIO1$SP$Sig") == 1);
+    CHECK(std::count(names->begin(), names->end(), "MHAI1$MX$HA$phsAHar") == 1);
+    for (const auto& n : *names) CHECK_FALSE(n.ends_with("$setVal"));
+    auto lnd = co_await c.get_logical_node_directory(oref("AProt/GGIO1"));
+    REQUIRE(lnd);
+    CHECK(sorted(lnd->data_objects) == std::vector<std::string>{"Mod", "Sig"});
+    const std::vector<std::string> refs{"AProt/GGIO1.Sig", "AProt/GGIO1.Sig(1)", "AProt/GGIO1.Sig[ST]"};
+    for (const auto& ref : refs) {
+      auto dir = co_await c.get_data_directory(oref(ref));
+      INFO(ref);
+      REQUIRE(dir);
+      std::vector<std::string> got;
+      for (const auto& e : *dir) got.push_back(e.name);
+      CHECK(sorted(got).front() == "hist");
+      CHECK(std::count(got.begin(), got.end(), "stVal") == 1);
+    }
+
+    // GetVariableAccessAttributes through the data definitions.
+    auto def = co_await c.get_data_definition(oref("AProt/GGIO1.Sig"));
+    REQUIRE(def);
+    CHECK(def->type == client::data_definition::kind::array);
+    CHECK(def->array_size == 3);
+    REQUIRE(def->children.size() == 1);
+    CHECK(def->children[0].children.size() == 4);  // ST and SP merged
+    auto sdo = co_await c.get_data_definition(oref("AProt/MHAI1.HA"));
+    REQUIRE(sdo);
+    CHECK(sdo->children.size() == 2);  // phsAHar once, numHar
+    auto one = co_await c.get_data_definition(oref("AProt/GGIO1.Sig(1).stVal[ST]"));
+    REQUIRE(one);
+    CHECK(one->type == client::data_definition::kind::basic);
+    auto el_def = co_await c.get_data_definition(oref("AProt/GGIO1.Sig(1)"));
+    REQUIRE(el_def);
+    CHECK(el_def->type == client::data_definition::kind::structure);
+    CHECK_FALSE(co_await c.get_data_definition(oref("AProt/GGIO1.Sig(3)[ST]")));
+    // No variable reaches inside the array by name.
+    CHECK_FALSE(co_await c.get_data_definition(oref("AProt/GGIO1.Sig.stVal[ST]")));
+    auto attrs = co_await c.get_data_definition(oref("AProt/GGIO1.Sig[ST]"));
+    REQUIRE(attrs);
+    CHECK(attrs->type == client::data_definition::kind::array);
+
+    // Data sets with elements and a whole array of objects.
+    auto ds = co_await c.get_data_set_values(oref("AProt/LLN0.DS"));
+    REQUIRE(ds);
+    REQUIRE(ds->size() == 3);
+    REQUIRE((*ds)[0]);
+    CHECK(*(*ds)[0] == mms::data::integer(21));
+    auto dir = co_await c.get_data_set_directory(oref("AProt/LLN0.DS"));
+    REQUIRE(dir);
+    CHECK(dir->members[0] == oref("AProt/GGIO1.Sig(1).stVal[ST]"));
+
+    // Reports name the element.
+    client::report_settings rs;
+    REQUIRE(co_await c.enable_reporting(oref("AProt/LLN0.urcb[RP]"), rs));
+    CHECK(s->update(oref("AProt/GGIO1.Sig(1).stVal[ST]"), mms::data::integer(22)));
+    const auto rpt = co_await next_report(c);
+    REQUIRE(rpt.entries.size() == 1);
+    CHECK(rpt.entries[0].data_reference == "AProt/GGIO1$ST$Sig(1)$stVal");
+    REQUIRE(rpt.entries[0].reference);
+    CHECK(*rpt.entries[0].reference == oref("AProt/GGIO1.Sig(1).stVal[ST]"));
+    CHECK(rpt.entries[0].value == mms::data::integer(22));
+
+    // The log of the other LD holds what the LCB of this LD logged.
+    const auto log = oref("ARec/LLN0.Events");
+    auto journals = co_await c.get_name_list(mms::object_class::journal, "ARec");
+    REQUIRE(journals);
+    CHECK(*journals == std::vector<std::string>{"LLN0$Events"});
+    auto mine = co_await c.get_name_list(mms::object_class::journal, "AProt");
+    REQUIRE(mine);
+    CHECK(mine->empty());
+    auto entries = co_await c.query_log_by_time(log, std::nullopt, std::nullopt);
+    REQUIRE(entries);
+    REQUIRE(entries->size() == 1);
+    REQUIRE((*entries)[0].data.size() == 1);
+    CHECK((*entries)[0].data[0].reference == "AProt/GGIO1$ST$Sig(1)$stVal");
+    auto lcb = co_await c.get_lcb_values(oref("AProt/LLN0.lcb[LG]"));
+    REQUIRE(lcb);
+    CHECK(lcb->log_ena);
+    CHECK(lcb->log_ref == "ARec/LLN0$Events");
+    s->stop();
+  });
+}
+
+TEST_CASE("SCL model: arrays of data objects and logs, diagnostics and limits", "[server][scl]") {
+  scl::diagnostics diags;
+  (void)load_object_arrays(&diags);
+  auto mentions = [&](std::string_view text) {
+    return std::any_of(diags.begin(), diags.end(),
+                       [&](const auto& d) { return d.message.find(text) != std::string::npos; });
+  };
+  CHECK(mentions("no LD Nope"));
+  CHECK(mentions("index 9"));
+
+  srv::scl_load_options strict;
+  strict.strict = true;
+  CHECK(srv::load_model_file(data_path("object_arrays.icd"), "A", {}, strict).error() ==
+        srv::errc::invalid_model);
+
+  // Over the node budget the whole DO is left out, not some of its elements.
+  srv::scl_load_options small;
+  small.instantiate.max_nodes = 18;
+  scl::diagnostics limited;
+  auto m = srv::load_model_file(data_path("object_arrays.icd"), "A", {}, small, &limited);
+  REQUIRE(m);
+  CHECK(limited.count(scl::diagnostic_code::limit_exceeded) > 0);
+  CHECK_FALSE(m->find(oref("AProt/GGIO1.Sig")));
+  CHECK(m->find(oref("AProt/GGIO1.Mod")));
 }

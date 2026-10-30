@@ -535,3 +535,85 @@ def test_sync_server():
             c.write(f"{LD}/GGIO1.Set.setVal[SP]", 5)
             assert s.read(f"{LD}/GGIO1.Set.setVal[SP]") == 5
     assert seen == [5]
+
+
+ARRAYS = SCL_DATA / "object_arrays.icd"
+
+
+async def test_scl_object_arrays_and_foreign_log():
+    m = iec.Model.from_scl(ARRAYS)
+    sig = m.find("AProt/GGIO1.Sig")
+    assert sig.count == 3 and [c.name for c in sig.children] == ["(0)", "(1)", "(2)"]
+    assert m.find("AProt/GGIO1.Sig(1).stVal[ST]").reference == "AProt/GGIO1.Sig(1).stVal"
+    d = m.type_of("AProt/GGIO1.Sig[SP]")
+    assert d.array_size == 3
+    assert m.type_of("AProt/GGIO1.Sig(1).setVal[SP]").basic_type == B.INT32
+    assert m.find("AProt/LLN0.lcb[LG]") is not None
+    assert [lc.log_ld for _, lc in m.log_controls if lc.name == "lcb"] == ["ARec"]
+    async with await iec.Server.start(m, "127.0.0.1", 0) as srv:
+        async with await iec.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+            assert await c.read("AProt/GGIO1.Sig(1).setVal[SP]") == 8
+            assert await c.read("AProt/GGIO1.Sig(0).setVal[SP]") == 7
+            await c.write("AProt/GGIO1.Sig(0).setVal[SP]", 11)
+            assert await c.read("AProt/GGIO1.Sig(0).setVal[SP]") == 11
+            assert await srv.read("AProt/GGIO1.Sig(0).setVal[SP]") == 11
+            whole = await c.read("AProt/GGIO1.Sig[SP]")
+            assert [e["setVal"] if isinstance(e, dict) else e[0] for e in whole] == [11, 8, 7]
+            await c.write("AProt/GGIO1.Sig[SP]", [[1], [2], [3]])
+            assert await c.read("AProt/GGIO1.Sig(2).setVal[SP]") == 3
+            d = await c.data_definition("AProt/GGIO1.Sig")
+            assert d.array_size == 3
+            assert (await c.data_definition("AProt/GGIO1.Sig(1).stVal[ST]")).basic_type == B.INT32
+            assert "stVal" in [e.name for e in await c.data_directory("AProt/GGIO1.Sig")]
+            srv.update("AProt/GGIO1.Sig(1).stVal[ST]", 30)
+            assert await c.read("AProt/GGIO1.Sig(1).stVal[ST]") == 30
+            for _ in range(100):
+                if await c.log_status("ARec/LLN0.Events") == 1:
+                    break
+                await asyncio.sleep(0.01)
+            (entry,) = await c.query_log_by_time("ARec/LLN0.Events")
+            assert entry.data[0].reference == "AProt/GGIO1$ST$Sig(1)$stVal"
+            assert str(entry.data[0].object_reference) == "AProt/GGIO1.Sig(1).stVal[ST]"
+            assert entry.data[0].value == 30
+
+
+def test_builder_object_arrays():
+    b = iec.ModelBuilder()
+    ld = b.logical_device("LD")
+    ln = ld.logical_node("GGIO1")
+    arr = ln.data_object("Sig", count=2)
+    with pytest.raises(iec.Iec61850Error):
+        arr.attribute("v", FC.SP, B.INT32)
+
+    b = iec.ModelBuilder()
+    ld = b.logical_device("LD")
+    ln = ld.logical_node("GGIO1")
+    arr = ln.data_object("Sig", count=2)
+    for i in range(2):
+        arr.element(i).attribute("v", FC.SP, B.INT32, value=i + 1)
+    sub = ln.data_object("Out").sub_object("Sub", count=1)
+    sub.element(0).attribute("x", FC.ST, B.BOOLEAN)
+    m = b.build()
+    assert m.find("LD/GGIO1.Sig(1).v").initial_value == 2
+    assert m.find("LD/GGIO1.Out.Sub(0).x") is not None
+
+    b = iec.ModelBuilder()
+    arr = b.logical_device("LD").logical_node("GGIO1").data_object("Sig", count=2)
+    arr.element(0).attribute("v", FC.SP, B.INT32)
+    with pytest.raises(iec.Iec61850Error):
+        b.build()  # element 1 is missing
+
+
+def test_builder_log_of_another_ld():
+    b = iec.ModelBuilder()
+    a = b.logical_device("A").logical_node("LLN0")
+    b.logical_device("B").logical_node("LLN0").log("L")
+    a.log_control(iec.LogControl("lcb", log_name="L", log_ln="LLN0", log_ld="B"))
+    m = b.build()
+    ((_, lc),) = m.log_controls
+    assert lc.log_ld == "B"
+
+
+def test_mms_data_reference():
+    r = iec.ObjectReference.from_mms("LD0/GGIO1$ST$Sig(1)$stVal")
+    assert str(r) == "LD0/GGIO1.Sig(1).stVal[ST]"

@@ -68,11 +68,16 @@ class loader {
         const std::string ln_ref = ld.name + "/" + ln.name;
         ln_ids_[ln_ref] = lnh.id();
         for (const auto& d : ln.data_objects) {
-          if (d.count > 0) {
-            skip(ln_ref + "." + d.name, "arrays of data objects are not supported");
+          const auto ref = ln_ref + "." + d.name;
+          // Decided per top-level DO: every element of an array must keep the same type.
+          nodes_ += expanded_size(d);
+          if (nodes_ > opts_.instantiate.max_nodes) {
+            nodes_ -= expanded_size(d);
+            skipped_.push_back(ref);
+            note(diagnostic_code::limit_exceeded, ref + " skipped: its arrays exceed max_nodes");
             continue;
           }
-          add_object(lnh.data_object(d.name), d, ln_ref + "." + d.name);
+          add_data(lnh.data_object(d.name, d.count), d, ref, 0);
         }
       }
     }
@@ -85,7 +90,7 @@ class loader {
         for (const auto& ds : ln.data_sets) {
           std::vector<model::object_reference> members;
           for (const auto& m : ds.members) {
-            if (refers_to_skipped(m)) {
+            if (refers_to_skipped(m) || !addressable(m)) {
               note(diagnostic_code::unresolved_reference,
                    "member " + std::string(m.text()) + " of data set " + ln_ref + "." + ds.name +
                        " refers to an attribute that was not mapped; dropped");
@@ -147,15 +152,58 @@ class loader {
     });
   }
 
-  void add_object(do_handle h, const scl::data_node& d, const std::string& ref) {
+  // Whether a data set member reaches past an array of data objects only through an element.
+  bool addressable(const model::object_reference& m) const {
+    const auto* ld = ied_.find(m.ld());
+    const auto* ln = ld != nullptr ? ld->find(m.ln()) : nullptr;
+    if (ln == nullptr) return false;
+    const scl::data_node* node = nullptr;
+    bool indexed = false;
+    for (const auto e : m.path()) {
+      if (node != nullptr && node->is_data_object() && node->count > 0 && !indexed) return false;
+      node = node == nullptr ? ln->find(e.name) : node->child(e.name);
+      if (node == nullptr) return false;
+      indexed = e.index.has_value();
+    }
+    return true;
+  }
+
+  // The nodes a data object takes in the model: an array of objects has one subtree per element.
+  static std::uint64_t expanded_size(const scl::data_node& n) {
+    constexpr std::uint64_t cap = std::uint64_t{1} << 31;
+    std::uint64_t size = 1;
+    for (const auto& c : n.children) size = std::min(size + expanded_size(c), cap);
+    if (n.is_data_object() && n.count > 0) size = std::min(size * n.count + 1, cap);
+    return size;
+  }
+
+  // Keeps the values of `n` and below that apply to element `e` of the array of objects at
+  // nesting `level`.
+  static void narrow(scl::data_node& n, std::size_t level, std::uint32_t e) {
+    std::erase_if(n.values, [&](const scl::initial_value& v) {
+      return level < v.objects.size() && v.objects[level] && *v.objects[level] != e;
+    });
+    for (auto& c : n.children) narrow(c, level, e);
+  }
+
+  // A DO or SDO; `level`: the arrays of objects it is nested in.
+  void add_data(do_handle h, const scl::data_node& d, const std::string& ref, std::size_t level) {
+    if (d.count == 0) {
+      add_object(h, d, ref, level);
+      return;
+    }
+    for (std::uint32_t e = 0; e < d.count; ++e) {
+      auto element = d;
+      narrow(element, level, e);
+      add_object(h.element(e), element, ref + "(" + std::to_string(e) + ")", level + 1);
+    }
+  }
+
+  void add_object(do_handle h, const scl::data_node& d, const std::string& ref, std::size_t level) {
     for (const auto& c : d.children) {
       const auto child_ref = ref + "." + c.name;
       if (c.is_data_object()) {
-        if (c.count > 0) {
-          skip(child_ref, "arrays of data objects are not supported");
-          continue;
-        }
-        add_object(h.sub_object(c.name), c, child_ref);
+        add_data(h.sub_object(c.name, c.count), c, child_ref, level);
         continue;
       }
       if (!mappable(c)) {
@@ -263,12 +311,13 @@ class loader {
   std::optional<mms::data> convert(const scl::data_node& n, const scl::initial_value& iv,
                                    const std::string& ref) {
     const auto type = *n.type;
+    std::optional<mms::data> out;
     if (type == basic_type::timestamp || type == basic_type::entry_time) {
+      if (auto p = parse_value(type, iv.text)) return std::move(*p);
       note(diagnostic_code::invalid_value,
-           "initial value of " + ref + " ignored: Timestamp / EntryTime values are not supported");
+           "initial value \"" + iv.text + "\" of " + ref + " (" + n.btype + ") ignored");
       return std::nullopt;
     }
-    std::optional<mms::data> out;
     std::visit(
         [&](const auto& v) {
           using T = std::decay_t<decltype(v)>;
@@ -304,14 +353,24 @@ class loader {
     return std::nullopt;
   }
 
+  // Elements of arrays of objects a Val selects: one for a single element beats one for all.
+  static std::size_t selectivity(const scl::initial_value& v) {
+    return static_cast<std::size_t>(std::count_if(v.objects.begin(), v.objects.end(),
+                                                  [](const auto& o) { return o.has_value(); }));
+  }
+
   // The Val among `values` for array element `index` (nullopt: not indexed), preferring the
   // active setting group for FC SG / SE.
   const scl::initial_value* pick(const std::vector<scl::initial_value>& values,
                                  std::optional<std::uint32_t> index, bool grouped) const {
     const scl::initial_value* first = nullptr;
     const scl::initial_value* plain = nullptr;
+    std::size_t best = 0;
     for (const auto& v : values) {
-      if (v.index != index) continue;
+      if (v.index == index) best = std::max(best, selectivity(v));
+    }
+    for (const auto& v : values) {
+      if (v.index != index || selectivity(v) != best) continue;
       if (first == nullptr) first = &v;
       if (grouped && v.sgroup == sg_) return &v;
       if (!v.sgroup && plain == nullptr) plain = &v;
@@ -433,18 +492,22 @@ class loader {
     s.trg_ops = lc.trg_ops;
     s.intg_pd = lc.intg_pd;
     if (!lc.log_name.empty()) {
-      if (!lc.ld_inst.empty() && lc.ld_inst != ld.inst) {
+      const auto log_ld = std::find_if(ied_.lds.begin(), ied_.lds.end(), [&](const auto& l) {
+        return l.inst == (lc.ld_inst.empty() ? ld.inst : lc.ld_inst);
+      });
+      if (log_ld == ied_.lds.end()) {
         note(diagnostic_code::unresolved_reference,
-             "log control " + ln_ref + "." + lc.name + ": logs of other LDs are not supported");
+             "log control " + ln_ref + "." + lc.name + ": no LD " + lc.ld_inst);
       } else {
         const std::string log_ln = lc.prefix + lc.ln_class + lc.ln_inst;
-        const node_id id = find_ln(ld.name + "/" + log_ln);
+        const node_id id = find_ln(log_ld->name + "/" + log_ln);
         if (id == no_node) {
           note(diagnostic_code::unresolved_reference,
                "log control " + ln_ref + "." + lc.name + ": no LN " + log_ln);
         } else {
           s.log_name = lc.log_name;
           s.log_ln = log_ln;
+          if (log_ld->name != ld.name) s.log_ld = log_ld->name;
           if (std::find(logs_.begin(), logs_.end(), std::make_pair(id, lc.log_name)) == logs_.end()) {
             logs_.emplace_back(id, lc.log_name);
           }
@@ -543,6 +606,7 @@ class loader {
   std::vector<std::pair<node_id, std::string>> logs_;
   std::uint32_t sg_ = 1;
   std::vector<std::string> skipped_;
+  std::uint64_t nodes_ = 0;
   std::map<std::string, node_id, std::less<>> ln_ids_;
   bool failed_ = false;
 };

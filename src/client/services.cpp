@@ -149,6 +149,23 @@ const mms::type_description* find_component(const mms::type_description& t,
   return nullptr;
 }
 
+// The type of `path` (names with their array indices) below `t`.
+const mms::type_description* find_path(const mms::type_description* t,
+                                       const model::object_reference& ref) noexcept {
+  for (const auto pe : ref.path()) {
+    if (t == nullptr) break;
+    t = find_component(*t, pe.name);
+    if (t != nullptr && pe.index) {
+      if (t->type != mms::data_type::array || t->components.empty() ||
+          *pe.index >= t->number_of_elements) {
+        return nullptr;
+      }
+      t = &t->components.front().type;
+    }
+  }
+  return t;
+}
+
 bool is_string_type(mms::data_type t) noexcept {
   return t == mms::data_type::octet_string || t == mms::data_type::visible_string ||
          t == mms::data_type::mms_string || t == mms::data_type::bit_string;
@@ -215,8 +232,8 @@ void merge(data_definition& dst, data_definition src) {
   for (auto& c : src.children) {
     auto it = std::find_if(dst.children.begin(), dst.children.end(),
                            [&](const data_definition& x) { return x.name == c.name; });
-    if (it != dst.children.end() && it->type == data_definition::kind::structure &&
-        c.type == data_definition::kind::structure) {
+    if (it != dst.children.end() && it->type == c.type &&
+        c.type != data_definition::kind::basic) {
       merge(*it, std::move(c));
     } else {
       dst.children.push_back(std::move(c));
@@ -552,7 +569,7 @@ awaitable<result<logical_node_directory>> get_logical_node_directory_op(
 
 awaitable<result<data_definition>> get_data_definition_op(std::shared_ptr<client_state> s, error_details* d,
                                                           model::object_reference ref) {
-  if (!ref.has_ln() || ref.has_index()) co_return misuse;
+  if (!ref.has_ln()) co_return misuse;
   if (ref.fc() == fc::XX) co_return misuse;
   auto a = s->current(d);
   if (!a) co_return a.error();
@@ -561,6 +578,14 @@ awaitable<result<data_definition>> get_data_definition_op(std::shared_ptr<client
   const auto leaf = ref.leaf();
   std::string name = leaf ? std::string(leaf->name) : ln;
 
+  if (ref.fc() && ref.has_index()) {
+    // GetVariableAccessAttributes has no AlternateAccess: the element comes from the FC's type.
+    auto t = co_await type_on(*a, ld, ln + "$" + std::string(model::to_string(*ref.fc())));
+    if (!t) co_return t.error();
+    const auto* node = find_path(&*t, ref);
+    if (node == nullptr) co_return err(errc::object_not_found);
+    co_return convert(*node, std::move(name), ref.fc());
+  }
   if (ref.fc()) {
     auto item = model::to_mms_item_id(ref, s->limits);
     if (!item) co_return item.error();
@@ -578,11 +603,7 @@ awaitable<result<data_definition>> get_data_definition_op(std::shared_ptr<client
   for (const auto& comp : t->components) {
     const auto f = model::parse_functional_constraint(comp.name);
     if (!f) continue;
-    const mms::type_description* node = &comp.type;
-    for (const auto pe : ref.path()) {
-      node = find_component(*node, pe.name);
-      if (node == nullptr) break;
-    }
+    const auto* node = find_path(&comp.type, ref);
     if (node == nullptr) continue;
     auto conv = convert(*node, name, *f);
     if (!out) {
@@ -601,8 +622,13 @@ awaitable<result<std::vector<data_directory_entry>>> get_data_directory_op(
   auto def = co_await get_data_definition_op(s, d, std::move(ref));
   if (!def) co_return def.error();
   std::vector<data_directory_entry> out;
-  if (def->type != data_definition::kind::structure) co_return out;
-  for (const auto& c : def->children) {
+  // An array of data objects: the data of its elements.
+  const data_definition* node = &*def;
+  if (node->type == data_definition::kind::array && !node->children.empty()) {
+    node = &node->children.front();
+  }
+  if (node->type != data_definition::kind::structure) co_return out;
+  for (const auto& c : node->children) {
     data_directory_entry e;
     e.name = c.name;
     collect_fcs(c, e.fcs);

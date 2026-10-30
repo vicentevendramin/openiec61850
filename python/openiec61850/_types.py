@@ -220,8 +220,9 @@ class ObjectReference:
     def from_mms(
         cls, text: str, *, edition: Edition | int = Edition.ED2, strict_ln_names: bool = False
     ) -> ObjectReference:
-        """Parses the MMS form ``LD/LN$FC$DO$DA`` (report data references, GoCB datSet...)."""
-        canonical = _core.from_mms_reference(text, int(edition), strict_ln_names)
+        """Parses the MMS form ``LD/LN$FC$DO$DA`` (report data references, GoCB datSet...), where
+        an element of an array of data objects reads ``LD/LN$FC$DO(1)$DA``."""
+        canonical = _core.from_mms_data_reference(text, int(edition), strict_ln_names)
         return cls(canonical, edition=edition, strict_ln_names=strict_ln_names)
 
     @classmethod

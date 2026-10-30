@@ -19,11 +19,14 @@
 //
 //   LDevice / LN0 / LN                     logical devices and nodes (LLN0 first)
 //   DO / SDO, DA / BDA                     data objects and attributes in template order, with
-//                                          fc, bType (basic type and string size), count (arrays)
-//                                          and dchg / qchg / dupd
-//   DA / BDA <Val>, DAI <Val>              initial values (Enum values as their ord; values of
-//                                          array elements by index; for FC SG / SE the value of
-//                                          the active setting group)
+//                                          fc, bType (basic type and string size), count (arrays;
+//                                          an array of DOs takes one node per element, counted
+//                                          against instantiate.max_nodes) and dchg / qchg / dupd
+//   DA / BDA <Val>, DAI <Val>              initial values (Enum values as their ord; Timestamp and
+//                                          EntryTime as xs:dateTime; values of array elements by
+//                                          index, DOI / SDI ix selecting an element of an array of
+//                                          DOs; for FC SG / SE the value of the active setting
+//                                          group)
 //   DataSet / FCDA                         data sets (functionally constrained references)
 //   ReportControl                          BRCB / URCB instances: with indexed="true" (the
 //                                          default) RptEnabled max instances named name01,
@@ -36,7 +39,7 @@
 //                                          attributes give each group's initial value
 //   LogControl                             LCBs (datSet, logEna, TrgOps, intgPd) and their logs
 //                                          (logName in the LN given by prefix / lnClass / lnInst
-//                                          of the same LD)
+//                                          of the LD given by ldInst, by default the same LD)
 //   GSEControl (type GOOSE)                GoCBs (appID as GoID, datSet, confRev, fixedOffs) with
 //                                          the Communication GSE address (MAC-Address, APPID,
 //                                          VLAN-ID, VLAN-PRIORITY, MinTime, MaxTime)
@@ -45,8 +48,7 @@
 // whose SCL values drive the server's control model.
 //
 // Not mapped: attributes whose bType has no basic type (INT64U, PhyComAddr, SvOptFlds,
-// LogOptFlds), arrays of SDOs, Timestamp / EntryTime initial values, SMV and GSSE control blocks,
-// logs of other LDs. In lenient mode (default) they are skipped with a warning diagnostic, as are
+// LogOptFlds), SMV and GSSE control blocks. In lenient mode (default) they are skipped with a warning diagnostic, as are
 // values that do not fit their attribute; data set members referring to a skipped attribute are
 // dropped (and a data set left empty, with the report controls using it). In strict mode any of
 // them fails the load with errc::invalid_model.

@@ -26,7 +26,8 @@
 // Children keep the declaration order of the templates (SDOs and DAs interleaved as declared);
 // grouping by FC for the MMS mapping (IEC 61850-8-1 §7.3) is left to the consumer.
 // Arrays (count > 0) are not expanded: the node describes one element, `count` the size, and
-// values of individual elements carry an index.
+// values of individual elements carry an index. A DAI below a DOI / SDI with ix, which addresses
+// one element of an array of data objects, carries that ix in `objects`.
 
 namespace openiec61850::scl {
 
@@ -37,6 +38,9 @@ struct initial_value {
   scalar parsed;  // monostate when the text could not be converted (a warning was reported)
   std::optional<std::uint32_t> sgroup;
   std::optional<std::uint32_t> index;  // array element (DAI ix)
+  // The element of each enclosing array of data objects, outermost first; nullopt or a missing
+  // entry: every element.
+  std::vector<std::optional<std::uint32_t>> objects;
 };
 
 struct data_node {

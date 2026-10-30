@@ -207,13 +207,15 @@ class SettingGroupControl:
 @dataclass(frozen=True)
 class LogControl:
     """A log control block (IEC 61850-7-2 §17.3.3). ``data_set`` names a data set of the same LN;
-    ``log_name`` a log declared with :meth:`LogicalNodeBuilder.log` in LN ``log_ln`` of the same
-    LD ("" for this LN); ``intg_pd`` in milliseconds."""
+    ``log_name`` a log declared with :meth:`LogicalNodeBuilder.log` in LN ``log_ln`` ("" for this
+    LN) of LD ``log_ld`` ("" for this LD; a log of another LD needs ``log_ln``); ``intg_pd`` in
+    milliseconds."""
 
     name: str
     data_set: str = ""
     log_name: str = ""
     log_ln: str = ""
+    log_ld: str = ""
     log_ena: bool = False
     trg_ops: TrgOps = TrgOps(0)
     intg_pd: int = 0
@@ -224,6 +226,7 @@ class LogControl:
             "data_set": self.data_set,
             "log_name": self.log_name,
             "log_ln": self.log_ln,
+            "log_ld": self.log_ld,
             "log_ena": bool(self.log_ena),
             "trg_ops": int(self.trg_ops),
             "intg_pd": int(self.intg_pd),
@@ -361,7 +364,8 @@ class ModelNode:
 
     @property
     def count(self) -> int:
-        """Number of elements of an array attribute (0: not an array)."""
+        """Number of elements of an array attribute or array of data objects (0: not an array).
+        The children of an array of data objects are its elements, named ``(0)``, ``(1)``..."""
         return self._info[7]
 
     @property
@@ -471,8 +475,9 @@ class Model:
         return tuple(ModelNode(self, i) for i in self._native.logical_devices())
 
     def find(self, ref: Ref) -> ModelNode | None:
-        """The LD, LN, DO, control block or DA named by ``ref`` (without array index); with an FC
-        only attributes with that FC are considered below the LN."""
+        """The LD, LN, DO, control block or DA named by ``ref``; with an FC only attributes with
+        that FC are considered below the LN. An index selects an element of an array of data
+        objects; elements of array attributes are not nodes."""
         i = self._native.find(_text(ref))
         return ModelNode(self, i) if i is not None else None
 
@@ -534,6 +539,7 @@ class Model:
                 data_set=d["data_set"],
                 log_name=d["log_name"],
                 log_ln=d["log_ln"],
+                log_ld=d["log_ld"],
                 log_ena=d["log_ena"],
                 trg_ops=TrgOps(d["trg_ops"] & 0x7E),
                 intg_pd=d["intg_pd"],
@@ -638,8 +644,14 @@ class DataObjectBuilder(_AttributeParent):
     __slots__ = ()
     _under_object = True
 
-    def sub_object(self, name: str) -> DataObjectBuilder:
-        return DataObjectBuilder(self._b, self._b._native.sub_object(self._id, name))
+    def sub_object(self, name: str, *, count: int = 0) -> DataObjectBuilder:
+        """A sub-data object; ``count`` > 0: an array of them, see :meth:`element`."""
+        return DataObjectBuilder(self._b, self._b._native.sub_object(self._id, name, int(count)))
+
+    def element(self, index: int) -> DataObjectBuilder:
+        """Element ``index`` of an array of data objects. Attributes and sub-objects are added to
+        the elements, which must all be filled in and have the same type."""
+        return DataObjectBuilder(self._b, self._b._native.element(self._id, int(index)))
 
     def attribute(
         self,
@@ -705,8 +717,10 @@ class AttributeBuilder(_AttributeParent):
 class LogicalNodeBuilder(_Handle):
     __slots__ = ()
 
-    def data_object(self, name: str) -> DataObjectBuilder:
-        return DataObjectBuilder(self._b, self._b._native.data_object(self._id, name))
+    def data_object(self, name: str, *, count: int = 0) -> DataObjectBuilder:
+        """A data object; ``count`` > 0: an array of them, see
+        :meth:`DataObjectBuilder.element`."""
+        return DataObjectBuilder(self._b, self._b._native.data_object(self._id, name, int(count)))
 
     def data_set(self, name: str, members: Iterable[Ref]) -> LogicalNodeBuilder:
         """A persistent data set of this LN; members are FCD / FCDA references (checked by

@@ -6,6 +6,7 @@
 
 using namespace server_test;
 using asio::awaitable;
+using model::fc;
 
 namespace {
 
@@ -119,5 +120,40 @@ TEST_CASE("Control: sbo-normal select, operate, cancel and timeout", "[server]")
     for (const auto& r : requests()) selects += r.action == srv::control_action::select ? 1U : 0U;
     CHECK(selects == 5);
     s.stop();
+  });
+}
+
+TEST_CASE("Control: an element of an array of data objects", "[server]") {
+  run([]() -> awaitable<void> {
+    srv::model_builder b;
+    auto ln = b.logical_device("LD").logical_node("CSWI1");
+    auto arr = ln.data_object("Pos", 2);
+    for (std::uint32_t i = 0; i < 2; ++i) {
+      auto e = arr.element(i);
+      e.attribute("ctlModel", fc::CF, model::basic_type::enumerated,
+                  srv::attribute_options{}.with_value(mms::data::integer(3)));  // direct-enhanced
+      auto o = e.structure("Oper", fc::CO);
+      o.attribute("ctlVal", model::basic_type::boolean);
+      auto origin = o.structure("origin");
+      origin.attribute("orCat", model::basic_type::enumerated);
+      origin.attribute("orIdent", model::basic_type::octet_string);
+      o.attribute("ctlNum", model::basic_type::int8u);
+      o.attribute("T", model::basic_type::timestamp);
+      o.attribute("Test", model::basic_type::boolean);
+      o.attribute("Check", model::basic_type::check);
+    }
+    auto m = b.build();
+    REQUIRE(m);
+    auto s = srv::server::start(co_await asio::this_coro::executor, std::move(*m), loopback,
+                                control_options());
+    REQUIRE(s);
+    auto c = co_await connect(options_for(*s));
+    CHECK(co_await c.write(oref("LD/CSWI1.Pos(1).Oper[CO]"), oper(true, 7)));
+    REQUIRE(requests().size() == 1);
+    CHECK(requests()[0].object == oref("LD/CSWI1.Pos(1)"));
+    CHECK_FALSE(co_await c.write(oref("LD/CSWI1.Pos(2).Oper[CO]"), oper(true, 8)));
+    // The CommandTermination, sent with an AlternateAccess, leaves the association usable.
+    CHECK(co_await c.read(oref("LD/CSWI1.Pos(1).ctlModel[CF]")));
+    s->stop();
   });
 }

@@ -152,16 +152,20 @@ void send_control_report(session& s, const mms::data* error, std::string_view op
   if (!s.assoc) return;
   std::vector<mms::variable_spec> vars;
   std::vector<mms::access_result> results;
+  result<model::mms_variable> var = make_error_code(errc::object_not_found);
   if (error != nullptr) {
     vars.emplace_back(mms::object_name::vmd("LastApplError"));
     results.emplace_back(mms::data_ref(*error));
   }
   if (!oper_ref.empty() && oper != nullptr) {
-    const auto slash = oper_ref.find('/');
-    if (slash != std::string_view::npos) {
-      vars.emplace_back(
-          mms::object_name::domain(oper_ref.substr(0, slash), oper_ref.substr(slash + 1)));
-      results.emplace_back(mms::data_ref(*oper));
+    // An element of an array of data objects is named with an AlternateAccess.
+    const model::parse_options po{model::name_limits::unlimited(), false};
+    if (auto ref = model::from_mms_data_reference(oper_ref, po)) {
+      var = model::to_mms_variable(*ref, po.limits);
+      if (var) {
+        vars.push_back(var->spec());
+        results.emplace_back(mms::data_ref(*oper));
+      }
     }
   }
   if (vars.empty()) return;

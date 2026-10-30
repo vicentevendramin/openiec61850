@@ -147,6 +147,13 @@ nb::dict def_of(const server::data_model& m, node_id id, std::optional<fc> f, bo
                     false, 0, ch);
   }
   nb::list ch;
+  if (n.is_object_array()) {
+    nb::dict e = def_of(m, n.children.front(), f, false);
+    e["name"] = "";
+    ch.append(e);
+    return make_def(n.name, f, "array", static_cast<int>(mms::data_type::array), nb::none(), 0, false,
+                    n.count, ch);
+  }
   if (n.kind == node_kind::logical_node && !f) {
     for (std::size_t i = 0; i < model::functional_constraint_count; ++i) {
       const auto fi = static_cast<fc>(i);
@@ -187,11 +194,16 @@ std::optional<resolved> resolve(const server::data_model& m, const model::object
   for (const auto pe : ref.path()) {
     const node& n = m.at(cur);
     if (!in_value) {
-      if (n.holds_value()) return std::nullopt;
+      if (n.holds_value() || n.is_object_array()) return std::nullopt;
       const node_id child = m.find_child(cur, pe.name);
       if (child == server::no_node) return std::nullopt;
       if (!n.is_attribute() && f && !m.at(child).has_fc(*f)) return std::nullopt;
       cur = child;
+      if (pe.index && m.at(cur).is_object_array()) {
+        if (*pe.index >= m.at(cur).count) return std::nullopt;
+        cur = m.at(cur).children[*pe.index];
+        continue;
+      }
     } else {
       if ((!element && n.count > 0) || n.type) return std::nullopt;
       const node_id child = m.find_child(cur, pe.name);
@@ -314,6 +326,7 @@ class native_model {
       d["data_set"] = s.data_set;
       d["log_name"] = s.log_name;
       d["log_ln"] = s.log_ln;
+      d["log_ld"] = s.log_ld;
       d["log_ena"] = s.log_ena;
       d["trg_ops"] = s.trg_ops.raw();
       d["intg_pd"] = s.intg_pd;
@@ -426,13 +439,18 @@ class native_builder {
     check();
     return id;
   }
-  node_id data_object(node_id ln, const std::string& name) {
-    const auto id = usable().logical_node_handle(ln).data_object(name).id();
+  node_id data_object(node_id ln, const std::string& name, std::uint32_t count) {
+    const auto id = usable().logical_node_handle(ln).data_object(name, count).id();
     check();
     return id;
   }
-  node_id sub_object(node_id parent, const std::string& name) {
-    const auto id = usable().data_object_handle(parent).sub_object(name).id();
+  node_id sub_object(node_id parent, const std::string& name, std::uint32_t count) {
+    const auto id = usable().data_object_handle(parent).sub_object(name, count).id();
+    check();
+    return id;
+  }
+  node_id element(node_id parent, std::uint32_t index) {
+    const auto id = usable().data_object_handle(parent).element(index).id();
     check();
     return id;
   }
@@ -509,6 +527,7 @@ class native_builder {
     s.data_set = nb::cast<std::string>(d["data_set"]);
     s.log_name = nb::cast<std::string>(d["log_name"]);
     s.log_ln = nb::cast<std::string>(d["log_ln"]);
+    s.log_ld = nb::cast<std::string>(d["log_ld"]);
     s.log_ena = nb::cast<bool>(d["log_ena"]);
     s.trg_ops = model::trigger_conditions::from_raw(nb::cast<std::uint8_t>(d["trg_ops"]));
     s.intg_pd = nb::cast<std::uint32_t>(d["intg_pd"]);
@@ -1182,8 +1201,11 @@ void bind_server(nb::module_& m) {
       .def(nb::init<int>(), nb::arg("edition") = 2)
       .def("logical_device", &native_builder::logical_device, nb::arg("name"))
       .def("logical_node", &native_builder::logical_node, nb::arg("ld"), nb::arg("name"))
-      .def("data_object", &native_builder::data_object, nb::arg("ln"), nb::arg("name"))
-      .def("sub_object", &native_builder::sub_object, nb::arg("parent"), nb::arg("name"))
+      .def("data_object", &native_builder::data_object, nb::arg("ln"), nb::arg("name"),
+           nb::arg("count") = 0)
+      .def("sub_object", &native_builder::sub_object, nb::arg("parent"), nb::arg("name"),
+           nb::arg("count") = 0)
+      .def("element", &native_builder::element, nb::arg("parent"), nb::arg("index"))
       .def("attribute", &native_builder::attribute, nb::arg("parent"), nb::arg("under_object"),
            nb::arg("name"), nb::arg("fc").none(), nb::arg("basic_type").none(), nb::arg("size") = 0,
            nb::arg("count") = 0, nb::arg("triggers") = nb::none(), nb::arg("value") = nb::none())

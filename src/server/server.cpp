@@ -59,7 +59,7 @@ void add_names(const server_state& st, node_id id, std::optional<model::function
     const auto& cn = st.at(c);
     if (!n.is_attribute() && f && !cn.has_fc(*f)) continue;
     std::string name = prefix + "$" + cn.name;
-    if (!cn.holds_value()) add_names(st, c, f, name, out);
+    if (!cn.holds_value() && !cn.is_object_array()) add_names(st, c, f, name, out);
     out.push_back(std::move(name));
   }
 }

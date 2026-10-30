@@ -37,6 +37,15 @@ release may break the API. The release process is in
   Tools: `--tls` and the `--tls-*` options.
 - SCL (IEC 61850-6) parser for ICD/CID/IID/SCD with validation diagnostics, IED instantiation and
   GSE/SMV address extraction.
+- Arrays of data objects in server models: DO and SDO with `count` (SCL, `ln_handle::data_object`,
+  `do_handle::sub_object` / `element`, Python `count=` and `DataObjectBuilder.element`), seen as MMS
+  arrays with element access through AlternateAccess, `DOI` / `SDI` `ix` initial values, `FCDA` `ix`
+  and the `LD/LN$FC$DO(1)$DA` form in report and log DataRefs (`to_mms_data_reference`,
+  `from_mms_data_reference`). `get_data_definition` accepts array indices and
+  `get_data_directory` lists the data of array elements.
+- Logs of other logical devices: SCL `LogControl` `ldInst` and `log_control_settings::log_ld`
+  (Python `LogControl.log_ld`).
+- `Timestamp` and `EntryTime` initial values in SCL and `parse_value` (xs:dateTime).
 - GOOSE and Sampled Values (9-2 LE) publishers and subscribers over Linux AF_PACKET, with
   retransmission and TAL supervision.
 - Python package `openiec61850`: `asyncio` client and server APIs, typed values, exception

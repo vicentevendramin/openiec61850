@@ -12,7 +12,7 @@ namespace {
 constexpr std::size_t max_alternate_access_depth = 128;
 
 result<std::string> build_item(const object_reference& ref, std::vector<access_selector>* alt,
-                               const name_limits& limits) {
+                               const name_limits& limits, bool inline_index = false) {
   if (ref.empty() || ref.is_association_specific() || !ref.has_ln()) return errc::invalid_state;
   const auto path = ref.path();
   std::string item{ref.ln()};
@@ -32,7 +32,11 @@ result<std::string> build_item(const object_reference& ref, std::vector<access_s
     }
     item.push_back('$');
     item.append(e.name);
-    if (e.index) {
+    if (e.index && inline_index) {
+      item.push_back('(');
+      item.append(std::to_string(*e.index));
+      item.push_back(')');
+    } else if (e.index) {
       if (alt == nullptr) return errc::invalid_state;
       alt->push_back({{}, e.index});
       in_alt = true;
@@ -111,8 +115,25 @@ result<void> decode_alternate_access(byte_view contents, std::string& text) {
   }
 }
 
+// Splits the index off "name(n)" (`index` is left empty without one). Only the canonical decimal
+// form is accepted: the text must map back to itself.
+result<std::string_view> split_index(std::string_view segment, std::string_view& index) {
+  index = {};
+  if (!segment.ends_with(')')) return segment;
+  const auto open = segment.find('(');
+  if (open == std::string_view::npos) return errc::malformed_encoding;
+  const auto digits = segment.substr(open + 1, segment.size() - open - 2);
+  if (digits.empty() || (digits.size() > 1 && digits.front() == '0')) return errc::malformed_encoding;
+  for (const char c : digits) {
+    if (c < '0' || c > '9') return errc::malformed_encoding;
+  }
+  index = segment.substr(open);
+  return segment.substr(0, open);
+}
+
 result<object_reference> from_domain_item(std::string_view domain, std::string_view item,
-                                          byte_view alt, const parse_options& opts) {
+                                          byte_view alt, const parse_options& opts,
+                                          bool inline_index = false) {
   if (domain.size() > opts.limits.max_mms_identifier ||
       item.size() > opts.limits.max_mms_identifier) {
     return errc::length_overflow;
@@ -130,9 +151,17 @@ result<object_reference> from_domain_item(std::string_view domain, std::string_v
       f = parse_functional_constraint(name);
       if (!f || *f == fc::XX) return errc::malformed_encoding;
     } else {
-      if (!is_identifier(name)) return errc::malformed_encoding;
+      std::string_view index;
+      auto base = name;
+      if (inline_index && seg > 1) {
+        auto split = split_index(name, index);
+        if (!split) return split.error();
+        base = *split;
+      }
+      if (!is_identifier(base)) return errc::malformed_encoding;
       if (seg != 0) text.push_back('.');
-      text.append(name);
+      text.append(base);
+      text.append(index);
     }
     pos = end + 1;
   }
@@ -274,6 +303,21 @@ result<object_reference> from_mms_reference(std::string_view text, const parse_o
   const auto slash = text.find('/');
   if (slash == std::string_view::npos) return errc::malformed_encoding;
   return from_domain_item(text.substr(0, slash), text.substr(slash + 1), {}, opts);
+}
+
+result<std::string> to_mms_data_reference(const object_reference& ref, const name_limits& limits) {
+  auto item = build_item(ref, nullptr, limits, true);
+  if (!item) return item.error();
+  std::string s{ref.ld()};
+  s.push_back('/');
+  s.append(*item);
+  return s;
+}
+
+result<object_reference> from_mms_data_reference(std::string_view text, const parse_options& opts) {
+  const auto slash = text.find('/');
+  if (slash == std::string_view::npos) return errc::malformed_encoding;
+  return from_domain_item(text.substr(0, slash), text.substr(slash + 1), {}, opts, true);
 }
 
 result<std::string> to_mms_data_set_reference(const object_reference& data_set,

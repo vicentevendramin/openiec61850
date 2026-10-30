@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Arrays of data objects (DO and SDO count), a log of another LD and time initial values. -->
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL" version="2007" revision="B">
+  <Header id="object_arrays"/>
+  <IED name="A">
+    <AccessPoint name="P1">
+      <Server>
+        <Authentication/>
+        <LDevice inst="Prot">
+          <LN0 lnClass="LLN0" inst="" lnType="L0">
+            <DataSet name="DS">
+              <FCDA ldInst="Prot" lnClass="GGIO" lnInst="1" doName="Sig" daName="stVal" fc="ST" ix="1"/>
+              <FCDA ldInst="Prot" lnClass="GGIO" lnInst="1" doName="Sig" fc="ST" ix="2"/>
+              <FCDA ldInst="Prot" lnClass="MHAI" lnInst="1" doName="HA" fc="MX"/>
+            </DataSet>
+            <DataSet name="Whole">
+              <FCDA ldInst="Prot" lnClass="GGIO" lnInst="1" doName="Sig" daName="stVal" fc="ST"/>
+              <FCDA ldInst="Prot" lnClass="GGIO" lnInst="1" doName="Sig" daName="stVal" fc="ST" ix="0"/>
+            </DataSet>
+            <ReportControl name="urcb" datSet="DS" rptID="R" confRev="1" indexed="false">
+              <TrgOps dchg="true"/>
+              <OptFields dataRef="true" reasonCode="true"/>
+            </ReportControl>
+            <LogControl name="lcb" datSet="DS" logName="Events" ldInst="Rec" lnClass="LLN0" logEna="true">
+              <TrgOps dchg="true"/>
+            </LogControl>
+            <LogControl name="nowhere" logName="Events" ldInst="Nope" lnClass="LLN0"/>
+          </LN0>
+          <LN lnClass="GGIO" inst="1" lnType="G1">
+            <DOI name="Sig">
+              <DAI name="setVal"><Val>7</Val></DAI>
+              <DAI name="since"><Val>2020-01-02T03:04:05.5Z</Val></DAI>
+            </DOI>
+            <DOI name="Sig" ix="1">
+              <DAI name="setVal"><Val>8</Val></DAI>
+              <DAI name="stVal"><Val>21</Val></DAI>
+              <DAI name="hist" ix="1"><Val>9</Val></DAI>
+            </DOI>
+            <DOI name="Sig" ix="9">
+              <DAI name="setVal"><Val>1</Val></DAI>
+            </DOI>
+          </LN>
+          <LN lnClass="MHAI" inst="1" lnType="M1">
+            <DOI name="HA">
+              <SDI name="phsAHar" ix="1">
+                <DAI name="mag"><Val>2.5</Val></DAI>
+              </SDI>
+            </DOI>
+          </LN>
+        </LDevice>
+        <LDevice inst="Rec">
+          <LN0 lnClass="LLN0" inst="" lnType="L1"/>
+        </LDevice>
+      </Server>
+    </AccessPoint>
+  </IED>
+  <DataTypeTemplates>
+    <LNodeType id="L0" lnClass="LLN0"><DO name="Mod" type="Mod"/></LNodeType>
+    <LNodeType id="L1" lnClass="LLN0"><DO name="Mod" type="Mod"/></LNodeType>
+    <LNodeType id="G1" lnClass="GGIO">
+      <DO name="Mod" type="Mod"/>
+      <DO name="Sig" type="Sig" count="3"/>
+    </LNodeType>
+    <LNodeType id="M1" lnClass="MHAI"><DO name="HA" type="HA"/></LNodeType>
+    <DOType id="Mod" cdc="ENC"><DA name="stVal" bType="INT8" fc="ST"/></DOType>
+    <DOType id="Sig" cdc="INS">
+      <DA name="stVal" bType="INT32" fc="ST" dchg="true"/>
+      <DA name="since" bType="Timestamp" fc="ST"/>
+      <DA name="hist" bType="INT32" fc="ST" count="2"/>
+      <DA name="setVal" bType="INT32" fc="SP"/>
+    </DOType>
+    <DOType id="HA" cdc="HWYE">
+      <SDO name="phsAHar" type="Har" count="2"/>
+      <DA name="numHar" bType="INT16U" fc="CF"><Val>2</Val></DA>
+    </DOType>
+    <DOType id="Har" cdc="CMV">
+      <DA name="mag" bType="FLOAT32" fc="MX" dchg="true"/>
+      <DA name="db" bType="INT32U" fc="CF"><Val>100</Val></DA>
+    </DOType>
+  </DataTypeTemplates>
+</SCL>

@@ -12,6 +12,8 @@ namespace {
 using code = diagnostic_code;
 using model::functional_constraint;
 
+using object_path = std::vector<std::optional<std::uint32_t>>;
+
 std::string in_quotes(std::string_view s) {
   std::string out{"'"};
   out += s;
@@ -54,6 +56,37 @@ class builder {
   }
 
   // Second pass, once every LD exists: FCDAs may reference other LDs of the server.
+  // The FCDA ix selects an element of the array among its names, while make_fcda_reference puts it
+  // on the last one: "DO.DA(1)" is really "DO(1).DA" when DO is the array.
+  static std::optional<model::object_reference> index_on_array(const instantiated_ied& out,
+                                                               const model::object_reference& ref,
+                                                               const model::parse_options& opts) {
+    const auto leaf = ref.leaf();
+    const auto* ld = out.find(ref.ld());
+    const auto* ln = ld != nullptr ? ld->find(ref.ln()) : nullptr;
+    if (ln == nullptr || !leaf || !leaf->index) return std::nullopt;
+    std::string text{ref.ld()};
+    text += '/';
+    text += ref.ln();
+    const data_node* node = nullptr;
+    bool placed = false;
+    for (const auto e : ref.path()) {
+      node = node == nullptr ? ln->find(e.name) : node->child(e.name);
+      if (node == nullptr) return std::nullopt;
+      text += '.';
+      text += e.name;
+      if (!placed && node->count > 0) {
+        text += '(' + std::to_string(*leaf->index) + ')';
+        placed = true;
+      }
+    }
+    if (!placed) return std::nullopt;
+    auto moved = model::object_reference::parse(text, opts);
+    if (!moved) return std::nullopt;
+    moved->set_fc(ref.fc());
+    return std::move(*moved);
+  }
+
   void resolve_data_sets(instantiated_ied& out, const server& srv) {
     std::unordered_map<std::string_view, std::string> ld_names;
     for (const auto& ld : srv.ldevices) ld_names.emplace(ld.inst, ld.name(ied_.name));
@@ -91,6 +124,9 @@ class builder {
               error(code::invalid_name, m.line,
                     "FCDA of data set " + in_quotes(ds.name) + " does not form a valid reference");
               continue;
+            }
+            if (out.find(*ref) == nullptr) {
+              if (auto moved = index_on_array(out, *ref, relaxed)) ref = std::move(*moved);
             }
             if (out.find(*ref) == nullptr) {
               error(code::unresolved_reference, m.line,
@@ -159,7 +195,7 @@ class builder {
     }
     for (const auto& d : it->second->data_objects) {
       std::vector<std::string_view> active;
-      if (auto node = build_do(d.name, d.desc, d.type, 0, d.line, 1, active)) {
+      if (auto node = build_do(d.name, d.desc, d.type, d.count, d.line, 1, active)) {
         out.data_objects.push_back(std::move(*node));
       }
       if (overflow_) return std::nullopt;
@@ -174,7 +210,15 @@ class builder {
         continue;
       }
       if (!doi.desc.empty()) node->desc = doi.desc;
-      apply_instance(*node, doi, where + "." + doi.name, std::nullopt, 1);
+      if (node->count > 0 && doi.ix && *doi.ix >= node->count) {
+        warning(code::unresolved_reference, doi.line,
+                "DOI " + in_quotes(doi.name) + " index " + std::to_string(*doi.ix) +
+                    " is outside the array");
+        continue;
+      }
+      object_path objects;
+      if (node->count > 0) objects.push_back(doi.ix);
+      apply_instance(*node, doi, where + "." + doi.name, std::nullopt, objects, 1);
     }
     return out;
   }
@@ -308,7 +352,7 @@ class builder {
     }
     if (!take_node(a.line)) return std::nullopt;
     for (const auto& v : a.values) {
-      initial_value iv{v.text, {}, v.sgroup, std::nullopt};
+      initial_value iv{v.text, {}, v.sgroup, std::nullopt, {}};
       if (n.type) {
         if (auto p = parse_value(*n.type, v.text, enumeration)) iv.parsed = std::move(*p);
       }
@@ -317,8 +361,11 @@ class builder {
     return n;
   }
 
+  // `index`: the element of the enclosing array attribute; `objects`: those of the enclosing arrays
+  // of data objects (see initial_value).
   void apply_instance(data_node& node, const data_instance& inst, const std::string& path,
-                      std::optional<std::uint32_t> index, std::size_t depth) {
+                      std::optional<std::uint32_t> index, const object_path& objects,
+                      std::size_t depth) {
     if (depth > opts_.max_depth) return;
     for (const auto& sdi : inst.sub_instances) {
       auto* child = find_child(node, sdi.name);
@@ -336,7 +383,13 @@ class builder {
                     " is outside the array");
         continue;
       }
-      apply_instance(*child, sdi, child_path, sdi.ix ? sdi.ix : index, depth + 1);
+      if (child->kind == node_kind::data_object) {
+        auto inner = objects;
+        if (child->count > 0) inner.push_back(sdi.ix);
+        apply_instance(*child, sdi, child_path, index, inner, depth + 1);
+      } else {
+        apply_instance(*child, sdi, child_path, sdi.ix ? sdi.ix : index, objects, depth + 1);
+      }
     }
     for (const auto& dai : inst.attributes) {
       auto* child = find_child(node, dai.name);
@@ -367,9 +420,13 @@ class builder {
         const auto it = enum_types_.find(child->type_id);
         if (it != enum_types_.end()) enumeration = it->second;
       }
-      std::erase_if(child->values, [&](const initial_value& v) { return v.index == idx; });
+      auto selected = objects;  // without trailing "every element"
+      while (!selected.empty() && !selected.back()) selected.pop_back();
+      std::erase_if(child->values, [&](const initial_value& v) {
+        return v.index == idx && v.objects == selected;
+      });
       for (const auto& v : dai.values) {
-        initial_value iv{v.text, {}, v.sgroup, idx};
+        initial_value iv{v.text, {}, v.sgroup, idx, selected};
         if (child->type) {
           if (auto p = parse_value(*child->type, v.text, enumeration)) {
             iv.parsed = std::move(*p);

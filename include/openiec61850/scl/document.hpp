@@ -119,6 +119,7 @@ struct data_object_def {
   std::string name;
   std::string type;  // DOType id
   std::string desc;
+  std::uint32_t count = 0;  // array size; 0 = not an array
   bool transient = false;
   std::uint32_t line = 0;
 };

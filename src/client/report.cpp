@@ -163,7 +163,7 @@ result<report> parse_report(const mms::information_report& ir,
 
   for (auto& e : r.entries) {
     if (!e.data_reference.empty()) {
-      if (auto ref = model::from_mms_reference(e.data_reference, opts)) {
+      if (auto ref = model::from_mms_data_reference(e.data_reference, opts)) {
         e.reference = std::move(*ref);
         continue;
       }

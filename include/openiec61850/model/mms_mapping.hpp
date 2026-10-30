@@ -95,6 +95,12 @@ struct access_selector {
                                                    const name_limits& limits = default_limits);
 [[nodiscard]] result<object_reference> from_mms_reference(std::string_view text,
                                                           const parse_options& opts = {});
+// The same text with array indices, as a DataRef of a report or a log entry names an element of an
+// array of data objects: "LD/LN$FC$DO(1)$DA".
+[[nodiscard]] result<std::string> to_mms_data_reference(const object_reference& ref,
+                                                        const name_limits& limits = default_limits);
+[[nodiscard]] result<object_reference> from_mms_data_reference(std::string_view text,
+                                                               const parse_options& opts = {});
 // "LD/LN$DS" or "@DS".
 [[nodiscard]] result<std::string> to_mms_data_set_reference(
     const object_reference& data_set, const name_limits& limits = default_limits);
