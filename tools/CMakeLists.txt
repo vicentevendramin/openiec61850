@@ -27,5 +27,12 @@ if(OPENIEC61850_BUILD_TESTS)
                      $<TARGET_FILE:openiec61850_server_tool> $<TARGET_FILE:openiec61850_client_tool>
                      ${PROJECT_SOURCE_DIR}/interop/server/simpleIO.icd)
     set_tests_properties(tools.smoke PROPERTIES TIMEOUT 30)
+    if(OPENIEC61850_ENABLE_TLS)
+      add_test(NAME tools.tls_peer
+               COMMAND ${OPENIEC61850_BASH} ${CMAKE_CURRENT_SOURCE_DIR}/tls_peer_test.sh
+                       $<TARGET_FILE:openiec61850_server_tool> $<TARGET_FILE:openiec61850_client_tool>
+                       ${PROJECT_SOURCE_DIR}/interop/server/simpleIO.icd)
+      set_tests_properties(tools.tls_peer PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    endif()
   endif()
 endif()
