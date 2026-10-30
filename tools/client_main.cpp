@@ -48,6 +48,13 @@ constexpr const char* usage_text =
     "  --host HOST           server address (default 127.0.0.1)\n"
     "  --port N              server port (default 102)\n"
     "  --password PW         ACSE password authentication\n"
+    "  --tls                 use TLS (IEC 62351-3); the port stays --port, usually 3782\n"
+    "  --tls-ca FILE         trust anchors (PEM)\n"
+    "  --tls-cert FILE       own certificate chain (PEM)\n"
+    "  --tls-key FILE        own private key (PEM)\n"
+    "  --tls-crl FILE        certificate revocation lists (PEM)\n"
+    "  --tls-peer-name NAME  name the peer certificate must carry\n"
+    "  --tls-no-verify       accept any peer certificate\n"
     "  --timeout S           connect / request timeout in seconds (default 10)\n"
     "  --count N             reports: stop after N reports (default: until SIGINT)\n"
     "  --duration S          reports: stop after S seconds\n"
@@ -361,12 +368,14 @@ awaitable<int> run(const std::vector<std::string>& cmd, const options& o) {
 
 int main(int argc, char** argv) {
   const tools::arguments args(argc, argv,
-                              {"host", "port", "password", "timeout", "count", "duration"});
+                              {"host", "port", "password", "timeout", "count", "duration", "tls-ca",
+                               "tls-cert", "tls-key", "tls-crl", "tls-peer-name"});
   if (args.flag("help")) {
     std::fputs(usage_text, stdout);
     return 0;
   }
-  if (auto u = args.unknown({"host", "port", "password", "timeout", "count", "duration", "test"})) {
+  if (auto u = args.unknown({"host", "port", "password", "timeout", "count", "duration", "test", "tls",
+                             "tls-ca", "tls-cert", "tls-key", "tls-crl", "tls-peer-name", "tls-no-verify"})) {
     std::fprintf(stderr, "openiec61850-client: unknown option --%s\n%s", u->c_str(), usage_text);
     return 2;
   }
@@ -387,6 +396,12 @@ int main(int argc, char** argv) {
   a.host = args.value("host").value_or("127.0.0.1");
   a.port = static_cast<std::uint16_t>(*port);
   a.password = args.value("password");
+  auto tls = tools::tls_from_arguments(args, false);
+  if (!tls) {
+    std::fprintf(stderr, "openiec61850-client: TLS configuration: %s\n", tls.error().message().c_str());
+    return 2;
+  }
+  a.transport.tls = std::move(*tls);
   const std::chrono::seconds t{*timeout};
   a.transport.connect_timeout = t;
   a.transport.handshake_timeout = t;

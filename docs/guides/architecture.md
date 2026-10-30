@@ -27,7 +27,8 @@ own public headers (`include/openiec61850/<component>/`), sources, tests and fuz
    │ iso/presentation/  CP/CPA/CPR/ARU, P-DATA                      │ ISO 8823
    │ iso/session/ CN/AC/RF/DT/FN/DN/AB                             │ ISO 8327
    ├───────────────────────────────────────────────────────────────┤
-   │ transport/   cotp_channel: TCP + TPKT + COTP class 0;         │ RFC 1006, ISO 8073
+   │ transport/   cotp_channel: TCP + TLS (optional) + TPKT + COTP │ RFC 1006, ISO 8073,
+   │              class 0;                                         │ IEC 62351-3
    │              io_runtime (I/O thread), spawn bridge            │
    ├───────────────────────────────────────────────────────────────┤
    │ ber/         BER reader / writer / TLV decoder                │ ITU-T X.690

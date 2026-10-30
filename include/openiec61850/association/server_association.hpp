@@ -36,6 +36,8 @@ struct association_request {
   byte_buffer calling_presentation_selector;
   byte_buffer called_presentation_selector;
   asio::ip::tcp::endpoint remote_endpoint;
+  // The TLS session of the connection, with the client certificate; unset on a plain connection.
+  std::optional<transport::tls_session_info> tls;
 };
 
 // The application's answer to an association_request.

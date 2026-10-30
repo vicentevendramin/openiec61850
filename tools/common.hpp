@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <utility>
 #include <optional>
 #include <string>
@@ -10,6 +11,7 @@
 
 #include "openiec61850/core/result.hpp"
 #include "openiec61850/mms/data.hpp"
+#include "openiec61850/transport/tls.hpp"
 
 // Helpers shared by the command-line tools: text form of MMS values and a tiny option parser.
 
@@ -52,5 +54,9 @@ class arguments {
 // Parses a decimal number in [min, max].
 [[nodiscard]] std::optional<long long> parse_number(std::string_view text, long long min,
                                                     long long max);
+
+// The context for the --tls* options: null without --tls, errc::unsupported without TLS support.
+[[nodiscard]] result<std::shared_ptr<transport::tls_context>> tls_from_arguments(const arguments& args,
+                                                                                 bool server);
 
 }  // namespace openiec61850::tools

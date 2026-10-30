@@ -11,9 +11,9 @@ baseline="$(sed -n 's/.*"builtin-baseline": *"\([0-9a-f]*\)".*/\1/p' "$here/../.
 
 if [[ "$(uname -s)" == Linux ]]; then
   if command -v dnf > /dev/null; then
-    dnf install -y -q zip unzip curl tar git pkgconfig perl make
+    dnf install -y -q zip unzip curl tar git pkgconfig perl perl-IPC-Cmd perl-Time-Piece make
   elif command -v yum > /dev/null; then
-    yum install -y -q zip unzip curl tar git pkgconfig perl make
+    yum install -y -q zip unzip curl tar git pkgconfig perl perl-IPC-Cmd perl-Time-Piece make
   fi
   # VCPKG_FORCE_SYSTEM_BINARIES needs cmake and ninja on PATH: manylinux ships cmake through
   # pipx; ninja comes from PyPI.

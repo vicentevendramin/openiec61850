@@ -41,6 +41,7 @@ core::core(transport::cotp_channel ch, ps::role role, const ps::connection_optio
     : strand(ch.get_executor()), channel(std::move(ch)), pres(role, options), decode(d) {
   info.local_endpoint = channel.local_endpoint();
   info.remote_endpoint = channel.remote_endpoint();
+  info.tls = channel.tls_session();
 }
 
 std::shared_ptr<send_completion> core::send_tsdu(byte_buffer tsdu) {

@@ -369,6 +369,7 @@ nb::object association_info_to_py(const association::association_info& i) {
   o["peer_ae_qualifier"] = opt_to_py(i.peer_ae_qualifier);
   o["local_endpoint"] = endpoint_to_py(i.local_endpoint);
   o["remote_endpoint"] = endpoint_to_py(i.remote_endpoint);
+  o["tls"] = tls_session_to_py(i.tls);
   return o;
 }
 
@@ -504,6 +505,56 @@ client::rcb_settings rcb_settings_from_py(nb::handle h, const model::parse_optio
   return s;
 }
 
+std::shared_ptr<transport::tls_context> tls_context_from_py(nb::handle config, bool server) {
+  nb::dict d = nb::cast<nb::dict>(config);
+  const auto text = [&](const char* k) {
+    return d[k].is_none() ? std::string{} : nb::cast<std::string>(d[k]);
+  };
+  transport::tls_config c;
+  c.ca_file = text("ca_file");
+  c.certificate_file = text("certificate_file");
+  c.private_key_file = text("private_key_file");
+  c.private_key_password = text("private_key_password");
+  c.crl_file = text("crl_file");
+  c.verify_peer = nb::cast<bool>(d["verify_peer"]);
+  c.verify_peer_name = nb::cast<bool>(d["verify_peer_name"]);
+  c.peer_name = text("peer_name");
+  c.cipher_list = text("cipher_list");
+  c.cipher_suites = text("cipher_suites");
+  const auto version = [](nb::handle v) {
+    return nb::cast<int>(v) == 13 ? transport::tls_version::tls1_3 : transport::tls_version::tls1_2;
+  };
+  c.min_version = version(d["min_version"]);
+  if (!d["max_version"].is_none()) c.max_version = version(d["max_version"]);
+  auto ctx = transport::tls_context::create(c, server);
+  if (!ctx) {
+    const auto ec = ctx.error();
+    if (ec == std::errc::invalid_argument) throw nb::value_error("inconsistent TLS configuration");
+    nb::object e;
+    if (ec == errc::unsupported) {
+      e = make_error(ec);
+    } else {  // a file errno or an OpenSSL code: either way the configuration cannot be used
+      e = nb::module_::import_("openiec61850._errors")
+              .attr("TlsError")(("TLS configuration: " + ec.message()).c_str());
+    }
+    PyErr_SetObject(reinterpret_cast<PyObject*>(Py_TYPE(e.ptr())), e.ptr());
+    throw nb::python_error();
+  }
+  return std::move(*ctx);
+}
+
+nb::object tls_session_to_py(const std::optional<transport::tls_session_info>& session) {
+  if (!session) return nb::none();
+  nb::dict o;
+  o["version"] = session->version;
+  o["cipher"] = session->cipher;
+  o["peer_subject"] = session->peer_subject;
+  o["peer_issuer"] = session->peer_issuer;
+  o["peer_serial"] = session->peer_serial;
+  o["peer_fingerprint_sha256"] = session->peer_fingerprint_sha256;
+  return std::move(o);
+}
+
 client::client_options client_options_from_py(nb::handle h) {
   const auto d = reader(h);
   client::client_options o;
@@ -556,6 +607,7 @@ client::client_options client_options_from_py(nb::handle h) {
   d.read("max_nesting", a.decode.max_nesting);
   d.read("keep_alive", a.transport.keep_alive);
   d.read("no_delay", a.transport.no_delay);
+  if (d.given("tls")) a.transport.tls = tls_context_from_py(d.at("tls"), false);
   if (d.given("edition")) o.edition = static_cast<model::edition>(nb::cast<std::uint8_t>(d.at("edition")));
   d.read("strict_ln_names", o.strict_ln_names);
   if (d.given("recovery")) {

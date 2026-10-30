@@ -6,6 +6,7 @@
 #include <deque>
 #include <exception>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -20,6 +21,12 @@
 #include <asio/use_awaitable.hpp>
 #include <asio/write.hpp>
 
+#ifdef OPENIEC61850_WITH_TLS
+#include <asio/ssl/error.hpp>
+
+#include "tls_impl.hpp"
+#endif
+
 namespace openiec61850::transport {
 
 namespace cotp = iso::cotp;
@@ -31,6 +38,10 @@ namespace {
 
 constexpr auto use_tuple = asio::as_tuple(asio::use_awaitable);
 constexpr std::size_t min_read_buffer_size = 512;
+#ifdef OPENIEC61850_WITH_TLS
+// How long a release waits for the peer's close_notify.
+constexpr std::chrono::seconds tls_close_timeout{1};
+#endif
 
 // Runs op on strand, resuming the caller on its own executor afterwards.
 template <typename T>
@@ -81,6 +92,11 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
 
   strand_type strand;
   tcp::socket socket;
+#ifdef OPENIEC61850_WITH_TLS
+  std::shared_ptr<tls_context> tls_ctx;  // outlives tls
+  std::optional<tls_stream> tls;
+#endif
+  std::optional<tls_session_info> tls_info;
   std::optional<tcp::resolver> resolver;
   asio::steady_timer deadline;
   std::uint64_t deadline_phase = 0;
@@ -120,6 +136,26 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
 
   void wake_all() {
     for (auto* w : waiters) w->timer.cancel();
+  }
+
+  awaitable<std::tuple<std::error_code, std::size_t>> read_some() {
+#ifdef OPENIEC61850_WITH_TLS
+    if (tls) {
+      auto [ec, n] = co_await tls->async_read_some(asio::buffer(read_buffer), use_tuple);
+      // The association layers have their own orderly release, so a TCP close without
+      // close_notify cannot truncate anything unnoticed: it is a plain end of stream here.
+      if (ec == asio::ssl::error::stream_truncated) ec = asio::error::eof;
+      co_return std::tuple{ec, n};
+    }
+#endif
+    co_return co_await socket.async_read_some(asio::buffer(read_buffer), use_tuple);
+  }
+
+  awaitable<std::tuple<std::error_code, std::size_t>> write_all(asio::const_buffer data) {
+#ifdef OPENIEC61850_WITH_TLS
+    if (tls) co_return co_await asio::async_write(*tls, data, use_tuple);
+#endif
+    co_return co_await asio::async_write(socket, data, use_tuple);
   }
 
   void close_socket() {
@@ -178,7 +214,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     while (!self->out.empty() && self->socket.is_open()) {
       std::swap(self->out, self->writing);
       const std::uint64_t end = self->enqueued;
-      auto [ec, n] = co_await asio::async_write(self->socket, asio::buffer(self->writing), use_tuple);
+      auto [ec, n] = co_await self->write_all(asio::buffer(self->writing));
       self->writing.clear();
       if (ec) {
         self->network_error(ec);
@@ -235,8 +271,47 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     if (o.keep_alive) socket.set_option(asio::socket_base::keep_alive(true), ignored);
   }
 
+  awaitable<result<void>> tls_handshake() {
+#ifdef OPENIEC61850_WITH_TLS
+    if (tls) {
+      const auto side = conn.connection_role() == cotp::role::initiator
+                            ? asio::ssl::stream_base::client
+                            : asio::ssl::stream_base::server;
+      auto [ec] = co_await tls->async_handshake(side, use_tuple);
+      if (error) co_return error;
+      if (ec) {
+        fail(ec);
+        co_return ec;
+      }
+      tls_info = describe_session(*tls);
+    }
+#endif
+    co_return result<void>{};
+  }
+
+  // Names the certificate of the peer must carry, for the host being connected to.
+  result<void> prepare_tls(const std::string& host) {
+#ifdef OPENIEC61850_WITH_TLS
+    if (tls) {
+      const auto& c = tls_ctx->config();
+      const auto& name = c.peer_name.empty() ? host : c.peer_name;
+      if (conn.connection_role() == cotp::role::initiator) set_server_name_indication(*tls, name);
+      if (c.verify_peer && c.verify_peer_name && !name.empty()) {
+        if (auto ec = set_expected_peer_name(*tls, name)) {
+          fail(ec);
+          return ec;
+        }
+      }
+    }
+#else
+    (void)host;
+#endif
+    return {};
+  }
+
   awaitable<result<void>> handshake(std::chrono::milliseconds timeout) {
     arm_deadline(timeout);
+    if (auto r = co_await tls_handshake(); !r) co_return r;
     if (conn.connection_role() == cotp::role::initiator) {
       if (auto r = conn.connect(); !r) {
         fail(r.error());
@@ -246,7 +321,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     }
     while (conn.state() != cotp::connection_state::open) {
       if (error) co_return error;
-      auto [ec, n] = co_await socket.async_read_some(asio::buffer(read_buffer), use_tuple);
+      auto [ec, n] = co_await read_some();
       if (ec) {
         network_error(ec);
         continue;
@@ -275,6 +350,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     }
     auto [cec, endpoint] = co_await asio::async_connect(self->socket, endpoints, use_tuple);
     (void)endpoint;
+    if (auto r = self->prepare_tls(host); !r) co_return r;
     co_return co_await self->after_connect(cec, o);
   }
 
@@ -282,6 +358,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
                                                      tcp::endpoint endpoint, channel_options o) {
     self->arm_deadline(o.connect_timeout);
     auto [ec] = co_await self->socket.async_connect(endpoint, use_tuple);
+    if (auto r = self->prepare_tls(endpoint.address().to_string()); !r) co_return r;
     co_return co_await self->after_connect(ec, o);
   }
 
@@ -299,6 +376,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
   static awaitable<result<void>> accept_op(std::shared_ptr<channel_state> self,
                                            channel_options o) {
     self->apply_socket_options(o);
+    if (auto r = self->prepare_tls({}); !r) co_return r;
     co_return co_await self->handshake(o.handshake_timeout);
   }
 
@@ -328,8 +406,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
         co_return tsdu;
       }
       if (self->error) co_return self->error;
-      auto [ec, n] =
-          co_await self->socket.async_read_some(asio::buffer(self->read_buffer), use_tuple);
+      auto [ec, n] = co_await self->read_some();
       if (ec) {
         if (self->error) continue;
         // Only a cancellation by the caller gets here: the channel stays usable.
@@ -343,6 +420,14 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
 
   static awaitable<result<void>> shutdown_op(std::shared_ptr<channel_state> self) {
     auto r = co_await self->wait_written(self->enqueued);
+#ifdef OPENIEC61850_WITH_TLS
+    if (self->tls && !self->error) {
+      self->error = asio::error::operation_aborted;  // the channel is over for its other users
+      self->open = false;
+      self->arm_deadline(tls_close_timeout);
+      (void)co_await self->tls->async_shutdown(use_tuple);
+    }
+#endif
     self->inbox.clear();
     self->fail(asio::error::operation_aborted);
     co_return r;
@@ -380,7 +465,15 @@ result<std::shared_ptr<channel_state>> make_state(strand_type strand, tcp::socke
                                                   cotp::role role, const channel_options& o) {
   auto conn = cotp::connection::create(role, o.cotp);
   if (!conn) return conn.error();
-  return std::make_shared<channel_state>(std::move(strand), std::move(socket), std::move(*conn), o);
+  auto state =
+      std::make_shared<channel_state>(std::move(strand), std::move(socket), std::move(*conn), o);
+#ifdef OPENIEC61850_WITH_TLS
+  if (o.tls) {
+    state->tls_ctx = o.tls;
+    state->tls.emplace(state->socket, o.tls->native().ssl);
+  }
+#endif
+  return state;
 }
 
 }  // namespace
@@ -511,6 +604,10 @@ const cotp::connected_indication& cotp_channel::connection_info() const noexcept
 }
 
 cotp::role cotp_channel::connection_role() const noexcept { return state_->conn.connection_role(); }
+
+const std::optional<tls_session_info>& cotp_channel::tls_session() const noexcept {
+  return state_->tls_info;
+}
 
 const tcp::endpoint& cotp_channel::local_endpoint() const noexcept { return state_->local; }
 

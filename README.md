@@ -107,6 +107,13 @@ server = await iec.Server.start(model, port=102, files=iec.DirectoryFileStore("/
                                on_goose_control=lambda state: print(state.go_ena))
 ```
 
+TLS (IEC 62351-3, mutual authentication by default) is a keyword of both ends:
+
+```python
+tls = iec.TlsConfig(ca_file="ca.pem", certificate_file="hmi.pem", private_key_file="hmi.key")
+client = await iec.Client.connect("10.0.0.5", iec.TLS_PORT, tls=tls)
+```
+
 GOOSE and Sampled Values live in `openiec61850.goose` (loopback network for tests, raw sockets on
 Linux):
 

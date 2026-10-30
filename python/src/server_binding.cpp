@@ -828,6 +828,7 @@ nb::dict association_request_to_py(const association::association_request& r) {
   d["called_ap_title"] = opt_oid(r.called_ap_title);
   d["called_ae_qualifier"] = r.called_ae_qualifier ? nb::cast(*r.called_ae_qualifier) : nb::none();
   d["remote"] = nb::make_tuple(r.remote_endpoint.address().to_string(), r.remote_endpoint.port());
+  d["tls"] = tls_session_to_py(r.tls);
   return d;
 }
 
@@ -889,6 +890,7 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
   if (given("check_test_mode")) o.check_test_mode = nb::cast<bool>(d["check_test_mode"]);
   if (given("association_timeout")) o.association.association_timeout = seconds_from_py(d["association_timeout"]);
   if (given("handshake_timeout")) o.association.transport.handshake_timeout = seconds_from_py(d["handshake_timeout"]);
+  if (given("tls")) o.association.transport.tls = tls_context_from_py(d["tls"], true);
   if (given("log_capacity")) o.log_capacity = nb::cast<std::size_t>(d["log_capacity"]);
   if (given("max_open_files")) o.max_open_files = nb::cast<std::size_t>(d["max_open_files"]);
   if (d.contains("files")) o.files = file_store_from_py(d["files"]);

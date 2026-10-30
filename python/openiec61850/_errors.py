@@ -15,6 +15,7 @@ Hierarchy::
     │   ├── ConnectionClosed           released or aborted locally
     │   ├── NotConnected               no association (closed, or recovery in progress)
     │   ├── RecoveryFailed
+    │   ├── TlsError                   handshake or certificate failure
     │   └── AssociationRejected
     │       ├── AuthenticationFailed
     │       └── InitiateError
@@ -54,6 +55,7 @@ from typing import Any
 __all__ = [
     "Iec61850Error",
     "CommunicationError",
+    "TlsError",
     "ConnectionRefused",
     "HostNotFound",
     "ConnectionLost",
@@ -152,6 +154,10 @@ class ConnectionClosed(CommunicationError):
 
 class NotConnected(CommunicationError):
     """No association is established (closed, or recovery in progress)."""
+
+
+class TlsError(CommunicationError):
+    """TLS failure: an unusable configuration, a failed handshake or a rejected certificate."""
 
 
 class RecoveryFailed(CommunicationError):
@@ -503,6 +509,8 @@ def error_class_for(category: str, value: int) -> type[Iec61850Error]:
         return ConnectionLost if value == 2 else CommunicationError  # 2: eof
     if category in ("asio.netdb", "asio.addrinfo"):
         return HostNotFound
+    if category in ("asio.ssl", "asio.ssl.stream"):
+        return TlsError
     return Iec61850Error
 
 

@@ -49,6 +49,13 @@ constexpr const char* usage_text =
     "  --port N              TCP port (default 102; 0 picks a free port)\n"
     "  --bind ADDR           local address (default 0.0.0.0)\n"
     "  --password PW         require ACSE password authentication\n"
+    "  --tls                 use TLS (IEC 62351-3); the port stays --port, usually 3782\n"
+    "  --tls-ca FILE         trust anchors (PEM)\n"
+    "  --tls-cert FILE       own certificate chain (PEM)\n"
+    "  --tls-key FILE        own private key (PEM)\n"
+    "  --tls-crl FILE        certificate revocation lists (PEM)\n"
+    "  --tls-peer-name NAME  name the peer certificate must carry\n"
+    "  --tls-no-verify       accept any peer certificate\n"
     "  --simulate            random-walk MX analog values, toggle status-only BOOLEAN stVal\n"
     "  --period MS           simulation period (default 1000)\n"
     "  --control-delay MS    complete operations after MS (enhanced security: CommandTermination)\n"
@@ -164,13 +171,15 @@ const char* action_name(srv::control_action a) {
 
 int main(int argc, char** argv) {
   const tools::arguments args(argc, argv,
-                              {"scl", "ied", "ap", "port", "bind", "password", "period", "control-delay"});
+                              {"scl", "ied", "ap", "port", "bind", "password", "period", "control-delay",
+                               "tls-ca", "tls-cert", "tls-key", "tls-crl", "tls-peer-name"});
   if (args.flag("help")) {
     std::fputs(usage_text, stdout);
     return 0;
   }
   if (auto u = args.unknown({"scl", "ied", "ap", "port", "bind", "password", "period", "control-delay",
-                             "simulate", "verbose"})) {
+                             "simulate", "verbose", "tls", "tls-ca", "tls-cert", "tls-key", "tls-crl",
+                             "tls-peer-name", "tls-no-verify"})) {
     std::fprintf(stderr, "openiec61850-server: unknown option --%s\n%s", u->c_str(), usage_text);
     return 2;
   }
@@ -218,6 +227,12 @@ int main(int argc, char** argv) {
 
   srv::server_options opts;
   opts.max_associations = 32;
+  auto tls = tools::tls_from_arguments(args, true);
+  if (!tls) {
+    std::fprintf(stderr, "openiec61850-server: TLS configuration: %s\n", tls.error().message().c_str());
+    return 2;
+  }
+  opts.association.transport.tls = std::move(*tls);
   opts.association.authorize = [pw = args.value("password")](
                                    const openiec61850::association::association_request& req,
                                    mms::initiate_response&) {

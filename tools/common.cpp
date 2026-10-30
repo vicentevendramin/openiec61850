@@ -269,4 +269,16 @@ std::optional<long long> parse_number(std::string_view text, long long min, long
   return v;
 }
 
+result<std::shared_ptr<transport::tls_context>> tls_from_arguments(const arguments& args, bool server) {
+  if (!args.flag("tls")) return std::shared_ptr<transport::tls_context>{};
+  transport::tls_config c;
+  c.ca_file = args.value("tls-ca").value_or("");
+  c.certificate_file = args.value("tls-cert").value_or("");
+  c.private_key_file = args.value("tls-key").value_or("");
+  c.crl_file = args.value("tls-crl").value_or("");
+  c.peer_name = args.value("tls-peer-name").value_or("");
+  c.verify_peer = !args.flag("tls-no-verify");
+  return transport::tls_context::create(c, server);
+}
+
 }  // namespace openiec61850::tools

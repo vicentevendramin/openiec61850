@@ -66,7 +66,7 @@ from datetime import datetime, timezone
 from typing import Any, Union
 
 from openiec61850 import _core
-from openiec61850._client import DataDefinition
+from openiec61850._client import DataDefinition, TlsConfig, TlsSession
 from openiec61850._control import AddCause, Originator, add_cause
 from openiec61850._errors import FileStoreError, InvalidOperation, ObjectNotFound, SclError, ServiceError
 from openiec61850._types import (
@@ -853,6 +853,7 @@ class AssociationRequest:
     called_ap_title: str | None
     called_ae_qualifier: int | None
     remote: tuple[str, int]
+    tls: TlsSession | None = None  # with the client certificate; None on a plain connection
 
 
 @dataclass(frozen=True)
@@ -1263,6 +1264,7 @@ def _make_dispatchers(
                 called_ap_title=d["called_ap_title"],
                 called_ae_qualifier=d["called_ae_qualifier"],
                 remote=tuple(d["remote"]),  # type: ignore[arg-type]
+                tls=TlsSession(**d["tls"]) if d["tls"] is not None else None,
             )
             return bool(_now(authorize(req), "authorize"))  # type: ignore[misc]
         except Exception:
@@ -1385,6 +1387,7 @@ class Server:
         on_goose_control: GooseControlHook | None = None,
         files: FileStore | MemoryFileStore | DirectoryFileStore | None = None,
         max_open_files: int = 8,
+        tls: TlsConfig | None = None,
     ) -> Server:
         """Listens on ``host:port`` (port 0: ephemeral, see :attr:`local_endpoint`).
 
@@ -1401,7 +1404,8 @@ class Server:
         ``log_capacity``: entries kept per log (the oldest are dropped). ``on_goose_control(state)``
         (:class:`GooseControlState`) runs on the event loop after a client changed a GoCB.
         ``files`` serves the MMS file services (unset: they are rejected); ``max_open_files``
-        bounds the files open at once per association.
+        bounds the files open at once per association. ``tls`` serves over TLS only; the
+        ``authorize`` hook sees the client certificate in ``request.tls``.
         """
         if not isinstance(model, Model):
             raise TypeError("model must be an openiec61850.Model")
@@ -1427,6 +1431,7 @@ class Server:
             "log_capacity": int(log_capacity),
             "max_open_files": int(max_open_files),
             "files": _native_files(files),
+            "tls": tls._native() if tls is not None else None,
         }
         write, control, auth, sg, gc = _make_dispatchers(
             model, loop, on_write, on_control, authorize, on_setting_group, on_goose_control

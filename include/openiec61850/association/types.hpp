@@ -13,6 +13,7 @@
 
 #include "openiec61850/association/error.hpp"
 #include "openiec61850/ber/oid.hpp"
+#include "openiec61850/transport/tls.hpp"
 #include "openiec61850/core/bytes.hpp"
 #include "openiec61850/core/result.hpp"
 #include "openiec61850/mms/pdu.hpp"
@@ -183,6 +184,7 @@ struct association_info {
   std::optional<std::int64_t> peer_ae_qualifier;
   asio::ip::tcp::endpoint local_endpoint;
   asio::ip::tcp::endpoint remote_endpoint;
+  std::optional<transport::tls_session_info> tls;  // unset on a plain connection
 };
 
 }  // namespace openiec61850::association

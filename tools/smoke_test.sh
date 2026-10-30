@@ -74,4 +74,38 @@ wait "${pid}"
 status=$?
 pid=""
 [[ ${status} -eq 0 ]] || fail "server exit status ${status} after SIGTERM"
+
+# The same tools over TLS with mutual authentication (needs the openssl command).
+if command -v openssl > /dev/null; then
+  : > "${work}/server.out"
+  gen() {
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=$1" \
+      -addext "subjectAltName=IP:127.0.0.1" -keyout "${work}/$1.key" -out "${work}/$1.pem" 2> /dev/null
+  }
+  gen srv && gen cli || fail "openssl req"
+  "${server}" --scl "${scl}" --bind 127.0.0.1 --port 0 --tls --tls-ca "${work}/cli.pem" \
+    --tls-cert "${work}/srv.pem" --tls-key "${work}/srv.key" > "${work}/server.out" 2> "${work}/server.err" &
+  pid=$!
+  port=""
+  for _ in $(seq 100); do
+    port="$(sed -n 's/^listening on 127\.0\.0\.1:\([0-9]*\).*/\1/p' "${work}/server.out")"
+    [[ -n "${port}" ]] && break
+    kill -0 "${pid}" 2> /dev/null || fail "TLS server exited early"
+    sleep 0.05
+  done
+  [[ -n "${port}" ]] || fail "TLS server did not print its port"
+  t() { "${client}" --host 127.0.0.1 --port "${port}" --timeout 5 --tls "$@"; }
+  t --tls-ca "${work}/srv.pem" --tls-cert "${work}/cli.pem" --tls-key "${work}/cli.key" \
+    read "${ld}/LLN0.Mod.stVal[ST]" > /dev/null || fail "read over TLS"
+  t --tls-ca "${work}/srv.pem" read "${ld}/LLN0.Mod.stVal[ST]" > /dev/null 2>&1 \
+    && fail "association without a client certificate was accepted"
+  "${client}" --host 127.0.0.1 --port "${port}" --timeout 5 read "${ld}/LLN0.Mod.stVal[ST]" \
+    > /dev/null 2>&1 && fail "plain client was accepted by the TLS server"
+  kill -TERM "${pid}"
+  wait "${pid}"
+  status=$?
+  pid=""
+  [[ ${status} -eq 0 ]] || fail "TLS server exit status ${status} after SIGTERM"
+fi
+
 echo "tools smoke test passed (port ${port})"

@@ -3,6 +3,7 @@
 #include <nanobind/nanobind.h>
 
 #include <chrono>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "openiec61850/client/types.hpp"
 #include "openiec61850/mms/data.hpp"
 #include "openiec61850/model/object_reference.hpp"
+#include "openiec61850/transport/tls.hpp"
 
 // Conversions between C++ values and the plain Python values the pure Python layer
 // (openiec61850/_values.py, _client.py) builds its public types from. GIL held.
@@ -68,5 +70,9 @@ client::gocb_settings gocb_settings_from_py(nb::handle d, const model::parse_opt
 client::report_settings report_settings_from_py(nb::handle d, const model::parse_options& opts);
 client::rcb_settings rcb_settings_from_py(nb::handle d, const model::parse_options& opts);
 client::client_options client_options_from_py(nb::handle d);
+// The native form of openiec61850.TlsConfig; raises when it cannot be loaded.
+std::shared_ptr<transport::tls_context> tls_context_from_py(nb::handle config, bool server);
+// A dict for openiec61850.TlsSession, or None.
+nb::object tls_session_to_py(const std::optional<transport::tls_session_info>& session);
 
 }  // namespace openiec61850::python

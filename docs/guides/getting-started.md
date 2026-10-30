@@ -40,6 +40,21 @@ asyncio.run(main())
 Pass `recovery=True` to `connect()` to have the association (and its RCBs) restored after a
 connection loss.
 
+### TLS
+
+```python
+tls = iec.TlsConfig(ca_file="ca.pem", certificate_file="hmi.pem", private_key_file="hmi.key")
+async with await iec.Client.connect("10.0.0.5", iec.TLS_PORT, tls=tls) as client:
+    print(client.association_info.tls.peer_subject)
+```
+
+Both sides are authenticated by default: the client checks the server certificate and its name
+(`peer_name`, or the host it connects to; an IP literal needs an IP subject alternative name), and
+a server passed `tls=` requires a client certificate, visible in `request.tls` of `authorize`. A
+server serves TLS or plain connections on a port, never both. TLS keys are not renewed during
+an association, so limit the lifetime of an association where IEC 62351-3 key renewal applies.
+In C++, build with `OPENIEC61850_ENABLE_TLS=ON` and set `transport.tls` from `tls_context::create()`.
+
 ### A first server
 
 ```python

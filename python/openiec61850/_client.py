@@ -8,7 +8,7 @@ import enum
 import inspect
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from typing import IO, Any, Generic, TypeVar, Union
 
@@ -167,6 +167,64 @@ class NegotiatedParameters:
     services_supported_called: tuple[bytes, int]
 
 
+TLS_PORT = 3782
+"""IANA "secure-mms": the usual port of a TLS server."""
+
+
+class TlsVersion(enum.IntEnum):
+    TLS1_2 = 12
+    TLS1_3 = 13
+
+
+@dataclass(frozen=True)
+class TlsConfig:
+    """TLS (IEC 62351-3) for ``Client.connect`` and ``Server.start``.
+
+    The defaults authenticate both sides. ``ca_file`` holds the trust anchors and
+    ``certificate_file``/``private_key_file`` the local identity (PEM); a server needs an identity.
+    ``crl_file`` enables revocation checks, and then needs a CRL for the issuer of the peer.
+    A client checks the server certificate against ``peer_name``, or the host it connects to;
+    a server checks the client name only when ``peer_name`` is set. ``verify_peer_name=False``
+    keeps the chain check only.
+    """
+
+    ca_file: str | os.PathLike[str] | None = None
+    certificate_file: str | os.PathLike[str] | None = None
+    private_key_file: str | os.PathLike[str] | None = None
+    private_key_password: str | None = field(default=None, repr=False)
+    crl_file: str | os.PathLike[str] | None = None
+    verify_peer: bool = True
+    verify_peer_name: bool = True
+    peer_name: str | None = None
+    min_version: TlsVersion = TlsVersion.TLS1_2
+    max_version: TlsVersion | None = None
+    cipher_list: str | None = None
+    cipher_suites: str | None = None
+
+    def _native(self) -> dict[str, Any]:
+        native: dict[str, Any] = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if f.name.endswith("_file") and v is not None:
+                v = os.fspath(v)
+            elif f.name.endswith("_version") and v is not None:
+                v = int(v)
+            native[f.name] = v
+        return native
+
+
+@dataclass(frozen=True)
+class TlsSession:
+    """The outcome of the TLS handshake. The ``peer_*`` fields are empty without a peer certificate."""
+
+    version: str
+    cipher: str
+    peer_subject: str
+    peer_issuer: str
+    peer_serial: str
+    peer_fingerprint_sha256: str
+
+
 @dataclass(frozen=True)
 class AssociationInfo:
     negotiated: NegotiatedParameters
@@ -174,6 +232,7 @@ class AssociationInfo:
     peer_ae_qualifier: int | None
     local_endpoint: tuple[str, int]
     remote_endpoint: tuple[str, int]
+    tls: TlsSession | None = None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -796,6 +855,7 @@ class Client:
         iso: IsoParameters | None = None,
         report_queue_capacity: int = 1024,
         event_queue_capacity: int = 64,
+        tls: TlsConfig | None = None,
     ) -> Client:
         """Establishes the association.
 
@@ -804,6 +864,7 @@ class Client:
         authentication. ``ap_title``/``ae_qualifier`` are the calling AP-title and AE-qualifier
         (``None`` omits them); ``called_*`` the called ones. ``recovery=True`` (or a
         :class:`Recovery`) enables association recovery; the first connection is not retried.
+        ``tls`` runs the association over TLS; such servers normally listen on :data:`TLS_PORT`.
         """
         options: dict[str, Any] = {
             "host": host,
@@ -823,6 +884,8 @@ class Client:
             "report_queue_capacity": report_queue_capacity,
             "event_queue_capacity": event_queue_capacity,
         }
+        if tls is not None:
+            options["tls"] = tls._native()
         if recovery is True:
             recovery = Recovery()
         if isinstance(recovery, Recovery):
@@ -880,6 +943,7 @@ class Client:
             peer_ae_qualifier=d["peer_ae_qualifier"],
             local_endpoint=tuple(d["local_endpoint"]),
             remote_endpoint=tuple(d["remote_endpoint"]),
+            tls=TlsSession(**d["tls"]) if d["tls"] is not None else None,
         )
 
     # --- directory and definition

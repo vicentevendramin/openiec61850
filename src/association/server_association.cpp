@@ -84,6 +84,7 @@ struct server_state final : core {
     }
     self->peer = *ind.request;
     self->peer.remote_endpoint = self->info.remote_endpoint;
+    self->peer.tls = self->info.tls;
     auto negotiated = negotiate(self->peer.initiate, self->options.limits);
     const auto decision = self->options.authorize ? self->options.authorize(self->peer, negotiated)
                                                   : association_decision::accepted();

@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "pytest-asyncio>=0.24"]
+test = ["pytest>=8", "pytest-asyncio>=0.24", "cryptography>=42"]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
@@ -50,6 +50,7 @@ OPENIEC61850_BUILD_TESTS = "OFF"
 OPENIEC61850_BUILD_TOOLS = "OFF"
 # No C++ headers, static library or CMake package files in the wheel.
 OPENIEC61850_INSTALL = "OFF"
+OPENIEC61850_ENABLE_TLS = "ON"
 # The test-only openiec61850._testing extension is never part of a release wheel. Local and CI
 # test runs enable it with: pip install . -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON
 OPENIEC61850_BUILD_PYTHON_TESTING = "OFF"

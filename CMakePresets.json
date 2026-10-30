@@ -14,13 +14,13 @@
       "name": "dev",
       "inherits": "base",
       "displayName": "Debug with tests",
-      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "OPENIEC61850_ENABLE_TLS": "ON"}
     },
     {
       "name": "release",
       "inherits": "base",
       "displayName": "Release with tests",
-      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "OPENIEC61850_ENABLE_TLS": "ON"}
     },
     {
       "name": "asan",
@@ -29,7 +29,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "OPENIEC61850_SANITIZERS": "address;undefined",
-        "OPENIEC61850_WARNINGS_AS_ERRORS": "ON"
+        "OPENIEC61850_WARNINGS_AS_ERRORS": "ON",
+        "OPENIEC61850_ENABLE_TLS": "ON"
       }
     },
     {

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <asio/any_io_executor.hpp>
@@ -15,6 +16,7 @@
 #include "openiec61850/core/bytes.hpp"
 #include "openiec61850/core/result.hpp"
 #include "openiec61850/iso/cotp/connection.hpp"
+#include "openiec61850/transport/tls.hpp"
 
 namespace openiec61850::transport {
 
@@ -31,6 +33,9 @@ struct channel_options {
   bool keep_alive = false;
   // Size of the socket read buffer.
   std::size_t read_buffer_size = 16384;
+  // Runs COTP inside TLS (IEC 62351-3): the TLS handshake comes first, right after TCP, and
+  // counts against handshake_timeout. Unset is plain RFC 1006.
+  std::shared_ptr<tls_context> tls;
 };
 
 namespace detail {
@@ -57,7 +62,9 @@ struct channel_factory;
 // accept_connection refusal) -> std::errc::connection_refused; ER from the peer ->
 // errc::protocol_violation; a local protocol check -> the cotp error (protocol_violation,
 // malformed_encoding, length_overflow...). Once an error is reported every later send or
-// receive reports it too, after the TSDUs already received have been delivered.
+// receive reports it too, after the TSDUs already received have been delivered. A failed TLS
+// handshake, including a rejected peer certificate, reports the OpenSSL error
+// (asio::error::get_ssl_category()).
 //
 // Bridging to non-coroutine code: use the callback methods, or co_spawn any coroutine
 // method onto get_executor() with a completion handler.
@@ -118,6 +125,8 @@ class cotp_channel {
   // Immutable: the outcome of the CR/CC exchange (negotiated TPDU size, TSAP selectors).
   [[nodiscard]] const iso::cotp::connected_indication& connection_info() const noexcept;
   [[nodiscard]] iso::cotp::role connection_role() const noexcept;
+  // Immutable: the TLS session, unset on a plain connection.
+  [[nodiscard]] const std::optional<tls_session_info>& tls_session() const noexcept;
   [[nodiscard]] const asio::ip::tcp::endpoint& local_endpoint() const noexcept;
   [[nodiscard]] const asio::ip::tcp::endpoint& remote_endpoint() const noexcept;
 
