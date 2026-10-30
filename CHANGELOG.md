@@ -41,8 +41,11 @@ release may break the API. The release process is in
   `do_handle::sub_object` / `element`, Python `count=` and `DataObjectBuilder.element`), seen as MMS
   arrays with element access through AlternateAccess, `DOI` / `SDI` `ix` initial values, `FCDA` `ix`
   and the `LD/LN$FC$DO(1)$DA` form in report and log DataRefs (`to_mms_data_reference`,
-  `from_mms_data_reference`). `get_data_definition` accepts array indices and
+  `from_mms_data_reference`), also used for data set members indexed into an array attribute. `get_data_definition` accepts array indices and
   `get_data_directory` lists the data of array elements.
+- Control of elements of arrays of data objects: `get_control` / `operate` accept `LD/LN.DO(i)`
+  (Python `Client.control` / `operate`), with AlternateAccess on the wire and LastApplError and
+  CommandTermination routed to the element.
 - Logs of other logical devices: SCL `LogControl` `ldInst` and `log_control_settings::log_ld`
   (Python `LogControl.log_ld`).
 - `Timestamp` and `EntryTime` initial values in SCL and `parse_value` (xs:dateTime).

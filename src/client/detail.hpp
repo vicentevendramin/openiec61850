@@ -186,7 +186,8 @@ struct control_channel {
   }
 };
 
-// "LD/LN$CO$DO" from a CntrlObj or termination variable ("LD/LN$CO$DO$Oper", "...$SBOw",
+// "LD/LN$CO$DO" ("LD/LN$CO$DO(i)" for an element of an array of objects) from a CntrlObj or
+// termination variable ("LD/LN$CO$DO$Oper", "...$SBOw",
 // "...$Cancel", "...$SBO"; an ACSI "LD/LN.DO" is mapped too).
 [[nodiscard]] std::string control_key(std::string_view control_object);
 

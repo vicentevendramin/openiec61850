@@ -8,7 +8,9 @@
 #include <thread>
 #include <vector>
 
+#include "openiec61850/association/client_association.hpp"
 #include "openiec61850/client/control.hpp"
+#include "openiec61850/model/mms_mapping.hpp"
 #include "server_test_util.hpp"
 
 using namespace server_test;
@@ -26,8 +28,7 @@ const mms::data off = mms::data::boolean(false);
 
 // LD "CTL": LLN0 Mod/Beh (on), GGIO1 SPCSO1 direct-normal, SPCSO2 sbo-normal, SPCSO3
 // direct-enhanced (with operTm), SPCSO4 sbo-enhanced; sboTimeout 300 ms.
-void add_spc(srv::ln_handle ln, std::string_view name, cm ctl, bool oper_tm) {
-  auto d = ln.data_object(name);
+void add_spc(srv::do_handle d, cm ctl, bool oper_tm) {
   d.attribute("stVal", fc::ST, basic_type::boolean, srv::attribute_options{}.with_triggers(srv::on_dchg));
   d.attribute("q", fc::ST, basic_type::quality);
   d.attribute("t", fc::ST, basic_type::timestamp);
@@ -53,6 +54,10 @@ void add_spc(srv::ln_handle ln, std::string_view name, cm ctl, bool oper_tm) {
   if (ctl != cm::direct_with_normal_security) request("Cancel", false);
 }
 
+void add_spc(srv::ln_handle ln, std::string_view name, cm ctl, bool oper_tm) {
+  add_spc(ln.data_object(name), ctl, oper_tm);
+}
+
 srv::data_model control_model() {
   srv::model_builder b;
   auto ld = b.logical_device("CTL");
@@ -66,6 +71,15 @@ srv::data_model control_model() {
   add_spc(ggio, "SPCSO2", cm::sbo_with_normal_security, false);
   add_spc(ggio, "SPCSO3", cm::direct_with_enhanced_security, true);
   add_spc(ggio, "SPCSO4", cm::sbo_with_enhanced_security, false);
+  // Arrays of data objects, and one nested below a plain DO.
+  const auto add_array = [](srv::do_handle arr, cm ctl) {
+    for (std::uint32_t i = 0; i < 2; ++i) add_spc(arr.element(i), ctl, false);
+  };
+  add_array(ggio.data_object("ArrD", 2), cm::direct_with_normal_security);
+  add_array(ggio.data_object("ArrN", 2), cm::sbo_with_normal_security);
+  add_array(ggio.data_object("ArrE", 2), cm::direct_with_enhanced_security);
+  add_array(ggio.data_object("ArrS", 2), cm::sbo_with_enhanced_security);
+  add_array(ggio.data_object("Plain").sub_object("Sub", 2), cm::direct_with_enhanced_security);
   auto m = b.build();
   REQUIRE(m);
   return std::move(*m);
@@ -494,4 +508,158 @@ TEST_CASE("Control models: a closed association abandons its termination", "[ser
     s.stop();
   });
   app().join();
+}
+
+TEST_CASE("Control models: elements of arrays of data objects", "[server][control]") {
+  app().reset();
+  run([]() -> awaitable<void> {
+    const auto ex = co_await asio::this_coro::executor;
+    auto s = start_control(ex);
+    auto c = co_await connect(options_for(s));
+
+    // The four control models.
+    auto direct = co_await control_of(c, "CTL/GGIO1.ArrD(1)");
+    CHECK(direct.ctl_model() == cm::direct_with_normal_security);
+    CHECK(direct.reference().text() == "CTL/GGIO1.ArrD(1)");
+    REQUIRE(direct.structure());
+    CHECK(direct.structure()->type == mms::data_type::structure);
+    CHECK(direct.ctl_val_type() == mms::data_type::boolean);
+    CHECK(co_await direct.operate(on, as(1)));
+    REQUIRE(app().taken().size() == 1);
+    CHECK(app().taken().back().object == oref("CTL/GGIO1.ArrD(1)"));
+
+    auto sbo = co_await control_of(c, "CTL/GGIO1.ArrN(1)");
+    CHECK(sbo.sbo_timeout() == 300ms);
+    CHECK_FALSE(co_await sbo.operate(on, as(1)));  // not selected
+    CHECK(sbo.last_error()->control_object == "CTL/GGIO1$CO$ArrN(1)$Oper");
+    CHECK(sbo.last_error()->cause == add_cause::object_not_selected);
+    CHECK(co_await sbo.select(as(1)));
+    CHECK(sbo.selected());
+    CHECK(co_await sbo.operate(on, as(1)));
+
+    auto enh = co_await control_of(c, "CTL/GGIO1.ArrS(0)");
+    CHECK(co_await enh.select_with_value(on, as(1)));
+    CHECK(co_await enh.operate(on, as(1)));
+    CHECK(app().taken().back().object == oref("CTL/GGIO1.ArrS(0)"));
+    CHECK(co_await enh.select_with_value(on, as(1)));
+    CHECK(co_await enh.cancel(as(1)));
+    CHECK(app().taken().back().action == srv::control_action::cancel);
+
+    CHECK(co_await c.operate(oref("CTL/GGIO1.ArrD(0)"), on, as(1)));
+    CHECK(co_await c.operate(oref("CTL/GGIO1.ArrS(1)"), on, as(1)));
+    CHECK(co_await c.operate(oref("CTL/GGIO1.Plain.Sub(1)"), on, as(1)));
+
+    auto missing = co_await c.get_control(oref("CTL/GGIO1.ArrD(2)"));
+    CHECK_FALSE(missing);
+
+    // Refused at once: the error reaches the element that asked.
+    auto first = co_await control_of(c, "CTL/GGIO1.ArrE(0)");
+    auto second = co_await control_of(c, "CTL/GGIO1.ArrE(1)");
+    app().operate = app_state::mode::refuse;
+    auto refused = co_await second.operate(on, as(1));
+    CHECK(refused.error() == add_cause::blocked_by_interlocking);
+    CHECK_FALSE(first.last_error());
+    REQUIRE(second.last_error());
+    CHECK(second.last_error()->control_object == "CTL/GGIO1$CO$ArrE(1)$Oper");
+
+    // Two elements in execution at once: each termination ends its own operation only, in
+    // the opposite order of the requests.
+    app().operate = app_state::mode::pending_never;
+    const auto before = app().taken().size();
+    auto done0 = std::make_shared<std::optional<openiec61850::result<void>>>();
+    auto done1 = std::make_shared<std::optional<openiec61850::result<void>>>();
+    spawn(ex, first.operate(on, as(1)), done0);
+    spawn(ex, second.operate(on, as(2)), done1);
+    co_await sleep(100ms);
+    auto reqs = app().taken();
+    REQUIRE(reqs.size() == before + 2);
+    const auto& r0 = reqs[before].object == oref("CTL/GGIO1.ArrE(0)") ? reqs[before] : reqs[before + 1];
+    const auto& r1 = reqs[before].object == oref("CTL/GGIO1.ArrE(0)") ? reqs[before + 1] : reqs[before];
+    CHECK(r1.object == oref("CTL/GGIO1.ArrE(1)"));
+    CHECK(r1.completion.complete(srv::control_result::refused(srv::add_cause::abortion_by_trip)));
+    auto neg = co_await wait_for(done1);
+    CHECK(neg.error() == add_cause::abortion_by_trip);
+    REQUIRE(second.last_error());
+    CHECK(second.last_error()->cause == add_cause::abortion_by_trip);
+    CHECK(second.last_error()->origin.identifier == openiec61850::byte_buffer{2});
+    co_await sleep(50ms);
+    CHECK_FALSE(*done0);  // still waiting: that termination was not for it
+    CHECK_FALSE(first.last_error());
+    CHECK(r0.completion.complete(srv::control_result::ok()));
+    CHECK(co_await wait_for(done0));
+    CHECK_FALSE(first.last_error());
+    s.stop();
+  });
+}
+
+TEST_CASE("Control models: CommandTermination of an element on the wire", "[server][control]") {
+  app().reset();
+  run([]() -> awaitable<void> {
+    const auto ex = co_await asio::this_coro::executor;
+    auto s = start_control(ex);
+    auto ap = options_for(s).association;
+    auto assoc = co_await openiec61850::association::client_association::connect(ex, ap);
+    REQUIRE(assoc);
+
+    const auto oper = mms::data::structure(
+        {on,
+         mms::data::structure({model::to_mms(model::orcat::station_control),
+                               mms::data::octet_string(openiec61850::byte_buffer{9})}),
+         mms::data::unsigned_integer(5), model::timestamp::now().to_mms(), off,
+         model::check_conditions{}.to_mms()});
+    auto var = model::to_mms_variable(oref("CTL/GGIO1.ArrE(1).Oper[CO]"));
+    REQUIRE(var);
+    CHECK(var->name.item_id == "GGIO1$CO$ArrE");
+    auto write = [&]() -> awaitable<void> {
+      const std::vector<mms::variable_spec> vars{var->spec()};
+      const std::vector<mms::data_ref> values{mms::data_ref(oper)};
+      auto r = co_await assoc->request(mms::write_request{
+          mms::variable_access_specification::list(vars), values});
+      REQUIRE(r);
+    };
+
+    // Positive: the variable of the array, the AlternateAccess of the element, the Oper value.
+    co_await write();
+    auto msg = co_await assoc->next_unconfirmed();
+    REQUIRE(msg);
+    const auto* ir = msg->information_report();
+    REQUIRE(ir != nullptr);
+    REQUIRE(ir->spec.variables.size() == 1);
+    const auto v = *ir->spec.variables.begin();
+    CHECK(v.name.item_id == "GGIO1$CO$ArrE");
+    CHECK(std::equal(v.alternate_access.begin(), v.alternate_access.end(),
+                     var->alternate_access.begin(), var->alternate_access.end()));
+    auto parsed = client::parse_control_message(*ir);
+    REQUIRE(parsed);
+    CHECK(parsed->positive());
+    CHECK(parsed->control_object == "CTL/GGIO1$CO$ArrE(1)$Oper");
+    REQUIRE(parsed->oper);
+    CHECK(*parsed->oper == oper);
+
+    // Negative: LastApplError with the CntrlObj of the element, then the Oper.
+    app().operate = app_state::mode::pending_never;
+    co_await write();
+    co_await sleep(50ms);
+    REQUIRE_FALSE(app().taken().empty());
+    CHECK(app().taken().back().completion.complete(
+        srv::control_result::refused(srv::add_cause::blocked_by_process)));
+    auto second = co_await assoc->next_unconfirmed();
+    REQUIRE(second);
+    const auto* neg = second->information_report();
+    REQUIRE(neg != nullptr);
+    REQUIRE(neg->spec.variables.size() == 2);
+    auto negative = client::parse_control_message(*neg);
+    REQUIRE(negative);
+    CHECK_FALSE(negative->positive());
+    CHECK(negative->control_object == "CTL/GGIO1$CO$ArrE(1)$Oper");
+    REQUIRE(negative->error);
+    CHECK(negative->error->control_object == "CTL/GGIO1$CO$ArrE(1)$Oper");
+    CHECK(negative->error->cause == add_cause::blocked_by_process);
+    CHECK(negative->error->ctl_num == 5);
+    CHECK(negative->error->origin.identifier == openiec61850::byte_buffer{9});
+    REQUIRE(negative->oper);
+    CHECK(*negative->oper == oper);
+    assoc->abort();
+    s.stop();
+  });
 }

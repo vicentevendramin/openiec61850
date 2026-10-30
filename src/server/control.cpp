@@ -145,8 +145,9 @@ mms::data last_appl_error(std::string cntrl_obj, const control_request& req, add
   return mms::data::structure(std::move(fields));
 }
 
-// Sends an InformationReport of LastApplError (when `error` is set) and/or of a domain variable
-// "LD/item" (when `oper_ref` is not empty).
+// Sends an InformationReport of LastApplError (when `error` is set) and/or of the variable
+// `oper_ref`, "LD/item" (when not empty), with an AlternateAccess for an element of an array of
+// data objects.
 void send_control_report(session& s, const mms::data* error, std::string_view oper_ref,
                          const mms::data* oper) {
   if (!s.assoc) return;

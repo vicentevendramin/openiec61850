@@ -1211,7 +1211,8 @@ class Client:
         read_sbo_timeout: bool = True,
         read_structure: bool = True,
     ) -> Control:
-        """A handle on the controllable data object ``ref`` (``LD/LN.DO``; an FC is ignored).
+        """A handle on the controllable data object ``ref`` (``LD/LN.DO``, or ``LD/LN.DO(i)`` for an
+        element of an array of data objects; an FC is ignored).
 
         Reads CF.ctlModel (unless ``ctl_model`` is given), CF.sboTimeout and the CO structure
         (which types plain ctlVal values and tells which components to send).

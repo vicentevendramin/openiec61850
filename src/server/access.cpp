@@ -282,8 +282,7 @@ result<model::object_reference> server_state::acsi_reference(const target& t) co
 }
 
 std::string server_state::mms_reference(const target& t) const {
-  target base{t.node, t.fc, {}};
-  auto ref = acsi_reference(base);
+  auto ref = acsi_reference(t);
   if (!ref) return {};
   auto text = model::to_mms_data_reference(*ref, model::name_limits::unlimited());
   return text ? std::move(*text) : std::string{};

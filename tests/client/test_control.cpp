@@ -6,6 +6,7 @@
 
 #include "client_test_util.hpp"
 #include "openiec61850/client/control.hpp"
+#include "openiec61850/model/mms_mapping.hpp"
 #include "openiec61850/transport/spawn.hpp"
 
 namespace client = openiec61850::client;
@@ -92,6 +93,32 @@ TEST_CASE("control messages and AddCause error codes", "[client][control]") {
   auto p = client::parse_control_message(positive);
   REQUIRE(p);
   CHECK(p->positive());
+
+  // An element of an array of data objects: the variable of the array with an AlternateAccess.
+  auto element = model::to_mms_variable(*model::object_reference::parse("IED1LD1/XCBR1.Pos(2).Oper[CO]"));
+  REQUIRE(element);
+  CHECK(element->name.item_id == "XCBR1$CO$Pos");
+  std::vector<mms::variable_spec> el{element->spec()};
+  const mms::information_report el_pos{mms::variable_access_specification::list(el), oper_only};
+  REQUIRE(client::is_control_message(el_pos));
+  auto ep = client::parse_control_message(el_pos);
+  REQUIRE(ep);
+  CHECK(ep->positive());
+  CHECK(ep->control_object == "IED1LD1/XCBR1$CO$Pos(2)$Oper");
+  std::vector<mms::variable_spec> el2{mms::object_name::vmd("LastApplError"), element->spec()};
+  const mms::information_report el_neg{mms::variable_access_specification::list(el2), both};
+  auto en = client::parse_control_message(el_neg);
+  REQUIRE(en);
+  CHECK(!en->positive());
+  CHECK(en->control_object == "IED1LD1/XCBR1$CO$Pos(2)$Oper");
+  // Another component, or FC, of an element is not a termination.
+  for (const auto* other : {"IED1LD1/XCBR1.Pos(2).SBOw[CO]", "IED1LD1/XCBR1.Pos(2).Oper[ST]"}) {
+    auto v = model::to_mms_variable(*model::object_reference::parse(other));
+    REQUIRE(v);
+    std::vector<mms::variable_spec> specs{v->spec()};
+    const mms::information_report ir{mms::variable_access_specification::list(specs), oper_only};
+    CHECK(!client::is_control_message(ir));
+  }
 
   // Not control messages, or malformed ones.
   const mms::information_report rpt{

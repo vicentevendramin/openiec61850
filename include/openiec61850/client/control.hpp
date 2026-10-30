@@ -22,6 +22,9 @@
 
 // Control services (IEC 61850-7-2 §20) mapped onto MMS (IEC 61850-8-1 §20).
 //
+// An element "LD/LN.DO(i)" of an array of data objects is controlled the same way: its variables
+// are "LN$CO$DO" with the AlternateAccess "(i) Oper", and its CntrlObj reads "LD/LN$CO$DO(i)$Oper".
+//
 // A controllable data object (SPC, DPC, INC, BSC, APC...) "LD/LN.DO" exposes, under FC CO:
 //
 //   LN$CO$DO$SBO      VisibleString129   sbo-with-normal-security: Select = Read; the server
@@ -160,7 +163,8 @@ struct control_message {
   };
 
   kind type = kind::last_appl_error;
-  // MMS reference of the variable: the Oper of a termination ("LD/LN$CO$DO$Oper"), else CntrlObj.
+  // MMS reference of the variable: the Oper of a termination ("LD/LN$CO$DO$Oper", or
+  // "LD/LN$CO$DO(i)$Oper" for an element of an array of data objects), else CntrlObj.
   std::string control_object;
   std::optional<last_appl_error> error;
   std::optional<mms::data> oper;  // termination: the Oper value, when sent and readable
@@ -170,8 +174,9 @@ struct control_message {
   }
 };
 
-// True for an InformationReport on "LastApplError" or on a "...$CO$...$Oper" variable.
-[[nodiscard]] bool is_control_message(const mms::information_report& ir) noexcept;
+// True for an InformationReport on "LastApplError" or on a "...$CO$...$Oper" variable (or
+// "...$CO$DO" with the AlternateAccess "(i) Oper" of an element of an array of data objects).
+[[nodiscard]] bool is_control_message(const mms::information_report& ir);
 // Errors: errc::unsupported unless is_control_message(); errc::protocol_violation for a
 // malformed LastApplError or a variable/result count mismatch.
 [[nodiscard]] result<control_message> parse_control_message(const mms::information_report& ir);

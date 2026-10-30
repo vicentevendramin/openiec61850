@@ -617,3 +617,62 @@ def test_builder_log_of_another_ld():
 def test_mms_data_reference():
     r = iec.ObjectReference.from_mms("LD0/GGIO1$ST$Sig(1)$stVal")
     assert str(r) == "LD0/GGIO1.Sig(1).stVal[ST]"
+
+
+async def test_control_of_array_elements():
+    b = iec.ModelBuilder()
+    ld = b.logical_device(LD)
+    ln = ld.logical_node("CSWI1")
+    arr = ln.data_object("Arr", count=2)
+    for i in range(2):
+        add_controllable(_Prefixed(arr.element(i)), "", iec.CtlModel.DIRECT_WITH_ENHANCED_SECURITY)
+    sbo = ln.data_object("Sbo", count=2)
+    for i in range(2):
+        add_controllable(_Prefixed(sbo.element(i)), "", iec.CtlModel.SBO_WITH_NORMAL_SECURITY)
+    pending = {}
+
+    def on_control(req):
+        if str(req.object).endswith("Arr(0)") or str(req.object).endswith("Arr(1)"):
+            pending[str(req.object)] = req
+            return iec.ControlResult.pending()
+        return iec.ControlResult.ok()
+
+    async with await iec.Server.start(b.build(), "127.0.0.1", 0, on_control=on_control) as srv:
+        async with await iec.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+            first = await c.control(f"{LD}/CSWI1.Arr(0)")
+            second = await c.control(f"{LD}/CSWI1.Arr(1)")
+            assert first.ctl_model is iec.CtlModel.DIRECT_WITH_ENHANCED_SECURITY
+            assert first.has_oper_time is False
+            op0 = asyncio.ensure_future(first.operate(True))
+            op1 = asyncio.ensure_future(second.operate(True))
+            for _ in range(200):
+                if len(pending) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(pending) == 2
+            pending[f"{LD}/CSWI1.Arr(1)"].complete(iec.ControlResult.refused(AddCause.ABORTION_BY_TRIP))
+            with pytest.raises(iec.ControlRefused) as info:
+                await op1
+            assert info.value.add_cause is AddCause.ABORTION_BY_TRIP
+            assert second.last_error.control_object == f"{LD}/CSWI1$CO$Arr(1)$Oper"
+            await asyncio.sleep(0.05)
+            assert not op0.done() and first.last_error is None
+            pending[f"{LD}/CSWI1.Arr(0)"].complete(iec.ControlResult.ok())
+            await op0
+
+            await c.operate(f"{LD}/CSWI1.Sbo(1)", True)
+            ctl = await c.control(f"{LD}/CSWI1.Sbo(0)")
+            await ctl.select()
+            await ctl.operate(False)
+            with pytest.raises(iec.ObjectNotFound):
+                await c.control(f"{LD}/CSWI1.Sbo(2)")
+
+
+class _Prefixed:
+    """Lets add_controllable fill an element of an array of data objects."""
+
+    def __init__(self, element):
+        self._element = element
+
+    def data_object(self, _name):
+        return self._element

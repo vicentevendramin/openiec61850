@@ -17,6 +17,13 @@
               <FCDA ldInst="Prot" lnClass="GGIO" lnInst="1" doName="Sig" daName="stVal" fc="ST"/>
               <FCDA ldInst="Prot" lnClass="GGIO" lnInst="1" doName="Sig" daName="stVal" fc="ST" ix="0"/>
             </DataSet>
+            <DataSet name="Hist">
+              <FCDA ldInst="Prot" lnClass="GGIO" lnInst="1" doName="Sig(1)" daName="hist" fc="ST" ix="1"/>
+            </DataSet>
+            <ReportControl name="urcbH" datSet="Hist" rptID="H" confRev="1" indexed="false">
+              <TrgOps dchg="true"/>
+              <OptFields dataRef="true"/>
+            </ReportControl>
             <ReportControl name="urcb" datSet="DS" rptID="R" confRev="1" indexed="false">
               <TrgOps dchg="true"/>
               <OptFields dataRef="true" reasonCode="true"/>
@@ -66,7 +73,7 @@
     <DOType id="Sig" cdc="INS">
       <DA name="stVal" bType="INT32" fc="ST" dchg="true"/>
       <DA name="since" bType="Timestamp" fc="ST"/>
-      <DA name="hist" bType="INT32" fc="ST" count="2"/>
+      <DA name="hist" bType="INT32" fc="ST" dchg="true" count="2"/>
       <DA name="setVal" bType="INT32" fc="SP"/>
     </DOType>
     <DOType id="HA" cdc="HWYE">

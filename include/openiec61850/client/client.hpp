@@ -155,7 +155,8 @@ class client {
   [[nodiscard]] asio::awaitable<result<void>> trigger_gi(model::object_reference rcb);
   // --- control (7-2 §20, 8-1 §20; see client/control.hpp)
 
-  // A handle on the controllable data object `object` ("LD/LN.DO", an FC is ignored): reads
+  // A handle on the controllable data object `object` ("LD/LN.DO" or an element of an array of
+  // data objects "LD/LN.DO(i)", an FC is ignored): reads
   // CF.ctlModel, CF.sboTimeout and the CO structure as `config` says. Fails with the read error
   // of ctlModel (e.g. errc::object_not_found), or openiec61850::errc::invalid_state for a
   // reference that is not a data object.

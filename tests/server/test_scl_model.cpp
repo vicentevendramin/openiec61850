@@ -497,6 +497,16 @@ TEST_CASE("SCL model: arrays of data objects", "[server][scl]") {
     CHECK(*rpt.entries[0].reference == oref("AProt/GGIO1.Sig(1).stVal[ST]"));
     CHECK(rpt.entries[0].value == mms::data::integer(22));
 
+    // A member indexed into an array attribute keeps the index in its DataRef.
+    REQUIRE(co_await c.enable_reporting(oref("AProt/LLN0.urcbH[RP]"), rs));
+    CHECK(s->update(oref("AProt/GGIO1.Sig(1).hist(1)[ST]"), mms::data::integer(3)));
+    const auto hist = co_await next_report(c);
+    REQUIRE(hist.entries.size() == 1);
+    CHECK(hist.entries[0].data_reference == "AProt/GGIO1$ST$Sig(1)$hist(1)");
+    REQUIRE(hist.entries[0].reference);
+    CHECK(*hist.entries[0].reference == oref("AProt/GGIO1.Sig(1).hist(1)[ST]"));
+    CHECK(hist.entries[0].value == mms::data::integer(3));
+
     // The log of the other LD holds what the LCB of this LD logged.
     const auto log = oref("ARec/LLN0.Events");
     auto journals = co_await c.get_name_list(mms::object_class::journal, "ARec");

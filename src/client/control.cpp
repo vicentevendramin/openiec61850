@@ -107,9 +107,26 @@ bool is_last_appl_error_name(const mms::object_name& n) noexcept {
   return n.scope == mms::object_scope::vmd_specific && n.item_id == "LastApplError";
 }
 
-bool is_oper_name(const mms::object_name& n) noexcept {
-  return n.scope == mms::object_scope::domain_specific && n.item_id.ends_with("$Oper") &&
-         n.item_id.find("$CO$") != std::string_view::npos;
+// The text of an Oper variable ("LD/LN$CO$DO$Oper"), nullopt for any other. An element of an array
+// of data objects comes as "LN$CO$DO" with the AlternateAccess "(i) Oper": its text keeps the index,
+// "LD/LN$CO$DO(i)$Oper", the form of its CntrlObj.
+std::optional<std::string> oper_text(const mms::variable_spec& v) {
+  const auto& n = v.name;
+  if (n.scope != mms::object_scope::domain_specific) return std::nullopt;
+  if (v.alternate_access.empty()) {
+    if (!n.item_id.ends_with("$Oper") || n.item_id.find("$CO$") == std::string_view::npos) {
+      return std::nullopt;
+    }
+    return std::string(n.domain_id) + "/" + std::string(n.item_id);
+  }
+  const model::parse_options po{model::name_limits::unlimited(), false};
+  auto ref = model::from_mms_variable(n, v.alternate_access, po);
+  if (!ref || ref->fc() != model::fc::CO) return std::nullopt;
+  const auto leaf = ref->leaf();
+  if (!leaf || leaf->index || leaf->name != "Oper") return std::nullopt;
+  auto text = model::to_mms_data_reference(*ref, po.limits);
+  if (!text) return std::nullopt;
+  return std::move(*text);
 }
 
 template <typename T>
@@ -154,47 +171,48 @@ result<last_appl_error> parse_last_appl_error(const mms::data& value) {
   return out;
 }
 
-bool is_control_message(const mms::information_report& ir) noexcept {
+bool is_control_message(const mms::information_report& ir) {
   if (ir.spec.type != mms::variable_access_specification::kind::list_of_variable) return false;
   const auto vars = ir.spec.variables;
   const auto first = vars.begin();
   if (first == vars.end()) return false;
   const auto v = *first;
-  return is_last_appl_error_name(v.name) || is_oper_name(v.name);
+  return is_last_appl_error_name(v.name) || oper_text(v).has_value();
 }
 
 result<control_message> parse_control_message(const mms::information_report& ir) {
   if (!is_control_message(ir)) return openiec61850::errc::unsupported;
-  std::vector<mms::object_name> names;
-  for (const auto v : ir.spec.variables) names.push_back(v.name);
+  std::vector<mms::variable_spec> vars;
+  for (const auto v : ir.spec.variables) vars.push_back(v);
   std::vector<mms::access_result> results;
   for (const auto r : ir.results) results.push_back(r);
-  if (names.size() != results.size()) return violation;
+  if (vars.size() != results.size()) return violation;
 
   control_message m;
-  if (is_last_appl_error_name(names[0])) {
+  if (is_last_appl_error_name(vars[0].name)) {
     auto d = owned_value(results[0]);
     if (!d) return d.error();
     auto e = parse_last_appl_error(*d);
     if (!e) return e.error();
-    if (names.size() == 1) {
+    if (vars.size() == 1) {
       m.type = control_message::kind::last_appl_error;
       m.control_object = e->control_object;
       m.error = std::move(*e);
       return m;
     }
-    if (names.size() != 2 || !is_oper_name(names[1])) return violation;
+    auto oper = vars.size() == 2 ? oper_text(vars[1]) : std::nullopt;
+    if (!oper) return violation;
     m.type = control_message::kind::command_termination;
-    m.control_object = std::string(names[1].domain_id) + "/" + std::string(names[1].item_id);
+    m.control_object = std::move(*oper);
     m.error = std::move(*e);
     if (auto o = owned_value(results[1])) m.oper = std::move(*o);
     return m;
   }
-  if (names.size() != 1) return violation;
+  if (vars.size() != 1) return violation;
   auto d = owned_value(results[0]);
   if (!d) return d.error();
   m.type = control_message::kind::command_termination;
-  m.control_object = std::string(names[0].domain_id) + "/" + std::string(names[0].item_id);
+  m.control_object = *oper_text(vars[0]);
   m.oper = std::move(*d);
   return m;
 }
@@ -230,9 +248,9 @@ std::string control_key(std::string_view control_object) {
 struct control_state {
   std::shared_ptr<client_state> client;
   model::object_reference object;
-  std::string key;      // "LD/LN$CO$DO"
+  std::string key;      // "LD/LN$CO$DO" ("LD/LN$CO$DO(i)" for an element of an array of objects)
   std::string domain;   // "LD"
-  std::string co_item;  // "LN$CO$DO"
+  std::string co_item;  // "LN$CO$DO" (of the array for an element)
   model::ctl_model model = model::ctl_model::status_only;
   std::optional<std::chrono::milliseconds> sbo_timeout;
   std::optional<mms::type_description> structure;
@@ -284,9 +302,17 @@ struct control_state {
   }
 
   [[nodiscard]] model::mms_variable variable(std::string_view attr) const {
-    model::mms_variable v;
-    v.name = {mms::object_scope::domain_specific, domain, co_item + "$" + std::string(attr)};
-    return v;
+    if (!object.has_index()) {
+      model::mms_variable v;
+      v.name = {mms::object_scope::domain_specific, domain, co_item + "$" + std::string(attr)};
+      return v;
+    }
+    // `object` is valid and `attr` an identifier, so this does not fail.
+    const model::parse_options po{model::name_limits::unlimited(), false};
+    auto child = object.child(attr, std::nullopt, po);
+    if (!child) return {};
+    auto v = model::to_mms_variable(child->with_fc(model::fc::CO), po.limits);
+    return v ? std::move(*v) : model::mms_variable{};
   }
 };
 
@@ -301,6 +327,26 @@ const mms::type_description* find_component(const mms::type_description& t,
     if (c.name == name) return &c.type;
   }
   return nullptr;
+}
+
+// The element type named by the indexed `object` inside `t`, the type of the variable holding it
+// (what precedes its first index). nullptr when `t` does not have it.
+const mms::type_description* element_type(const mms::type_description& t,
+                                          const model::object_reference& object) noexcept {
+  const mms::type_description* node = &t;
+  bool inside = false;
+  for (const auto pe : object.path()) {
+    if (inside) node = find_component(*node, pe.name);
+    if (node == nullptr) return nullptr;
+    if (!pe.index) continue;
+    if (node->type != mms::data_type::array || node->components.empty() ||
+        *pe.index >= node->number_of_elements) {
+      return nullptr;
+    }
+    node = &node->components.front().type;
+    inside = true;
+  }
+  return node;
 }
 
 mms::data default_value(const mms::type_description& t) {
@@ -643,9 +689,7 @@ awaitable<result<void>> cancel_impl(std::shared_ptr<control_state> cs, error_det
 awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s, error_details* d,
                                           model::object_reference object, control_config config) {
   object.set_fc(std::nullopt);
-  if (!object.has_ln() || object.path().empty() || object.has_index()) {
-    co_return openiec61850::errc::invalid_state;
-  }
+  if (!object.has_ln() || object.path().empty()) co_return openiec61850::errc::invalid_state;
   auto a = s->current(d);
   if (!a) co_return a.error();
 
@@ -653,12 +697,12 @@ awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s, error
   cs->client = s;
   cs->object = object;
   const auto co_ref = object.with_fc(model::fc::CO);
-  auto key = model::to_mms_reference(co_ref, s->limits);
+  auto key = model::to_mms_data_reference(co_ref, s->limits);
   if (!key) co_return key.error();
   cs->key = std::move(*key);
-  auto item = model::to_mms_item_id(co_ref, s->limits);
-  if (!item) co_return item.error();
-  cs->co_item = std::move(*item);
+  auto co_var = model::to_mms_variable(co_ref, s->limits);
+  if (!co_var) co_return co_var.error();
+  cs->co_item = std::move(co_var->name.item_id);
   cs->domain = std::string(object.ld());
 
   // CF.ctlModel and CF.sboTimeout in one Read.
@@ -697,7 +741,12 @@ awaitable<result<control>> get_control_op(std::shared_ptr<client_state> s, error
 
   if (config.read_structure && cs->model != model::ctl_model::status_only) {
     auto t = co_await type_description_on(*a, cs->domain, cs->co_item);
-    if (t && t->type == mms::data_type::structure) cs->structure = std::move(*t);
+    if (t && object.has_index()) {
+      if (const auto* e = element_type(*t, object); e != nullptr) cs->structure = *e;
+      if (cs->structure && cs->structure->type != mms::data_type::structure) cs->structure.reset();
+    } else if (t && t->type == mms::data_type::structure) {
+      cs->structure = std::move(*t);
+    }
   }
   for (const char* name : {"Oper", "SBOw", "Cancel"}) {
     const auto* svc = cs->component(name);
