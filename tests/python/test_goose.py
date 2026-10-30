@@ -222,7 +222,8 @@ def test_le_samples():
 
 async def test_sv_pub_sub_batches():
     net = g.LoopbackNetwork()
-    tx, rx = net.attach("02-00-00-00-00-01"), net.attach("02-00-00-00-00-02")
+    # Every frame is sent before the first one is consumed, so the link must hold them all.
+    tx, rx = net.attach("02-00-00-00-00-01"), net.attach("02-00-00-00-00-02", queue_capacity=4096)
     cfg = g.SvPublisherConfig(sv_id="MU01", dat_set="MU/LLN0$PhsMeas1", smp_cnt_wrap=4000, asdus_per_frame=2,
                               smp_rate=80, refresh_time=True, conf_rev=3)
     with g.Receiver(rx) as receiver:
