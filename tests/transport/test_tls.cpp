@@ -364,6 +364,48 @@ TEST_CASE("TLS peer dropping TCP without close_notify reads as end of stream", "
   });
 }
 
+TEST_CASE("TLS 1.3 keys are renewed by volume and traffic survives", "[transport][tls]") {
+  run([]() -> awaitable<void> {
+    pki p;
+    auto client = p.client_config();
+    client.key_update_bytes = 1000;
+    auto r = co_await connect_pair(options(client, false), options(p.server_config(), true));
+    REQUIRE(r.server);
+    const auto chunk = pattern(600);
+    for (int i = 0; i < 20; ++i) {
+      auto sent = co_await r.client->send(chunk);
+      REQUIRE(sent);
+      auto got = co_await r.server->receive();
+      REQUIRE(got);
+      CHECK(*got == chunk);
+      sent = co_await r.server->send(chunk);  // answers the requested update
+      REQUIRE(sent);
+      got = co_await r.client->receive();
+      REQUIRE(got);
+    }
+    CHECK(r.client->tls_key_updates() >= 5);
+    CHECK(r.server->tls_key_updates() == 0);
+  });
+}
+
+TEST_CASE("TLS 1.2 session ignores the key update limits", "[transport][tls]") {
+  run([]() -> awaitable<void> {
+    pki p;
+    auto client = p.client_config();
+    client.key_update_bytes = 1;
+    client.max_version = tls_version::tls1_2;
+    auto r = co_await connect_pair(options(client, false), options(p.server_config(), true));
+    REQUIRE(r.server);
+    for (int i = 0; i < 3; ++i) {
+      auto sent = co_await r.client->send(pattern(32));
+      REQUIRE(sent);
+      auto got = co_await r.server->receive();
+      REQUIRE(got);
+    }
+    CHECK(r.client->tls_key_updates() == 0);
+  });
+}
+
 TEST_CASE("TLS configuration errors", "[transport][tls]") {
   pki p;
   tls_config c = p.server_config();

@@ -125,6 +125,8 @@ class cotp_channel {
   // Immutable: the outcome of the CR/CC exchange (negotiated TPDU size, TSAP selectors).
   [[nodiscard]] const iso::cotp::connected_indication& connection_info() const noexcept;
   [[nodiscard]] iso::cotp::role connection_role() const noexcept;
+  // Key updates this side started (tls_config::key_update_*). Read it on the strand.
+  [[nodiscard]] std::uint64_t tls_key_updates() const noexcept;
   // Immutable: the TLS session, unset on a plain connection.
   [[nodiscard]] const std::optional<tls_session_info>& tls_session() const noexcept;
   [[nodiscard]] const asio::ip::tcp::endpoint& local_endpoint() const noexcept;

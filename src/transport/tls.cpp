@@ -166,6 +166,14 @@ void set_server_name_indication(tls_stream& stream, const std::string& host) {
   }
 }
 
+bool request_key_update(tls_stream& stream) {
+  SSL* ssl = stream.native_handle();
+  if (SSL_version(ssl) != TLS1_3_VERSION) return false;
+  const bool ok = SSL_key_update(ssl, SSL_KEY_UPDATE_REQUESTED) == 1;
+  ERR_clear_error();
+  return ok;
+}
+
 tls_session_info describe_session(tls_stream& stream) {
   SSL* ssl = stream.native_handle();
   tls_session_info info;

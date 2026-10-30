@@ -95,6 +95,9 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
 #ifdef OPENIEC61850_WITH_TLS
   std::shared_ptr<tls_context> tls_ctx;  // outlives tls
   std::optional<tls_stream> tls;
+  std::chrono::steady_clock::time_point keys_since = std::chrono::steady_clock::now();
+  std::uint64_t bytes_since_update = 0;
+  std::uint64_t tls_key_updates = 0;
 #endif
   std::optional<tls_session_info> tls_info;
   std::optional<tcp::resolver> resolver;
@@ -138,6 +141,22 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     for (auto* w : waiters) w->timer.cancel();
   }
 
+#ifdef OPENIEC61850_WITH_TLS
+  void renew_tls_keys(std::size_t about_to_write) {
+    const auto& c = tls_ctx->config();
+    const auto now = std::chrono::steady_clock::now();
+    const bool by_time =
+        c.key_update_interval.count() > 0 && now - keys_since >= c.key_update_interval;
+    const bool by_bytes = c.key_update_bytes > 0 && bytes_since_update >= c.key_update_bytes;
+    if (by_time || by_bytes) {
+      if (request_key_update(*tls)) ++tls_key_updates;
+      keys_since = now;
+      bytes_since_update = 0;
+    }
+    bytes_since_update += about_to_write;
+  }
+#endif
+
   awaitable<std::tuple<std::error_code, std::size_t>> read_some() {
 #ifdef OPENIEC61850_WITH_TLS
     if (tls) {
@@ -153,7 +172,10 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
 
   awaitable<std::tuple<std::error_code, std::size_t>> write_all(asio::const_buffer data) {
 #ifdef OPENIEC61850_WITH_TLS
-    if (tls) co_return co_await asio::async_write(*tls, data, use_tuple);
+    if (tls) {
+      renew_tls_keys(data.size());
+      co_return co_await asio::async_write(*tls, data, use_tuple);
+    }
 #endif
     co_return co_await asio::async_write(socket, data, use_tuple);
   }
@@ -607,6 +629,14 @@ cotp::role cotp_channel::connection_role() const noexcept { return state_->conn.
 
 const std::optional<tls_session_info>& cotp_channel::tls_session() const noexcept {
   return state_->tls_info;
+}
+
+std::uint64_t cotp_channel::tls_key_updates() const noexcept {
+#ifdef OPENIEC61850_WITH_TLS
+  return state_->tls_key_updates;
+#else
+  return 0;
+#endif
 }
 
 const tcp::endpoint& cotp_channel::local_endpoint() const noexcept { return state_->local; }

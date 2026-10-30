@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -39,6 +40,11 @@ struct tls_config {
   // OpenSSL cipher strings for TLS 1.2 and TLS 1.3; empty keeps OpenSSL's defaults.
   std::string cipher_list;
   std::string cipher_suites;
+  // Long-lived associations: renews the traffic keys of both directions (TLS 1.3 KeyUpdate,
+  // RFC 8446 §4.6.3) on the first write after this much time, or after this many application
+  // bytes were written. Zero disables a limit. No effect on a TLS 1.2 session.
+  std::chrono::seconds key_update_interval{0};
+  std::uint64_t key_update_bytes = 0;
 };
 
 // What the TLS handshake established. Immutable once the channel is handed out.

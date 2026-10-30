@@ -521,6 +521,8 @@ std::shared_ptr<transport::tls_context> tls_context_from_py(nb::handle config, b
   c.peer_name = text("peer_name");
   c.cipher_list = text("cipher_list");
   c.cipher_suites = text("cipher_suites");
+  c.key_update_interval = std::chrono::seconds(nb::cast<std::int64_t>(d["key_update_interval"]));
+  c.key_update_bytes = nb::cast<std::uint64_t>(d["key_update_bytes"]);
   const auto version = [](nb::handle v) {
     return nb::cast<int>(v) == 13 ? transport::tls_version::tls1_3 : transport::tls_version::tls1_2;
   };

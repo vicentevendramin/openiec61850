@@ -51,8 +51,9 @@ async with await iec.Client.connect("10.0.0.5", iec.TLS_PORT, tls=tls) as client
 Both sides are authenticated by default: the client checks the server certificate and its name
 (`peer_name`, or the host it connects to; an IP literal needs an IP subject alternative name), and
 a server passed `tls=` requires a client certificate, visible in `request.tls` of `authorize`. A
-server serves TLS or plain connections on a port, never both. TLS keys are not renewed during
-an association, so limit the lifetime of an association where IEC 62351-3 key renewal applies.
+server serves TLS or plain connections on a port, never both. `key_update_interval` and
+`key_update_bytes` renew the traffic keys of long-lived TLS 1.3 associations; TLS 1.2 keys are not
+renewed during an association, so prefer TLS 1.3 (`min_version`) where key renewal is required.
 In C++, build with `OPENIEC61850_ENABLE_TLS=ON` and set `transport.tls` from `tls_context::create()`.
 
 ### A first server

@@ -32,8 +32,9 @@ release may break the API. The release process is in
   setting groups, logs, file store, GoCB attributes.
 - TLS (IEC 62351-3) for MMS on client and server, enabled with `OPENIEC61850_ENABLE_TLS`:
   mutual certificate authentication, peer name checks, CRLs, TLS 1.2 and 1.3, the peer certificate
-  exposed to the `authorize` hook and in `association_info`. Python: `TlsConfig`, `TlsSession`,
-  `TLS_PORT`, `TlsError`, with wheels built with TLS. Tools: `--tls` and the `--tls-*` options.
+  exposed to the `authorize` hook and in `association_info`, TLS 1.3 key updates by time or
+  volume. Python: `TlsConfig`, `TlsSession`, `TLS_PORT`, `TlsError`, with wheels built with TLS.
+  Tools: `--tls` and the `--tls-*` options.
 - SCL (IEC 61850-6) parser for ICD/CID/IID/SCD with validation diagnostics, IED instantiation and
   GSE/SMV address extraction.
 - GOOSE and Sampled Values (9-2 LE) publishers and subscribers over Linux AF_PACKET, with

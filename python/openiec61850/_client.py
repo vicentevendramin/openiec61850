@@ -185,7 +185,8 @@ class TlsConfig:
     ``crl_file`` enables revocation checks, and then needs a CRL for the issuer of the peer.
     A client checks the server certificate against ``peer_name``, or the host it connects to;
     a server checks the client name only when ``peer_name`` is set. ``verify_peer_name=False``
-    keeps the chain check only.
+    keeps the chain check only. ``key_update_interval`` (seconds) and ``key_update_bytes`` renew
+    the traffic keys of a TLS 1.3 session on the first write past either limit (0: no limit).
     """
 
     ca_file: str | os.PathLike[str] | None = None
@@ -200,6 +201,8 @@ class TlsConfig:
     max_version: TlsVersion | None = None
     cipher_list: str | None = None
     cipher_suites: str | None = None
+    key_update_interval: int = 0
+    key_update_bytes: int = 0
 
     def _native(self) -> dict[str, Any]:
         native: dict[str, Any] = {}
