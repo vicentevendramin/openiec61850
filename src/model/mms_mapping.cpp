@@ -213,6 +213,8 @@ result<std::string> nvl_item(const object_reference& ds, const name_limits& limi
 
 result<void> encode_alternate_access(std::span<const access_selector> selectors,
                                      byte_buffer& out) {
+  // Never emit what decode_alternate_access would refuse from a peer.
+  if (selectors.size() > max_alternate_access_depth) return errc::nesting_too_deep;
   for (const auto& s : selectors) {
     if (s.index ? !s.component.empty() : !is_identifier(s.component)) return errc::invalid_state;
   }

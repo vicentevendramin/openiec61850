@@ -62,7 +62,7 @@ analysis:fuzz-smoke:
     - cmake --preset fuzz
     - cmake --build --preset fuzz
     - |
-      for f in $(find build/fuzz -maxdepth 3 -type f -executable -name 'fuzz_*'); do
+      for f in $(find build/fuzz/fuzz -type f -executable -name 'fuzz_*'); do
         name=$(basename "$f"); corpus="fuzz/corpus/${name#fuzz_}"
         mkdir -p "$corpus"
         echo "== $name"; "$f" -max_total_time="$FUZZ_SECONDS" "$corpus"

@@ -121,6 +121,23 @@ TEST_CASE("AlternateAccess encoding", "[model]") {
         errc::invalid_state);
 }
 
+// Found by fuzz_model_reference (corpus: alternate_access_too_deep): with unlimited name limits the
+// forward mapping produced an AlternateAccess that the reverse mapping refused.
+TEST_CASE("AlternateAccess depth is the same in both directions", "[model]") {
+  const model::parse_options opts{model::name_limits::unlimited(), false};
+  const auto mapped = [&](int components) {
+    std::string text{"D/G.r(1)"};
+    for (int i = 0; i < components; ++i) text += ".a";
+    auto ref = object_reference::parse(text + "[CF]", opts);
+    REQUIRE(ref);
+    return model::to_mms_variable(*ref, opts.limits);
+  };
+  auto deepest = mapped(127);  // the index plus 127 components: 128 selectors
+  REQUIRE(deepest);
+  CHECK(model::from_mms_variable(deepest->name.view(), deepest->alternate_access, opts));
+  CHECK(mapped(128).error() == errc::nesting_too_deep);
+}
+
 TEST_CASE("MMS variable reverse mapping", "[model]") {
   auto r = model::from_mms_variable(mms::object_name::domain("IED1LD0", "Q0XCBR1$ST$Pos$stVal"));
   REQUIRE(r);

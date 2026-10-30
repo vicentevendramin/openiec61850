@@ -10,3 +10,9 @@ if(OPENIEC61850_SANITIZERS)
     add_link_options(-fsanitize=${_sanitizers})
   endif()
 endif()
+
+# Without this only the fuzz targets are instrumented and libFuzzer cannot see the library's edges.
+if(OPENIEC61850_BUILD_FUZZERS)
+  add_compile_options(-fsanitize=fuzzer-no-link)
+  add_link_options(-fsanitize=fuzzer-no-link)
+endif()
