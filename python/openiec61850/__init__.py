@@ -171,6 +171,7 @@ from openiec61850._server import (  # noqa: E402
     Identity,
     LogControl,
     MemoryFileStore,
+    ObtainFileEvent,
     SettingGroupAction,
     SettingGroupControl,
     SettingGroupEvent,
@@ -254,6 +255,7 @@ __all__ = [
     "FileInfo",
     "FileStore",
     "MemoryFileStore",
+    "ObtainFileEvent",
     "DirectoryFileStore",
     # control
     "Control",

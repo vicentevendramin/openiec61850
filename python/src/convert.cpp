@@ -624,6 +624,7 @@ client::client_options client_options_from_py(nb::handle h) {
   }
   d.read("report_queue_capacity", o.report_queue_capacity);
   d.read("event_queue_capacity", o.event_queue_capacity);
+  if (d.given("file_transfer_timeout")) o.file_transfer_timeout = seconds_from_py(d.at("file_transfer_timeout"));
   return o;
 }
 

@@ -757,3 +757,127 @@ TEST_CASE("client association driven from another thread", "[association]") {
   CHECK(out.value == 42);
   CHECK(out.released);
 }
+
+TEST_CASE("the server issues requests and the client serves them", "[association]") {
+  run([]() -> awaitable<void> {
+    auto [client, server] = co_await connect_pair();
+
+    // Without a handler the client rejects, as ever.
+    auto r = co_await server.request(mms::identify_request{});
+    REQUIRE_FALSE(r);
+    CHECK(r.error() == errc::request_rejected);
+    REQUIRE(r.failure().reject);
+    CHECK(r.failure().reject->reason == mms::reject_code::confirmed_request::unrecognized_service);
+
+    // A request of the client stays outstanding while the server asks back. Both directions use
+    // invokeID 0 and up: they are independent.
+    const auto ex = co_await asio::this_coro::executor;
+    client.set_request_handler([ex](incoming_request q) {
+      asio::co_spawn(
+          ex,
+          [](incoming_request a) -> awaitable<void> {
+            CHECK(std::holds_alternative<mms::identify_request>(a.service()));
+            const auto b = co_await a.respond(mms::identify_response{"v", "m", "r", {}});
+            CHECK(b);
+          }(std::move(q)),
+          asio::detached);
+    });
+    asio::co_spawn(
+        ex,
+        [](server_association& s) -> awaitable<void> {
+          auto q = co_await s.next_request();
+          REQUIRE(q);
+          auto reverse = co_await s.request(mms::identify_request{});
+          REQUIRE(reverse);
+          const auto* id = std::get_if<mms::identify_response>(&reverse->service());
+          REQUIRE(id != nullptr);
+          CHECK(id->vendor_name == "v");
+          const auto done = co_await q->respond(mms::read_response{});
+          CHECK(done);
+        }(server),
+        asio::detached);
+    const read_of read(1);
+    auto forward = co_await client.request(read.request());
+    CHECK(forward);
+  });
+}
+
+TEST_CASE("reverse requests honour the negotiated limit and fail with the association", "[association]") {
+  run([]() -> awaitable<void> {
+    auto cp = client_params();
+    cp.initiate.max_serv_outstanding_called = 1;
+    auto [client, server] = co_await connect_pair(std::move(cp));
+    CHECK(client.info().negotiated.max_serv_outstanding_called == 1);
+    const auto ex = co_await asio::this_coro::executor;
+    int seen = 0;
+    std::vector<incoming_request> held;
+    client.set_request_handler([&](incoming_request q) {
+      ++seen;
+      held.push_back(std::move(q));
+    });
+    std::optional<request_result> first;
+    std::optional<request_result> second;
+    auto issue = [](server_association& s, std::optional<request_result>& out) -> awaitable<void> {
+      out.emplace(co_await s.request(mms::identify_request{}, 2s));
+    };
+    asio::co_spawn(ex, issue(server, first), asio::detached);
+    asio::co_spawn(ex, issue(server, second), asio::detached);
+    while (seen < 1) co_await yield();
+    co_await sleep(20ms);
+    CHECK(seen == 1);  // the second waits for the slot
+    CHECK_FALSE(second.has_value());
+
+    server.abort();
+    (void)co_await wait_for(first);
+    (void)co_await wait_for(second);
+    CHECK_FALSE(first->has_value());
+    CHECK_FALSE(second->has_value());
+    auto closed = co_await server.request(mms::identify_request{});
+    CHECK(closed.error() == errc::aborted);
+    held.clear();
+  });
+}
+
+TEST_CASE("a reverse request times out and its late answer is discarded", "[association]") {
+  run([]() -> awaitable<void> {
+    auto so = server_opts();
+    so.request_timeout = 30ms;
+    auto [client, server] = co_await connect_pair(client_params(), std::move(so));
+    std::vector<incoming_request> held;
+    client.set_request_handler([&](incoming_request q) { held.push_back(std::move(q)); });
+    auto r = co_await server.request(mms::identify_request{});
+    CHECK(r.error() == errc::request_timed_out);
+    REQUIRE(held.size() == 1);
+    const auto late = co_await held[0].respond(mms::identify_response{"v", "m", "r", {}});
+    CHECK(late);
+    co_await sleep(10ms);
+    CHECK(server.state() == association_state::established);
+    CHECK(client.state() == association_state::established);
+  });
+}
+
+TEST_CASE("the client may not conclude past a reverse request", "[association]") {
+  run([]() -> awaitable<void> {
+    auto [client, server] = co_await connect_pair();
+    const auto ex = co_await asio::this_coro::executor;
+    std::vector<incoming_request> held;
+    client.set_request_handler([&](incoming_request q) { held.push_back(std::move(q)); });
+    std::optional<request_result> reverse;
+    asio::co_spawn(
+        ex,
+        [](server_association& s, std::optional<request_result>& out) -> awaitable<void> {
+          out.emplace(co_await s.request(mms::identify_request{}));
+        }(server, reverse),
+        asio::detached);
+    while (held.empty()) co_await yield();
+    auto refused = co_await client.release();
+    CHECK(refused.error() == errc::conclude_refused);
+
+    const auto a = co_await held[0].respond(mms::identify_response{"v", "m", "r", {}});
+    CHECK(a);
+    (void)co_await wait_for(reverse);
+    CHECK(reverse->has_value());
+    auto released = co_await client.release();
+    CHECK(released);
+  });
+}

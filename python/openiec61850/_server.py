@@ -68,7 +68,7 @@ from typing import Any, Union
 from openiec61850 import _core
 from openiec61850._client import DataDefinition, TlsConfig, TlsSession
 from openiec61850._control import AddCause, Originator, add_cause
-from openiec61850._errors import FileStoreError, InvalidOperation, ObjectNotFound, SclError, ServiceError
+from openiec61850._errors import FileErrorCode, FileStoreError, InvalidOperation, ObjectNotFound, SclError, ServiceError
 from openiec61850._types import (
     FC,
     BasicType,
@@ -99,6 +99,7 @@ __all__ = [
     "Identity",
     "LogControl",
     "MemoryFileStore",
+    "ObtainFileEvent",
     "SettingGroupAction",
     "SettingGroupControl",
     "SettingGroupEvent",
@@ -958,6 +959,16 @@ def _file_info(t: tuple[str, int, float | None]) -> FileInfo:
     return FileInfo(name, size, datetime.fromtimestamp(mtime, timezone.utc) if mtime is not None else None)
 
 
+@dataclass(frozen=True)
+class ObtainFileEvent:
+    """A client asked the server to take a file (SetFile, ``on_obtain_file``): ``destination`` is
+    the normalised name in the file store, ``source`` the file's name at the client."""
+
+    association: int
+    source: str
+    destination: str
+
+
 class FileStore:
     """Base class of a Python file store served by :meth:`Server.start` (``files=``).
 
@@ -990,6 +1001,12 @@ class FileStore:
         """:class:`FileExistsError` when ``new`` exists."""
         raise NotImplementedError
 
+    def write(self, path: str, content: bytes) -> None:
+        """Creates ``path`` with the whole of ``content``, nothing of it on failure;
+        :class:`FileExistsError` when it exists. Override it to accept files (SetFile): a store
+        without it is read-only."""
+        raise PermissionError(path)
+
 
 class _NativeFileStore:
     """A store implemented natively; also usable locally (any thread)."""
@@ -1005,6 +1022,10 @@ class _NativeFileStore:
 
     def read(self, path: str, offset: int = 0, size: int = 1 << 20) -> bytes:
         return bytes(self._native.read(path, int(offset), int(size)))
+
+    def write(self, path: str, content: bytes) -> None:
+        """Creates a file; ``FileStoreError`` with EEXIST when it exists."""
+        self._native.write(path, bytes(content))
 
     def remove(self, path: str) -> None:
         self._native.remove(path)
@@ -1047,6 +1068,17 @@ class DirectoryFileStore(_NativeFileStore):
 _FILE_NOT_FOUND, _FILE_ACCESS_DENIED, _FILE_EXISTS, _FILE_INVALID_NAME, _FILE_BUSY, _FILE_NO_SPACE = range(1, 7)
 
 
+# What on_obtain_file may refuse with.
+_OBTAIN_REFUSAL = {
+    FileErrorCode.FILE_NON_EXISTENT: _FILE_NOT_FOUND,
+    FileErrorCode.FILE_ACCESS_DENIED: _FILE_ACCESS_DENIED,
+    FileErrorCode.DUPLICATE_FILENAME: _FILE_EXISTS,
+    FileErrorCode.FILENAME_SYNTAX_ERROR: _FILE_INVALID_NAME,
+    FileErrorCode.FILE_BUSY: _FILE_BUSY,
+    FileErrorCode.INSUFFICIENT_SPACE_IN_FILESTORE: _FILE_NO_SPACE,
+}
+
+
 def _file_errc(e: BaseException) -> int:
     if isinstance(e, FileNotFoundError):
         return _FILE_NOT_FOUND
@@ -1077,6 +1109,8 @@ class _FileStoreAdapter:
 
     def __init__(self, store: Any) -> None:
         self._store = store
+        write = getattr(type(store), "write", None)
+        self.writable = callable(write) and write is not FileStore.write
 
     def _call(self, what: str, fn: Callable[[], Any]) -> tuple[int, Any]:
         try:
@@ -1109,6 +1143,9 @@ class _FileStoreAdapter:
     def rename(self, current: str, new: str) -> tuple[int, Any]:
         return self._call("rename", lambda: self._store.rename(current, new))
 
+    def write(self, path: str, content: bytes) -> tuple[int, Any]:
+        return self._call("write", lambda: self._store.write(path, content))
+
 
 def _native_files(files: Any) -> Any:
     if files is None:
@@ -1122,6 +1159,7 @@ def _native_files(files: Any) -> Any:
 
 
 SettingGroupHook = Callable[[SettingGroupEvent], Any]
+ObtainFileHook = Callable[[ObtainFileEvent], Any]
 GooseControlHook = Callable[[GooseControlState], Any]
 WriteHook = Callable[[int, ObjectReference, Any], Any]
 ControlHook = Callable[[ControlRequest], Any]
@@ -1167,6 +1205,7 @@ def _make_dispatchers(
     authorize: AuthorizeHook | None,
     on_setting_group: SettingGroupHook | None = None,
     on_goose_control: GooseControlHook | None = None,
+    on_obtain_file: ObtainFileHook | None = None,
 ) -> tuple[Any, Any, Any, Any, Any]:
     # These closures are owned by the native server: they must not reference the Server object
     # (a cycle through native code is invisible to the garbage collector).
@@ -1300,6 +1339,18 @@ def _make_dispatchers(
             _log.exception("on_setting_group hook failed for %s", ld)
             return int(DataAccessError.OBJECT_ACCESS_DENIED)
 
+    def obtain_file(association: int, source: str, destination: str) -> int:
+        try:
+            r = _now(on_obtain_file(ObtainFileEvent(association, source, destination)), "on_obtain_file")  # type: ignore[misc]
+            if r is None or r is True:
+                return -1
+            if r is False:
+                return _FILE_ACCESS_DENIED
+            return _OBTAIN_REFUSAL.get(FileErrorCode(r), _FILE_ACCESS_DENIED)
+        except Exception:
+            _log.exception("on_obtain_file hook failed for %s", destination)
+            return _FILE_ACCESS_DENIED
+
     def run_goose_hook(state: GooseControlState) -> None:
         try:
             r = on_goose_control(state)  # type: ignore[misc]
@@ -1331,6 +1382,7 @@ def _make_dispatchers(
         auth if authorize is not None else None,
         setting_group if on_setting_group is not None else None,
         goose_control if on_goose_control is not None else None,
+        obtain_file if on_obtain_file is not None else None,
     )
 
 
@@ -1402,6 +1454,9 @@ class Server:
         files: FileStore | MemoryFileStore | DirectoryFileStore | None = None,
         max_open_files: int = 8,
         tls: TlsConfig | None = None,
+        on_obtain_file: ObtainFileHook | None = None,
+        max_obtain_file_size: int = 64 * 1024 * 1024,
+        obtain_file_timeout: float = 300.0,
     ) -> Server:
         """Listens on ``host:port`` (port 0: ephemeral, see :attr:`local_endpoint`).
 
@@ -1418,7 +1473,17 @@ class Server:
         ``log_capacity``: entries kept per log (the oldest are dropped). ``on_goose_control(state)``
         (:class:`GooseControlState`) runs on the event loop after a client changed a GoCB.
         ``files`` serves the MMS file services (unset: they are rejected); ``max_open_files``
-        bounds the files open at once per association. ``tls`` serves over TLS only; the
+        bounds the files open at once per association.
+
+        A client's SetFile (MMS ObtainFile) is opt-in: it needs ``on_obtain_file``, a writable
+        ``files`` (a native store, or a :class:`FileStore` that overrides ``write``) and a non-zero
+        ``max_obtain_file_size``, otherwise it is rejected and not advertised. ``on_obtain_file(event)``
+        (:class:`ObtainFileEvent`), called before the file is read, returns None or True to accept,
+        False or a :class:`FileErrorCode` to refuse (an exception refuses too). The file is
+        read into memory, up to ``max_obtain_file_size`` octets and ``obtain_file_timeout`` seconds
+        (0: no limit), and stored only when complete; an existing name is refused.
+
+        ``tls`` serves over TLS only; the
         ``authorize`` hook sees the client certificate in ``request.tls``.
         """
         if not isinstance(model, Model):
@@ -1444,13 +1509,15 @@ class Server:
             "password": password,
             "log_capacity": int(log_capacity),
             "max_open_files": int(max_open_files),
+            "max_obtain_file_size": int(max_obtain_file_size),
+            "obtain_file_timeout": float(obtain_file_timeout),
             "files": _native_files(files),
             "tls": tls._native() if tls is not None else None,
         }
-        write, control, auth, sg, gc = _make_dispatchers(
-            model, loop, on_write, on_control, authorize, on_setting_group, on_goose_control
+        write, control, auth, sg, gc, obtain = _make_dispatchers(
+            model, loop, on_write, on_control, authorize, on_setting_group, on_goose_control, on_obtain_file
         )
-        native = _core.Server.start(model._native, host, int(port), options, write, control, auth, sg, gc)
+        native = _core.Server.start(model._native, host, int(port), options, write, control, auth, sg, gc, obtain)
         return cls(native, model)
 
     async def __aenter__(self) -> Server:

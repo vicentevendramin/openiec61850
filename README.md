@@ -88,8 +88,8 @@ async def main():
 asyncio.run(main())
 ```
 
-Setting groups, logs, files and GoCBs on the client side; SGCB, LCBs, logs, GoCBs and a file
-store on the server side:
+Setting groups, logs, files (including SetFile) and GoCBs on the client side; SGCB, LCBs, logs,
+GoCBs and a file store on the server side:
 
 ```python
 async with await iec.Client.connect("10.0.0.5") as client:
@@ -101,6 +101,7 @@ async with await iec.Client.connect("10.0.0.5") as client:
         print(entry.entry_id, entry.time, entry.values())
     for f in await client.list_files("COMTRADE"):
         await client.download_file(f.name, f.name.replace("/", "_"))    # streamed to disk
+    await client.upload_file("settings/new.cfg", "new.cfg")             # SetFile: the IED pulls it
     await client.set_gocb_values("IED1LD0/LLN0.gcb01[GO]", go_ena=True)
 
 server = await iec.Server.start(model, port=102, files=iec.DirectoryFileStore("/var/comtrade"),

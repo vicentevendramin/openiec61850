@@ -43,7 +43,7 @@
 // groups (SGCB: SelectActiveSG, SelectEditSG, SetEditSGValue, ConfirmEditSGValues,
 // GetEditSGValue, GetSGCBValues, 7-2 §16 / 8-1 §16); logs (LCBs and bounded in-memory logs fed by
 // the reporting triggers, read with ReadJournal, 7-2 §17.3 / 8-1 §17.3); file transfer (MMS file
-// services over a file_store, 7-2 §23 / 8-1 §23); GOOSE control blocks as MMS variables
+// services over a file_store, including SetFile, 7-2 §23 / 8-1 §23); GOOSE control blocks as MMS variables
 // (7-2 §18 / 8-1 §18, publishing is done elsewhere).
 //
 // Threading (ADR 0004): all the server state lives on one strand on the given executor
@@ -63,6 +63,13 @@ struct write_event {
   std::uint64_t association = 0;
   model::object_reference reference;  // FC-constrained, as written (may name a structure)
   mms::data value;
+};
+
+// An ObtainFile (SetFile, 7-2 §23) by a client, before the server reads the file.
+struct obtain_file_event {
+  std::uint64_t association = 0;
+  std::string source;       // the file's name at the client, as sent
+  std::string destination;  // the normalised name in the file store; free when the hook runs
 };
 
 // AddCause (IEC 61850-7-2 Ed.2 §20.5.2.9).
@@ -261,6 +268,21 @@ struct server_options {
   std::shared_ptr<file_store> files;
   // Files open at once per association (FileOpen beyond it: resource/capability-unavailable).
   std::size_t max_open_files = 8;
+  // ObtainFile lets clients create files, so it is opt-in: it needs on_obtain_file, a store with
+  // file_store::writable() and a non-zero max_obtain_file_size;
+  // otherwise it is rejected (unrecognized-service) and not advertised in
+  // servicesSupportedCalled. The server then reads the file from the client (fileOpen, fileRead,
+  // fileClose, each bounded by association.request_timeout), keeping it in memory, and hands it
+  // whole to the store. One at a time per association (resource/capability-unavailable); an
+  // existing destination is refused (duplicate-filename).
+  //
+  // Called before the file is read, on the strand; returning an error refuses it (file_errc
+  // mapped as for the file store). Unset: the service is off.
+  std::function<std::optional<file_errc>(const obtain_file_event&)> on_obtain_file;
+  // Largest file accepted (above it: insufficient-space-in-filestore).
+  std::uint64_t max_obtain_file_size = 64 * 1024 * 1024;
+  // The whole transfer. Zero disables it.
+  std::chrono::milliseconds obtain_file_timeout{300000};
 };
 
 // One value change by the application (see server::update()).

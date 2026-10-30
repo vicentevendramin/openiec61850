@@ -6,8 +6,10 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -479,6 +481,37 @@ class native_client {
     return launch(c_.get_executor(), c_.get_file(std::move(name), std::move(sink), *det),
                   [](std::uint64_t n) { return nb::cast(n); }, det);
   }
+  nb::object set_file(std::string name, nb::handle content) {
+    auto det = details();
+    return launch(c_.get_executor(), c_.set_file(std::move(name), bytes_from_py(content), *det),
+                  [] { return nb::none(); }, det);
+  }
+  // Streaming SetFile: reader(offset, size) -> bytes runs on the I/O thread while the server pulls
+  // the file, holding the GIL only for that call, like the hooks of a server.
+  nb::object set_file_stream(std::string name, std::uint64_t size, nb::handle reader, std::string source_name) {
+    client::file_source source;
+    source.size = size;
+    source.name = std::move(source_name);
+    source.read = [cb = std::make_shared<py_ref>(reader)](
+                      std::uint64_t offset, std::span<std::uint8_t> out) -> result<std::size_t> {
+      const auto failure = std::make_error_code(std::errc::io_error);
+      if (interpreter_finalizing()) return failure;
+      const nb::gil_scoped_acquire gil;
+      try {
+        const auto b = bytes_from_py(nb::handle(cb->get())(offset, out.size()));
+        const std::size_t n = b.size() < out.size() ? b.size() : out.size();
+        std::copy_n(b.begin(), n, out.begin());
+        return n;
+      } catch (nb::python_error& e) {
+        e.discard_as_unraisable("openiec61850 upload_file");
+      } catch (...) {
+      }
+      return failure;
+    };
+    auto det = details();
+    return launch(c_.get_executor(), c_.set_file(std::move(name), std::move(source), *det),
+                  [] { return nb::none(); }, det);
+  }
   nb::object delete_file(std::string name) {
     auto det = details();
     return launch(c_.get_executor(), c_.delete_file(std::move(name), *det), [] { return nb::none(); },
@@ -584,6 +617,9 @@ void bind_client(nb::module_& m) {
       .def("file_directory", &native_client::file_directory, nb::arg("path") = "")
       .def("get_file", &native_client::get_file, nb::arg("name"))
       .def("get_file_stream", &native_client::get_file_stream, nb::arg("name"), nb::arg("on_chunk"))
+      .def("set_file", &native_client::set_file, nb::arg("name"), nb::arg("content"))
+      .def("set_file_stream", &native_client::set_file_stream, nb::arg("name"), nb::arg("size"),
+           nb::arg("reader"), nb::arg("source_name") = "")
       .def("delete_file", &native_client::delete_file, nb::arg("name"))
       .def("rename_file", &native_client::rename_file, nb::arg("from_"), nb::arg("to"))
       .def("gocb_values", &native_client::gocb_values, nb::arg("gocb"))

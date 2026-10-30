@@ -19,7 +19,13 @@ release may break the API. The release process is in
   GetVariableAccessAttributes, named variable lists, InformationReport, journal and file
   services, with zero-copy `data_view` and owning values.
 - MMS association layer for both roles: pipelined requests, timeouts, orderly release, abort,
-  password authentication.
+  password authentication. Confirmed services run in both directions: `server_association::request()`
+  and `client_association::set_request_handler()`.
+- SetFile (MMS obtainFile): `client::set_file()` from memory or a stream, and in the server a pull
+  into the `file_store` (`write()`, `writable()`) with the `on_obtain_file` hook,
+  `max_obtain_file_size` and `obtain_file_timeout`. Off without the hook; advertised in
+  servicesSupportedCalled only when usable. In Python `Client.write_file`, `Client.upload_file`, the same on `sync.Client`,
+  `Server.start(on_obtain_file=...)` and `FileStore.write`.
 - IEC 61850 naming and basic types: object references, functional constraints, the 8-1 MMS
   mapping, Quality, TimeStamp, EntryID, TrgOps/OptFlds, control enums.
 - ACSI client: directory discovery, data definitions, read/write, data sets, URCB/BRCB reporting

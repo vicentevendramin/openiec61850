@@ -606,6 +606,25 @@ result<file_rename_request> decode_file_rename_request(ber::reader rd) {
   return req;
 }
 
+result<obtain_file_request> decode_obtain_file_request(ber::reader rd) {
+  obtain_file_request req;
+  auto server = next_if(rd, context(0, true));
+  if (!server) return server.error();
+  if (*server) req.source_file_server = (*server)->value;
+  auto source = rd.expect(context(1, true));
+  if (!source) return source.error();
+  auto s = decode_file_name(*source);
+  if (!s) return s.error();
+  req.source_file = *s;
+  auto destination = rd.expect(context(2, true));
+  if (!destination) return destination.error();
+  auto n = decode_file_name(*destination);
+  if (!n) return n.error();
+  req.destination_file = *n;
+  if (auto r = rd.expect_end(); !r) return r.error();
+  return req;
+}
+
 result<file_directory_request> decode_file_directory_request(ber::reader rd) {
   file_directory_request req;
   auto spec = next_if(rd, context(0, true));
@@ -717,7 +736,8 @@ bool is_ext_service(std::uint32_t tag) noexcept {
     case confirmed_service::file_rename:
     case confirmed_service::file_delete:
     case confirmed_service::file_directory:
-      return tag >= 65 && tag <= 77;
+    case confirmed_service::obtain_file:
+      return tag == 46 || (tag >= 65 && tag <= 77);
     default:
       return false;
   }
@@ -764,6 +784,8 @@ result<confirmed_service_request> decode_ext_request(const ber::tlv& e) {
     }
     case confirmed_service::file_directory:
       return as_request(decode_file_directory_request(rd));
+    case confirmed_service::obtain_file:
+      return as_request(decode_obtain_file_request(rd));
     default:
       return errc::malformed_encoding;
   }
@@ -782,7 +804,11 @@ result<confirmed_service_response> decode_ext_response(const ber::tlv& e,
     case confirmed_service::file_close:
     case confirmed_service::file_rename:
     case confirmed_service::file_delete:
+    case confirmed_service::obtain_file:
       if (auto r = ber::decode_null(e); !r) return r.error();
+      if (svc == confirmed_service::obtain_file) {
+        return confirmed_service_response{obtain_file_response{}};
+      }
       if (svc == confirmed_service::file_close) return confirmed_service_response{file_close_response{}};
       if (svc == confirmed_service::file_rename) {
         return confirmed_service_response{file_rename_response{}};

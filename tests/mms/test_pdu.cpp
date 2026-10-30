@@ -504,12 +504,12 @@ TEST_CASE("Named variable list services", "[mms]") {
 }
 
 TEST_CASE("Unimplemented services decode as other_service", "[mms]") {
-  // obtainFile [46] request with an empty SEQUENCE.
-  const auto bytes = hex("A0 06 02 01 01 BF 2E 00");
+  // defineEventCondition [47] request with an empty SEQUENCE.
+  const auto bytes = hex("A0 06 02 01 01 BF 2F 00");
   const auto pdu = decode_as<mms::confirmed_request>(bytes);
   REQUIRE(std::holds_alternative<mms::other_service>(pdu.service));
-  CHECK(std::get<mms::other_service>(pdu.service).tag == 46U);
-  CHECK(mms::service_tag(pdu.service) == 46U);
+  CHECK(std::get<mms::other_service>(pdu.service).tag == 47U);
+  CHECK(mms::service_tag(pdu.service) == 47U);
   CHECK(encode(pdu) == bytes);
   CHECK(mms::service_tag(mms::confirmed_service_request{mms::read_request{}}) == 4U);
   CHECK(mms::service_tag(mms::confirmed_service_response{mms::get_named_variable_list_attributes_response{}}) == 12U);

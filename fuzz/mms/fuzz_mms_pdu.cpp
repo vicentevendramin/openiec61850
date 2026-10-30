@@ -76,6 +76,9 @@ void visit_service(const T& s) {
   } else if constexpr (std::is_same_v<T, mms::file_directory_request>) {
     if (s.file_specification) (void)count(*s.file_specification);
     if (s.continue_after) (void)count(*s.continue_after);
+  } else if constexpr (std::is_same_v<T, mms::obtain_file_request>) {
+    (void)count(s.source_file);
+    (void)count(s.destination_file);
   } else if constexpr (std::is_same_v<T, mms::file_directory_response>) {
     for (const auto& e : s.entries) (void)count(e.file_name);
     (void)count(s.entries);

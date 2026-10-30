@@ -19,7 +19,7 @@
 
 // The server's file store (IEC 61850-7-2 §23 file transfer, mapped onto the MMS file services by
 // IEC 61850-8-1 §23): a pluggable virtual filesystem behind FileOpen / FileRead / FileClose /
-// FileDirectory / FileDelete / FileRename.
+// FileDirectory / FileDelete / FileRename and, for a writable store, ObtainFile (SetFile).
 //
 // Paths are relative to the store's root, '/'-separated, without empty, "." or ".." segments
 // (see normalize_file_path()); the server normalises every name received from a client before
@@ -69,6 +69,14 @@ class file_store {
   [[nodiscard]] virtual result<void> remove(std::string_view path) = 0;
   // file_errc::exists when `to` exists.
   [[nodiscard]] virtual result<void> rename(std::string_view from, std::string_view to) = 0;
+  // Whether write() works. A store that returns false never receives files: the server does not
+  // advertise ObtainFile and rejects it.
+  [[nodiscard]] virtual bool writable() const noexcept { return false; }
+  // Creates `path` with the whole of `content`; nothing is left of it on failure.
+  // file_errc::exists when it exists.
+  [[nodiscard]] virtual result<void> write(std::string_view /*path*/, byte_view /*content*/) {
+    return make_error_code(file_errc::access_denied);
+  }
 };
 
 // "a//b/./c" style names are refused: the result has no leading '/', no empty, "." or ".."
@@ -90,6 +98,8 @@ class memory_file_store final : public file_store {
                            std::span<std::uint8_t> out) override;
   result<void> remove(std::string_view path) override;
   result<void> rename(std::string_view from, std::string_view to) override;
+  [[nodiscard]] bool writable() const noexcept override { return true; }
+  result<void> write(std::string_view path, byte_view content) override;
 
  private:
   struct entry {
@@ -103,6 +113,7 @@ class memory_file_store final : public file_store {
 // A directory of the local filesystem. Every operation stays inside the root: names are
 // normalised and the resolved path (symbolic links followed) must lie below the canonical root,
 // otherwise file_errc::access_denied. Only regular files are listed, read, renamed or deleted.
+// A written file appears at once, complete; missing parent directories are created.
 class directory_file_store final : public file_store {
  public:
   // errc::invalid_state when `root` is not an existing directory.
@@ -117,6 +128,8 @@ class directory_file_store final : public file_store {
                            std::span<std::uint8_t> out) override;
   result<void> remove(std::string_view path) override;
   result<void> rename(std::string_view from, std::string_view to) override;
+  [[nodiscard]] bool writable() const noexcept override { return true; }
+  result<void> write(std::string_view path, byte_view content) override;
 
   explicit directory_file_store(std::filesystem::path canonical_root);
 

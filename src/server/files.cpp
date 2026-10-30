@@ -3,7 +3,9 @@
 #include "openiec61850/server/files.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
+#include <string>
 
 namespace openiec61850::server {
 
@@ -132,6 +134,17 @@ result<void> memory_file_store::rename(std::string_view from, std::string_view t
   return {};
 }
 
+result<void> memory_file_store::write(std::string_view path, byte_view content) {
+  auto p = normalize_file_path(path);
+  if (!p) return p.error();
+  if (p->empty()) return ferr(file_errc::invalid_name);
+  const std::lock_guard lock(mutex_);
+  if (files_.contains(*p)) return ferr(file_errc::exists);
+  files_.emplace(std::move(*p),
+                 entry{byte_buffer(content.begin(), content.end()), std::chrono::system_clock::now()});
+  return {};
+}
+
 // --- directory_file_store
 
 namespace fs = std::filesystem;
@@ -250,6 +263,39 @@ result<void> directory_file_store::rename(std::string_view from, std::string_vie
   if (!fs::is_directory(dst->parent_path(), ec)) return ferr(file_errc::not_found);
   fs::rename(*src, *dst, ec);
   if (ec) return ferr(file_errc::access_denied);
+  return {};
+}
+
+result<void> directory_file_store::write(std::string_view path, byte_view content) {
+  auto dst = resolve(path, false);
+  if (!dst) return dst.error();
+  if (*dst == root_) return ferr(file_errc::invalid_name);
+  std::error_code ec;
+  // Not exists(): a dangling symbolic link leads out of the root and must not be written through.
+  if (fs::exists(fs::symlink_status(*dst, ec))) return ferr(file_errc::exists);
+  fs::create_directories(dst->parent_path(), ec);
+  if (ec) return ferr(file_errc::access_denied);
+
+  // Written aside, then linked: link() neither replaces nor follows what has that name.
+  static std::atomic<std::uint64_t> next{0};
+  auto part = *dst;
+  part += ".part" + std::to_string(next.fetch_add(1));
+  const auto failed = [&](file_errc e) -> result<void> {
+    std::error_code ignored;
+    fs::remove(part, ignored);
+    return ferr(e);
+  };
+  {
+    std::ofstream out(part, std::ios::binary | std::ios::trunc);
+    if (!out) return failed(file_errc::access_denied);
+    out.write(reinterpret_cast<const char*>(content.data()), static_cast<std::streamsize>(content.size()));
+    out.close();
+    if (!out) return failed(file_errc::no_space);
+  }
+  fs::create_hard_link(part, *dst, ec);
+  if (ec == std::errc::file_exists) return failed(file_errc::exists);
+  if (ec) return failed(file_errc::access_denied);
+  fs::remove(part, ec);
   return {};
 }
 

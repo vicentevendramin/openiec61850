@@ -3,7 +3,8 @@
 // references their string form; the pure Python layer (openiec61850/_server.py) builds the public
 // API on top.
 //
-// Application hooks (on_write, on_control, authorize, on_setting_group, on_goose_control) and
+// Application hooks (on_write, on_control, authorize, on_setting_group, on_goose_control,
+// on_obtain_file) and
 // Python file stores. The C++ server calls them on its strand, that is on the I/O thread, and
 // needs their answer at once (a pending Operate excepted: it is completed later through
 // _ControlCompletion, from any thread). The binding therefore calls the
@@ -696,6 +697,15 @@ class native_file_store {
     buf.resize(value_or_raise(std::move(*r)));
     return to_bytes(buf);
   }
+  void write(const std::string& path, nb::handle content) {
+    auto data = bytes_from_py(content);
+    std::optional<result<void>> r;
+    {
+      const nb::gil_scoped_release release;
+      r.emplace(store_->write(path, data));
+    }
+    if (!*r) raise_error(r->error());
+  }
   void remove(const std::string& path) {
     std::optional<result<void>> r;
     {
@@ -726,7 +736,8 @@ class native_file_store {
 
 class py_file_store final : public server::file_store {
  public:
-  explicit py_file_store(nb::handle adapter) : adapter_(std::make_shared<py_ref>(adapter)) {}
+  explicit py_file_store(nb::handle adapter)
+      : adapter_(std::make_shared<py_ref>(adapter)), writable_(nb::cast<bool>(adapter.attr("writable"))) {}
 
   result<std::vector<server::file_info>> list(std::string_view directory) override {
     return call<std::vector<server::file_info>>("list", [](nb::handle v) {
@@ -758,12 +769,22 @@ class py_file_store final : public server::file_store {
     return status(call<bool>("rename", [](nb::handle) { return true; }, std::string(from),
                              std::string(to)));
   }
+  [[nodiscard]] bool writable() const noexcept override { return writable_; }
+  result<void> write(std::string_view path, byte_view content) override {
+    return status(call<bool>("write", [](nb::handle) { return true; }, std::string(path), content));
+  }
 
  private:
   static result<void> status(const result<bool>& r) {
     if (!r) return r.error();
     return {};
   }
+
+  template <typename A>
+  static nb::object to_python(const A& a) {
+    return nb::cast(a);
+  }
+  static nb::object to_python(byte_view a) { return to_bytes(a); }
 
   // The adapter answers (code, value). The arguments are C++ values: Python objects may only be
   // created once the GIL is held.
@@ -773,7 +794,7 @@ class py_file_store final : public server::file_store {
     if (interpreter_finalizing()) return failure;
     const nb::gil_scoped_acquire gil;
     try {
-      nb::object r = nb::handle(adapter_->get()).attr(method)(nb::cast(args)...);
+      nb::object r = nb::handle(adapter_->get()).attr(method)(to_python(args)...);
       const auto t = nb::cast<nb::tuple>(r);
       const int code = nb::cast<int>(t[0]);
       if (code == 0) return convert(t[1]);
@@ -788,6 +809,7 @@ class py_file_store final : public server::file_store {
   }
 
   std::shared_ptr<py_ref> adapter_;
+  bool writable_ = false;
 };
 
 std::shared_ptr<server::file_store> file_store_from_py(nb::handle h) {
@@ -885,7 +907,7 @@ void report_unraisable(nb::python_error& e, const char* where) {
 
 server::server_options server_options_from_py(nb::dict d, hook on_write, hook on_control,
                                               hook authorize, hook on_setting_group,
-                                              hook on_goose_control) {
+                                              hook on_goose_control, hook on_obtain_file) {
   server::server_options o;
   auto given = [&](const char* k) { return d.contains(k) && !d[k].is_none(); };
   if (given("max_associations")) o.max_associations = nb::cast<std::size_t>(d["max_associations"]);
@@ -913,6 +935,8 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
   if (given("log_capacity")) o.log_capacity = nb::cast<std::size_t>(d["log_capacity"]);
   if (given("max_open_files")) o.max_open_files = nb::cast<std::size_t>(d["max_open_files"]);
   if (d.contains("files")) o.files = file_store_from_py(d["files"]);
+  if (given("max_obtain_file_size")) o.max_obtain_file_size = nb::cast<std::uint64_t>(d["max_obtain_file_size"]);
+  if (given("obtain_file_timeout")) o.obtain_file_timeout = seconds_from_py(d["obtain_file_timeout"]);
 
   std::optional<std::string> password;
   if (given("password")) password = nb::cast<std::string>(d["password"]);
@@ -975,6 +999,25 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
       } catch (...) {
       }
       return dae::object_access_denied;
+    };
+  }
+  if (on_obtain_file) {
+    o.on_obtain_file = [fn = std::move(on_obtain_file)](const server::obtain_file_event& e)
+        -> std::optional<server::file_errc> {
+      using fe = server::file_errc;
+      if (interpreter_finalizing()) return fe::busy;
+      const nb::gil_scoped_acquire gil;
+      try {
+        nb::object r = nb::handle(fn->get())(e.association, e.source, e.destination);
+        const int code = nb::cast<int>(r);
+        if (code < 0) return std::nullopt;
+        if (code == 0 || code > static_cast<int>(fe::no_space)) return fe::access_denied;
+        return static_cast<fe>(code);
+      } catch (nb::python_error& err) {
+        report_unraisable(err, "openiec61850 on_obtain_file");
+      } catch (...) {
+      }
+      return fe::access_denied;
     };
   }
   if (on_goose_control) {
@@ -1055,14 +1098,15 @@ class native_server {
  public:
   static native_server start(const native_model& m, const std::string& host, int port, nb::dict options,
                              nb::handle on_write, nb::handle on_control, nb::handle authorize,
-                             nb::handle on_setting_group, nb::handle on_goose_control) {
+                             nb::handle on_setting_group, nb::handle on_goose_control,
+                             nb::handle on_obtain_file) {
     if (port < 0 || port > 65535) throw nb::value_error("port out of range");
     std::error_code ec;
     const auto address = asio::ip::make_address(host, ec);
     if (ec) throw nb::value_error(("invalid listen address '" + host + "'").c_str());
     auto o = server_options_from_py(options, make_hook(on_write), make_hook(on_control),
                                     make_hook(authorize), make_hook(on_setting_group),
-                                    make_hook(on_goose_control));
+                                    make_hook(on_goose_control), make_hook(on_obtain_file));
     server::data_model copy = m.get();
     const asio::ip::tcp::endpoint ep{address, static_cast<std::uint16_t>(port)};
     std::optional<result<server::server>> r;
@@ -1228,7 +1272,8 @@ void bind_server(nb::module_& m) {
       .def_static("start", &native_server::start, nb::arg("model"), nb::arg("host"), nb::arg("port"),
                   nb::arg("options"), nb::arg("on_write").none(), nb::arg("on_control").none(),
                   nb::arg("authorize").none(), nb::arg("on_setting_group").none() = nb::none(),
-                  nb::arg("on_goose_control").none() = nb::none())
+                  nb::arg("on_goose_control").none() = nb::none(),
+                  nb::arg("on_obtain_file").none() = nb::none())
       .def("stop", &native_server::stop)
       .def("wait_stopped", &native_server::wait_stopped)
       .def_prop_ro("association_count", &native_server::association_count)
@@ -1252,6 +1297,7 @@ void bind_server(nb::module_& m) {
       .def("list", &native_file_store::list, nb::arg("directory") = "")
       .def("stat", &native_file_store::stat, nb::arg("path"))
       .def("read", &native_file_store::read, nb::arg("path"), nb::arg("offset"), nb::arg("size"))
+      .def("write", &native_file_store::write, nb::arg("path"), nb::arg("content"))
       .def("remove", &native_file_store::remove, nb::arg("path"))
       .def("rename", &native_file_store::rename, nb::arg("from_"), nb::arg("to"));
 }

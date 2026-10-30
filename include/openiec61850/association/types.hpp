@@ -9,6 +9,7 @@
 #include <utility>
 #include <variant>
 
+#include <asio/awaitable.hpp>
 #include <asio/ip/tcp.hpp>
 
 #include "openiec61850/association/error.hpp"
@@ -158,6 +159,52 @@ class unconfirmed_message {
  private:
   received_pdu message_;
   std::size_t lost_before_ = 0;
+};
+
+namespace detail {
+class core;
+}
+
+// A confirmed request received from the peer. It owns the received bytes. Answer it exactly once,
+// in any order relative to the other requests; until then it counts against the peer's negotiated
+// max serv outstanding (further requests beyond it are rejected with
+// max-serv-outstanding-exceeded). Destroying it unanswered sends a Confirmed-ErrorPDU
+// (service/other). The answer methods may be awaited from any executor.
+class incoming_request {
+ public:
+  incoming_request(incoming_request&&) noexcept = default;
+  incoming_request& operator=(incoming_request&& other) noexcept;
+  incoming_request(const incoming_request&) = delete;
+  incoming_request& operator=(const incoming_request&) = delete;
+  ~incoming_request();
+
+  [[nodiscard]] std::uint32_t invoke_id() const noexcept { return request().invoke_id; }
+  [[nodiscard]] const mms::confirmed_service_request& service() const noexcept {
+    return request().service;
+  }
+  [[nodiscard]] const mms::confirmed_request& request() const noexcept {
+    return std::get<mms::confirmed_request>(message_.pdu());
+  }
+  [[nodiscard]] const received_pdu& message() const noexcept { return message_; }
+  [[nodiscard]] bool answered() const noexcept { return answered_; }
+
+  // Each completes once the answer has been written; a second answer fails with
+  // errc::invalid_state. The response is encoded before the call returns its awaitable.
+  [[nodiscard]] asio::awaitable<result<void>> respond(const mms::confirmed_service_response& response);
+  [[nodiscard]] asio::awaitable<result<void>> respond_error(
+      const mms::service_error& error, std::optional<std::uint32_t> modifier_position = std::nullopt);
+  // RejectPDU (confirmed-requestPDU) with the given reason (mms::reject_code::confirmed_request).
+  [[nodiscard]] asio::awaitable<result<void>> reject(
+      std::int64_t reason = mms::reject_code::confirmed_request::other);
+
+ private:
+  friend class detail::core;
+  incoming_request(std::shared_ptr<detail::core> state, received_pdu message) noexcept;
+  asio::awaitable<result<void>> answer(result<byte_buffer> pdu);
+
+  std::shared_ptr<detail::core> state_;
+  received_pdu message_;
+  bool answered_ = false;
 };
 
 // The Initiate parameters in force (ISO 9506-1 §8.2). Max serv outstanding calling bounds the

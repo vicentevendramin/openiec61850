@@ -216,6 +216,14 @@ class client {
   // block nor throw) as it arrives. Returns the number of octets read.
   [[nodiscard]] asio::awaitable<result<std::uint64_t>> get_file(
       std::string name, std::function<void(byte_buffer)> on_chunk);
+  // SetFile: ObtainFile for `name` on the server, which reads the file back from this client
+  // (FileOpen, FileRead, FileClose) before it answers. Only this file is offered, and only
+  // for the duration of the call; any other name reads as file-non-existent. Bounded by
+  // client_options::file_transfer_timeout. A refusal is a file error whose serviceSpecificInfo
+  // (error_details) is one of mms::obtain_file_error. Concurrent calls need different source names
+  // (openiec61850::errc::invalid_state otherwise).
+  [[nodiscard]] asio::awaitable<result<void>> set_file(std::string name, byte_buffer content);
+  [[nodiscard]] asio::awaitable<result<void>> set_file(std::string name, file_source source);
   [[nodiscard]] asio::awaitable<result<void>> delete_file(std::string name);
   [[nodiscard]] asio::awaitable<result<void>> rename_file(std::string from, std::string to);
 
@@ -268,6 +276,8 @@ class client {
   [[nodiscard]] asio::awaitable<result<std::vector<file_entry>>> get_file_directory(std::string path, error_details& details);
   [[nodiscard]] asio::awaitable<result<byte_buffer>> get_file(std::string name, error_details& details);
   [[nodiscard]] asio::awaitable<result<std::uint64_t>> get_file(std::string name, std::function<void(byte_buffer)> on_chunk, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> set_file(std::string name, byte_buffer content, error_details& details);
+  [[nodiscard]] asio::awaitable<result<void>> set_file(std::string name, file_source source, error_details& details);
   [[nodiscard]] asio::awaitable<result<void>> delete_file(std::string name, error_details& details);
   [[nodiscard]] asio::awaitable<result<void>> rename_file(std::string from, std::string to, error_details& details);
   [[nodiscard]] asio::awaitable<result<gocb_values>> get_gocb_values(model::object_reference gocb, error_details& details);

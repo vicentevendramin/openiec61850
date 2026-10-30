@@ -33,6 +33,8 @@ client_state::client_state(asio::any_io_executor ex, client_options o)
       options(std::move(o)),
       limits(model::name_limits::for_edition(options.edition)),
       parse{limits, options.strict_ln_names} {
+  auto& services = options.association.initiate.detail.services;
+  if (services == mms::iec61850_services) services = mms::iec61850_client_services;
   reports.capacity = std::max<std::size_t>(1, options.report_queue_capacity);
   events.capacity = std::max<std::size_t>(1, options.event_queue_capacity);
 }
@@ -57,6 +59,11 @@ void client_state::adopt(association::client_association a) {
           if (auto self = weak.lock()) self->on_unconfirmed(m);
         });
       });
+  p->set_request_handler([weak = weak_from_this(), s = strand](association::incoming_request r) {
+    asio::post(s, [weak, r = std::move(r)]() mutable {
+      if (auto self = weak.lock()) serve_request(self, std::move(r));
+    });
+  });
   assoc = std::move(p);
 }
 
@@ -668,6 +675,22 @@ asio::awaitable<result<std::uint64_t>> client::get_file(std::string name, std::f
 
 asio::awaitable<result<std::uint64_t>> client::get_file(std::string name, std::function<void(byte_buffer)> on_chunk, error_details& details) {
   return invoke(state_, &details, &detail::get_file_stream_op, std::move(name), std::move(on_chunk));
+}
+
+asio::awaitable<result<void>> client::set_file(std::string name, byte_buffer content) {
+  return invoke(state_, nullptr, &detail::set_file_op, std::move(name), detail::memory_source(std::move(content)));
+}
+
+asio::awaitable<result<void>> client::set_file(std::string name, byte_buffer content, error_details& details) {
+  return invoke(state_, &details, &detail::set_file_op, std::move(name), detail::memory_source(std::move(content)));
+}
+
+asio::awaitable<result<void>> client::set_file(std::string name, file_source source) {
+  return invoke(state_, nullptr, &detail::set_file_op, std::move(name), std::move(source));
+}
+
+asio::awaitable<result<void>> client::set_file(std::string name, file_source source, error_details& details) {
+  return invoke(state_, &details, &detail::set_file_op, std::move(name), std::move(source));
 }
 
 asio::awaitable<result<void>> client::delete_file(std::string name) {

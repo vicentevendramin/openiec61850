@@ -51,9 +51,9 @@
 //   getNamedVariableListAttributes [12] (request: explicit tag around ObjectName; response
 //   IMPLICIT), deleteNamedVariableList [13] IMPLICIT, readJournal [65] IMPLICIT,
 //   initializeJournal [67] IMPLICIT, reportJournalStatus [68] (request: explicit tag around
-//   ObjectName; response IMPLICIT), fileOpen [72], fileRead [73], fileClose [74], fileRename [75],
-//   fileDelete [76], fileDirectory [77] (all IMPLICIT).
-// Any other service (e.g. obtainFile) decodes to `other_service` with its raw encoding,
+//   ObjectName; response IMPLICIT), obtainFile [46], fileOpen [72], fileRead [73], fileClose [74],
+//   fileRename [75], fileDelete [76], fileDirectory [77] (all IMPLICIT).
+// Any other service (e.g. takeControl) decodes to `other_service` with its raw encoding,
 // so a server can answer with a reject (unrecognized-service) and new services can be added
 // without changing the PDU layout. The listOfModifier and service-ext fields are carried opaque.
 //
@@ -265,6 +265,16 @@ inline constexpr support_options iec61850_server_services{
      service_bit::file_close, service_bit::file_rename, service_bit::file_delete,
      service_bit::file_directory, service_bit::information_report, service_bit::conclude,
      service_bit::cancel}};
+
+// What a client serves to the server: iec61850_services plus fileOpen, fileRead and fileClose, the
+// services a server issues to pull a file during obtainFile (SetFile).
+inline constexpr support_options iec61850_client_services{
+    service_bit::bit_count,
+    {service_bit::get_name_list, service_bit::identify, service_bit::read, service_bit::write,
+     service_bit::get_variable_access_attributes, service_bit::define_named_variable_list,
+     service_bit::get_named_variable_list_attributes, service_bit::delete_named_variable_list,
+     service_bit::file_open, service_bit::file_read, service_bit::file_close,
+     service_bit::information_report, service_bit::conclude, service_bit::cancel}};
 
 struct init_detail {
   std::int16_t version_number = 1;
@@ -747,7 +757,8 @@ struct report_journal_status_response {
 
 // ---------------------------------------------------------------------------------------------
 // File services (ISO 9506-2 Annex C "File access"; IEC 61850-8-1 §23 maps the ACSI file
-// transfer onto them). obtainFile is not implemented (it decodes as other_service).
+// transfer onto them; SetFile is obtainFile, whose responder reads the file back from the requester
+// with fileOpen, fileRead and fileClose while the request is outstanding).
 //
 //   FileName ::= SEQUENCE OF GraphicString   -- a VisibleString is accepted too
 //   FileAttributes ::= SEQUENCE { sizeOfFile [0] IMPLICIT Unsigned32,
@@ -830,6 +841,27 @@ struct file_directory_response {
   bool more_follows = false;
 };
 
+//   ObtainFile-Request ::= SEQUENCE { sourceFileServer [0] IMPLICIT ApplicationReference OPTIONAL,
+//                                     sourceFile [1] IMPLICIT FileName,
+//                                     destinationFile [2] IMPLICIT FileName }
+//   ObtainFile-Response ::= NULL
+// `source_file_server` holds the contents of [0], opaque (third party, parameter CBB tpy); when
+// set and empty an empty SEQUENCE is encoded.
+struct obtain_file_request {
+  std::optional<byte_view> source_file_server;
+  list_view<std::string_view> source_file;
+  list_view<std::string_view> destination_file;
+};
+
+struct obtain_file_response {};
+
+// ObtainFile-Error, carried in serviceSpecificInfo (service_error::service_specific_info holds
+// obtainFile [0] IMPLICIT INTEGER): which of the two files the error is about.
+namespace obtain_file_error {
+inline constexpr std::array<std::uint8_t, 3> source_file{0x80, 0x01, 0x00};
+inline constexpr std::array<std::uint8_t, 3> destination_file{0x80, 0x01, 0x01};
+}  // namespace obtain_file_error
+
 // The alternatives after other_service were added later; existing indices are unchanged.
 using confirmed_service_request =
     std::variant<identify_request, get_name_list_request, read_request, write_request,
@@ -838,7 +870,7 @@ using confirmed_service_request =
                  other_service, read_journal_request, initialize_journal_request,
                  report_journal_status_request, file_open_request, file_read_request,
                  file_close_request, file_rename_request, file_delete_request,
-                 file_directory_request>;
+                 file_directory_request, obtain_file_request>;
 
 using confirmed_service_response =
     std::variant<identify_response, get_name_list_response, read_response, write_response,
@@ -847,7 +879,7 @@ using confirmed_service_response =
                  delete_named_variable_list_response, other_service, read_journal_response,
                  initialize_journal_response, report_journal_status_response, file_open_response,
                  file_read_response, file_close_response, file_rename_response,
-                 file_delete_response, file_directory_response>;
+                 file_delete_response, file_directory_response, obtain_file_response>;
 
 // The CHOICE tag of a service (other_service: its tag).
 [[nodiscard]] std::uint32_t service_tag(const confirmed_service_request& s) noexcept;

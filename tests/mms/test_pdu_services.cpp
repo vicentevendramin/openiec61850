@@ -306,9 +306,60 @@ TEST_CASE("Journal services: InitializeJournal and ReportJournalStatus", "[mms]"
 TEST_CASE("The server advertises the journal and file services", "[mms]") {
   CHECK(mms::iec61850_server_services.test(mms::service_bit::file_directory));
   CHECK(mms::iec61850_server_services.test(mms::service_bit::read_journal));
+  // obtainFile depends on the file store: the server adds it when it can serve it.
   CHECK_FALSE(mms::iec61850_server_services.test(mms::service_bit::obtain_file));
-  // obtainFile stays an other_service.
-  auto pdu = mms::decode_pdu(hex("A0 06 02 01 01 BF 2E 00"));
-  REQUIRE(pdu);
-  CHECK(std::holds_alternative<mms::other_service>(std::get<mms::confirmed_request>(*pdu).service));
+  // What a server issues back during obtainFile.
+  for (const auto bit : {mms::service_bit::file_open, mms::service_bit::file_read, mms::service_bit::file_close}) {
+    CHECK(mms::iec61850_client_services.test(bit));
+    CHECK_FALSE(mms::iec61850_services.test(bit));
+  }
+}
+
+TEST_CASE("ObtainFile: request and response", "[mms]") {
+  const auto req = encode(mms::confirmed_request{7, {}, mms::obtain_file_request{std::nullopt, a_txt, b_txt}});
+  CHECK(req == hex("A0 18 02 01 07 BF 2E 12 A1 07 19 05 'a.txt' A2 07 19 05 'b.txt'"));
+  check_canonical(req);
+  const auto o = request_service<mms::obtain_file_request>(req, 7);
+  CHECK_FALSE(o.source_file_server);
+  CHECK(names(o.source_file) == std::vector<std::string>{"a.txt"});
+  CHECK(names(o.destination_file) == std::vector<std::string>{"b.txt"});
+  CHECK(mms::service_tag(mms::confirmed_service_request{o}) == 46U);
+
+  // sourceFileServer is carried opaque; several name segments are accepted, GraphicString or
+  // VisibleString.
+  const auto third = hex("A0 20 02 01 01 BF 2E 1A A0 03 A2 01 05 A1 0A 1A 03 'dir' 1A 03 'x.y' A2 07 19 05 'b.txt'");
+  const auto t = request_service<mms::obtain_file_request>(third, 1);
+  REQUIRE(t.source_file_server);
+  CHECK(byte_buffer(t.source_file_server->begin(), t.source_file_server->end()) == hex("A2 01 05"));
+  CHECK(names(t.source_file) == std::vector<std::string>{"dir", "x.y"});
+  const auto rebuilt = request_service<mms::obtain_file_request>(encode(mms::confirmed_request{1, {}, t}), 1);
+  CHECK(rebuilt.source_file_server.has_value());
+  check_canonical(encode(mms::confirmed_request{1, {}, t}));
+
+  const auto empty_server = encode(mms::confirmed_request{
+      1, {}, mms::obtain_file_request{byte_view{}, a_txt, b_txt}});
+  CHECK(request_service<mms::obtain_file_request>(empty_server, 1).source_file_server.has_value());
+
+  const auto resp = encode(mms::confirmed_response{7, mms::obtain_file_response{}});
+  CHECK(resp == hex("A1 06 02 01 07 9F 2E 00"));
+  check_canonical(resp);
+  CHECK(mms::service_tag(mms::confirmed_service_response{mms::obtain_file_response{}}) == 46U);
+  (void)response_service<mms::obtain_file_response>(resp, 7);
+}
+
+TEST_CASE("ObtainFile: malformed encodings", "[mms]") {
+  const auto bad = [](const char* text) { CHECK_FALSE(mms::decode_pdu(hex(text))); };
+  bad("A0 06 02 01 01 BF 2E 00");                                           // both names missing
+  bad("A0 0F 02 01 01 BF 2E 09 A1 07 19 05 'a.txt'");                       // no destinationFile
+  bad("A0 0F 02 01 01 BF 2E 09 A2 07 19 05 'b.txt'");                       // no sourceFile
+  bad("A0 18 02 01 01 BF 2E 12 A2 07 19 05 'b.txt' A1 07 19 05 'a.txt'");   // out of order
+  bad("A0 18 02 01 01 9F 2E 12 A1 07 19 05 'a.txt' A2 07 19 05 'b.txt'");   // primitive service
+  bad("A0 16 02 01 01 BF 2E 10 81 05 'a.txt' A2 07 19 05 'b.txt'");         // primitive FileName
+  bad("A0 1A 02 01 01 BF 2E 14 A1 07 19 05 'a.txt' A2 07 19 05 'b.txt' 05 00");  // trailing field
+  bad("A0 18 02 01 01 BF 2E 12 A1 07 04 05 'a.txt' A2 07 19 05 'b.txt'");   // not a string
+  bad("A0 18 02 01 01 BF 2E 12 A1 09 19 05 'a.txt' A2 07 19 05 'b.txt'");   // overruns [1]
+  bad("A0 18 02 01 01 BF 2E 12 A1 07 19 07 'a.txt' A2 07 19 05 'b.txt'");   // overruns the string
+  bad("A0 1B 02 01 01 BF 2E 15 80 01 00 A1 07 19 05 'a.txt' A2 07 19 05 'b.txt'");  // primitive [0]
+  bad("A1 07 02 01 07 9F 2E 01 00");                                        // response is NULL
+  bad("A1 06 02 01 07 BF 2E 00");                                           // response constructed
 }

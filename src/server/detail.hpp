@@ -224,6 +224,7 @@ struct session {
   std::map<std::string, std::shared_ptr<data_set>, std::less<>> aa_sets;
   std::map<std::int32_t, open_file> files;  // by FRSM ID
   std::int32_t next_frsm = 1;
+  bool obtaining = false;  // an ObtainFile is in progress
 
   void push(asio::awaitable<result<void>> a) {
     if (closed || !assoc) return;
@@ -238,7 +239,8 @@ struct reply {
   reply(const reply&) = delete;
   reply& operator=(const reply&) = delete;
 
-  enum class kind : std::uint8_t { response, error, reject };
+  // deferred: nothing to send yet, the service goes on in the background (ObtainFile).
+  enum class kind : std::uint8_t { response, error, reject, deferred };
   kind type = kind::response;
   mms::confirmed_service_response response;
   mms::service_error error;
@@ -256,6 +258,7 @@ struct reply {
   std::deque<std::vector<std::string_view>> file_names;
   std::deque<std::array<std::uint8_t, 8>> ids;
   byte_buffer bytes;
+  std::string destination;  // deferred ObtainFile
 
   void fail(mms::error_class c, std::int64_t code) {
     type = kind::error;
@@ -358,6 +361,7 @@ struct server_state : std::enable_shared_from_this<server_state> {
   std::unordered_map<node_id, lcb*> lcb_of;
   std::vector<std::unique_ptr<gocb>> gocbs;
   std::unordered_map<node_id, gocb*> gocb_of;
+  std::vector<std::string> incoming_files;  // destinations of the ObtainFile in progress
 
   // --- setup (server.cpp)
   result<void> init();
@@ -444,6 +448,8 @@ struct server_state : std::enable_shared_from_this<server_state> {
   void dispatch_ext(session& s, const mms::file_rename_request& r, reply& out);
   void dispatch_ext(session& s, const mms::file_delete_request& r, reply& out);
   void dispatch_ext(session& s, const mms::file_directory_request& r, reply& out);
+  // Checks an ObtainFile; when it may proceed the reply is deferred: see start_obtain_file().
+  void dispatch_ext(session& s, const mms::obtain_file_request& r, reply& out);
 
   // --- control (control.cpp)
   // Returns true when the target is handled by the control model (CO data objects).
@@ -460,6 +466,14 @@ struct server_state : std::enable_shared_from_this<server_state> {
   [[nodiscard]] session* find_session(std::uint64_t id) const;
   void shutdown();
 };
+
+// Reads the file of a checked ObtainFile from the client in the background, stores it and answers
+// `req`.
+void start_obtain_file(std::shared_ptr<server_state> st, std::shared_ptr<session> s,
+                       association::incoming_request req, std::string destination);
+
+// One of the background tasks counted in live_tasks has ended.
+void task_done(server_state& st);
 
 // Hooks for the fuzzer and tests: a state without a listener, and a session without an
 // association.

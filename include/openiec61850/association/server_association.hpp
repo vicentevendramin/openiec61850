@@ -76,54 +76,14 @@ struct server_options {
   std::function<association_decision(const association_request&, mms::initiate_response&)> authorize;
   // CR/CC done to CP received. Zero disables the timeout.
   std::chrono::milliseconds association_timeout{10000};
+  // Default timeout of request(), as association_params::request_timeout.
+  std::chrono::milliseconds request_timeout{10000};
   mms::decode_options decode;
 };
 
 namespace detail {
 struct server_state;
 }
-
-// A confirmed request received by the server. It owns the received bytes. Answer it exactly once,
-// in any order relative to the other requests; until then it counts against the client's
-// max_serv_outstanding_calling (further requests beyond it are rejected with
-// max-serv-outstanding-exceeded). Destroying it unanswered sends a Confirmed-ErrorPDU
-// (service/other). The answer methods may be awaited from any executor.
-class incoming_request {
- public:
-  incoming_request(incoming_request&&) noexcept = default;
-  incoming_request& operator=(incoming_request&& other) noexcept;
-  incoming_request(const incoming_request&) = delete;
-  incoming_request& operator=(const incoming_request&) = delete;
-  ~incoming_request();
-
-  [[nodiscard]] std::uint32_t invoke_id() const noexcept { return request().invoke_id; }
-  [[nodiscard]] const mms::confirmed_service_request& service() const noexcept {
-    return request().service;
-  }
-  [[nodiscard]] const mms::confirmed_request& request() const noexcept {
-    return std::get<mms::confirmed_request>(message_.pdu());
-  }
-  [[nodiscard]] const received_pdu& message() const noexcept { return message_; }
-  [[nodiscard]] bool answered() const noexcept { return answered_; }
-
-  // Each completes once the answer has been written; a second answer fails with
-  // errc::invalid_state. The response is encoded before the call returns its awaitable.
-  [[nodiscard]] asio::awaitable<result<void>> respond(const mms::confirmed_service_response& response);
-  [[nodiscard]] asio::awaitable<result<void>> respond_error(
-      const mms::service_error& error, std::optional<std::uint32_t> modifier_position = std::nullopt);
-  // RejectPDU (confirmed-requestPDU) with the given reason (mms::reject_code::confirmed_request).
-  [[nodiscard]] asio::awaitable<result<void>> reject(
-      std::int64_t reason = mms::reject_code::confirmed_request::other);
-
- private:
-  friend struct detail::server_state;
-  incoming_request(std::shared_ptr<detail::server_state> state, received_pdu message) noexcept;
-  asio::awaitable<result<void>> answer(result<byte_buffer> pdu);
-
-  std::shared_ptr<detail::server_state> state_;
-  received_pdu message_;
-  bool answered_ = false;
-};
 
 // The responder (Servidor) side of an MMS association. Threading as client_association.
 class server_association {
@@ -147,6 +107,14 @@ class server_association {
   // association closes the queued requests are still delivered (answering them fails), then the
   // closing error (errc::released after an orderly release) is reported.
   [[nodiscard]] asio::awaitable<result<incoming_request>> next_request();
+
+  // Sends a Confirmed-RequestPDU to the client and waits for its response, on the terms of
+  // client_association::request(); at most the negotiated max_serv_outstanding_called are sent at
+  // a time. The client's requests are still delivered meanwhile: obtainFile stays outstanding
+  // while the server reads the file with fileOpen, fileRead and fileClose (ISO 9506-2 Annex C).
+  [[nodiscard]] asio::awaitable<request_result> request(mms::confirmed_service_request service);
+  [[nodiscard]] asio::awaitable<request_result> request(mms::confirmed_service_request service,
+                                                        std::chrono::milliseconds timeout);
 
   // Sends an Unconfirmed-PDU (e.g. an IEC 61850 report); completes once written.
   [[nodiscard]] asio::awaitable<result<void>> send_unconfirmed(const mms::information_report& report);

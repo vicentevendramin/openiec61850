@@ -161,15 +161,18 @@ result<std::shared_ptr<server_state>> make_offline_state(asio::any_io_executor e
   return st;
 }
 
-namespace {
-
 void task_done(server_state& st) {
   if (st.live_tasks.fetch_sub(1) == 1) {
     for (auto* w : st.stop_waiters) w->cancel();
   }
 }
 
-void handle_request(server_state& st, session& s, association::incoming_request req) {
+namespace {
+
+void handle_request(const std::shared_ptr<server_state>& state,
+                    const std::shared_ptr<session>& session_ptr, association::incoming_request req) {
+  auto& st = *state;
+  auto& s = *session_ptr;
   ++st.tick;
   reply out;
   st.dispatch(s, req.service(), out);
@@ -192,6 +195,9 @@ void handle_request(server_state& st, session& s, association::incoming_request 
       break;
     case reply::kind::reject:
       s.push(req.reject(out.reject_reason));
+      break;
+    case reply::kind::deferred:
+      start_obtain_file(state, session_ptr, std::move(req), std::move(out.destination));
       break;
   }
 }
@@ -290,7 +296,7 @@ awaitable<void> connection(std::shared_ptr<server_state> st, asio::ip::tcp::sock
   for (;;) {
     auto req = co_await s->assoc->next_request();
     if (!req) break;
-    handle_request(*st, *s, std::move(*req));
+    handle_request(st, s, std::move(*req));
   }
   session_closed(*st, *s);
   task_done(*st);
@@ -394,9 +400,12 @@ server::~server() { stop(); }
 result<server> server::start(asio::any_io_executor ex, data_model model,
                              const asio::ip::tcp::endpoint& endpoint, server_options options) {
   if (model.logical_devices().empty()) return make_error_code(errc::invalid_model);
-  if (options.association.limits.detail.services == mms::iec61850_services) {
-    options.association.limits.detail.services = mms::iec61850_server_services;
-  }
+  auto& services = options.association.limits.detail.services;
+  const bool default_services = services == mms::iec61850_services;
+  if (default_services) services = mms::iec61850_server_services;
+  const bool obtain_file = options.files && options.files->writable() &&
+                           options.max_obtain_file_size > 0 && options.on_obtain_file;
+  if (default_services || !obtain_file) services.set(mms::service_bit::obtain_file, obtain_file);
   auto st = std::make_shared<server_state>(ex, std::move(model), std::move(options));
   if (auto r = st->init(); !r) return r.error();
   auto l = association::association_listener::listen(ex, endpoint, st->options.association);

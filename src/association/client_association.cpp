@@ -1,8 +1,6 @@
 #include "openiec61850/association/client_association.hpp"
 
 #include <deque>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -16,20 +14,6 @@ namespace detail {
 
 namespace acse = iso::acse;
 using asio::awaitable;
-
-namespace {
-
-// Late responses to abandoned (timed out or cancelled) requests are discarded silently; this
-// bounds how many invokeIDs are remembered for that.
-constexpr std::size_t max_abandoned = 4096;
-
-}  // namespace
-
-struct pending_request {
-  explicit pending_request(const strand_type& s) : done(s) {}
-  waiter done;
-  std::optional<request_result> outcome;
-};
 
 struct queued_unconfirmed {
   received_pdu message;
@@ -46,21 +30,13 @@ struct client_state final : core {
   }
 
   association_params params;
-  std::size_t limit = 1;
-  std::optional<std::size_t> peer_max_pdu;
-
-  // Requests holding a slot (sent or about to be), and those waiting for one, in order.
-  std::size_t outstanding = 0;
-  waiter_list slot_waiters;
-  std::unordered_map<std::uint32_t, pending_request*> pending;
-  std::unordered_set<std::uint32_t> abandoned;
-  std::deque<std::uint32_t> abandoned_order;
-  std::uint32_t next_invoke_id = 0;
 
   std::deque<queued_unconfirmed> unconfirmed;
   waiter* unconfirmed_consumer = nullptr;
   std::function<void(unconfirmed_message)> unconfirmed_handler;
   std::atomic<std::uint64_t> dropped{0};
+
+  std::function<void(incoming_request)> request_handler;
 
   waiter* release_waiter = nullptr;
   conclude_state conclude = conclude_state::idle;
@@ -101,6 +77,7 @@ struct client_state final : core {
     }
     auto& n = response.negotiated;
     self->limit = static_cast<std::size_t>(n.max_serv_outstanding_calling);
+    self->incoming_limit = static_cast<std::size_t>(n.max_serv_outstanding_called);
     if (n.local_detail_called && *n.local_detail_called > 0) {
       self->peer_max_pdu = static_cast<std::size_t>(*n.local_detail_called);
     }
@@ -109,103 +86,6 @@ struct client_state final : core {
     self->info.peer_ae_qualifier = response.responding_ae_qualifier;
     self->start_reader();
     co_return result<void>{};
-  }
-
-  // --- requests
-
-  std::uint32_t allocate_invoke_id() {
-    while (pending.contains(next_invoke_id) || abandoned.contains(next_invoke_id)) ++next_invoke_id;
-    return next_invoke_id++;
-  }
-
-  void abandon(std::uint32_t id) {
-    if (abandoned_order.size() == max_abandoned) {
-      abandoned.erase(abandoned_order.front());
-      abandoned_order.pop_front();
-    }
-    abandoned.insert(id);
-    abandoned_order.push_back(id);
-  }
-
-  // Hands the slot to the oldest waiter, or frees it.
-  void release_slot() {
-    if (closed()) return;
-    if (!slot_waiters.notify_one()) {
-      --outstanding;
-      if (outstanding == 0) notify_release();
-    }
-  }
-
-  struct slot_guard {
-    client_state* s;
-    ~slot_guard() { s->release_slot(); }
-  };
-  struct pending_guard {
-    client_state* s;
-    std::uint32_t id;
-    ~pending_guard() { s->pending.erase(id); }
-  };
-
-  static awaitable<request_result> request_op(std::shared_ptr<client_state> self,
-                                              mms::confirmed_service_request service,
-                                              std::chrono::milliseconds timeout) {
-    if (self->closed()) co_return self->error;
-    if (self->current_state() != association_state::established) {
-      co_return openiec61850::errc::invalid_state;
-    }
-    const auto deadline = deadline_after(timeout);
-    if (self->outstanding >= self->limit || !self->slot_waiters.empty()) {
-      waiter w(self->strand);
-      registration reg(self->slot_waiters, w);
-      const auto st = co_await wait(w, deadline);
-      if (self->closed()) co_return self->error;
-      if (st != wait_status::notified) {
-        if (w.notified) self->release_slot();  // granted, but the caller is gone
-        co_return st == wait_status::timed_out ? request_result(errc::request_timed_out)
-                                               : request_result(asio::error::operation_aborted);
-      }
-    } else {
-      ++self->outstanding;
-    }
-    const slot_guard slot{self.get()};
-
-    const auto id = self->allocate_invoke_id();
-    auto pdu = encode_mms(mms::confirmed_request{id, {}, std::move(service)});
-    if (!pdu) co_return pdu.error();
-    if (self->peer_max_pdu && pdu->size() > *self->peer_max_pdu) {
-      co_return openiec61850::errc::length_overflow;
-    }
-    pending_request p(self->strand);
-    self->pending.emplace(id, &p);
-    const pending_guard registered{self.get(), id};
-    if (auto sent = self->send_mms_bytes(*pdu); !sent) co_return sent.error();
-
-    const auto st = co_await wait(p.done, deadline);
-    if (p.outcome) co_return std::move(*p.outcome);
-    if (self->closed()) co_return self->error;
-    self->abandon(id);
-    co_return st == wait_status::timed_out ? request_result(errc::request_timed_out)
-                                           : request_result(asio::error::operation_aborted);
-  }
-
-  // Completes the pending request `id`; false if there is none.
-  bool complete(std::uint32_t id, request_result outcome) {
-    const auto it = pending.find(id);
-    if (it == pending.end()) return false;
-    if (!it->second->outcome) {
-      it->second->outcome.emplace(std::move(outcome));
-      it->second->done.notify();
-    }
-    return true;
-  }
-
-  // An answer to an unknown invokeID: discarded if it was abandoned, rejected otherwise.
-  void unmatched(std::uint32_t id, mms::reject_type type, std::int64_t reason) {
-    if (abandoned.erase(id) != 0) {
-      std::erase(abandoned_order, id);
-      return;
-    }
-    reject(id, type, reason);
   }
 
   // --- unconfirmed
@@ -292,7 +172,7 @@ struct client_state final : core {
 
     // ISO 9506-1 §8.4: Conclude requires that no request is outstanding.
     auto st = co_await self->wait_release(
-        deadline, [&] { return self->outstanding == 0 && self->slot_waiters.empty(); });
+        deadline, [&] { return self->requests_idle(); });
     if (self->closed()) co_return self->error;
     if (st != wait_status::notified) co_return fail(st);
 
@@ -331,31 +211,11 @@ struct client_state final : core {
   void on_mms(received_pdu m) override {
     const auto& pdu = m.pdu();
     switch (mms::type_of(pdu)) {
-      case mms::pdu_type::confirmed_response: {
-        const auto id = std::get<mms::confirmed_response>(pdu).invoke_id;
-        if (!complete(id, service_response(std::move(m)))) {
-          unmatched(id, mms::reject_type::confirmed_response,
-                    mms::reject_code::confirmed_response::invalid_invoke_id);
-        }
+      case mms::pdu_type::confirmed_response:
+      case mms::pdu_type::confirmed_error:
+      case mms::pdu_type::reject:
+        on_answer(std::move(m));
         break;
-      }
-      case mms::pdu_type::confirmed_error: {
-        const auto& e = std::get<mms::confirmed_error>(pdu);
-        request_error err{errc::service_error, service_error_info::from(e.error), e.modifier_position, {}};
-        if (!complete(e.invoke_id, std::move(err))) {
-          unmatched(e.invoke_id, mms::reject_type::confirmed_error,
-                    mms::reject_code::confirmed_error::invalid_invoke_id);
-        }
-        break;
-      }
-      case mms::pdu_type::reject: {
-        const auto& r = std::get<mms::reject_pdu>(pdu);
-        if (r.original_invoke_id) {
-          request_error err{errc::request_rejected, {}, {}, reject_info{r.original_invoke_id, r.type, r.reason}};
-          (void)complete(*r.original_invoke_id, std::move(err));
-        }
-        break;
-      }
       case mms::pdu_type::unconfirmed:
         push_unconfirmed(std::move(m));
         break;
@@ -367,10 +227,21 @@ struct client_state final : core {
           notify_release();
         }
         break;
-      case mms::pdu_type::confirmed_request:
-        // A client offers no services to the server.
-        reject(std::get<mms::confirmed_request>(pdu).invoke_id, mms::reject_type::confirmed_request,
-               mms::reject_code::confirmed_request::unrecognized_service);
+      case mms::pdu_type::confirmed_request: {
+        const auto id = std::get<mms::confirmed_request>(pdu).invoke_id;
+        if (!request_handler) {
+          reject(id, mms::reject_type::confirmed_request,
+                 mms::reject_code::confirmed_request::unrecognized_service);
+        } else if (admit(id, conclude == conclude_state::idle)) {
+          // A release only waits: the server may be reading a file for an outstanding obtainFile.
+          request_handler(make_incoming(shared_from_this(), std::move(m)));
+        }
+        break;
+      }
+      case mms::pdu_type::cancel_request:
+        (void)send_mms(mms::cancel_error{
+            std::get<mms::cancel_request>(pdu).invoke_id,
+            mms::service_error(mms::error_class::cancel, mms::error_code::cancel::cancel_not_possible)});
         break;
       case mms::pdu_type::conclude_request:
         reject(std::nullopt, mms::reject_type::conclude_request, 0);
@@ -380,9 +251,9 @@ struct client_state final : core {
     }
   }
 
+  void on_requests_idle() override { notify_release(); }
+
   void on_terminated() override {
-    for (auto& [id, p] : pending) p->done.notify();
-    slot_waiters.notify_all();
     if (unconfirmed_consumer != nullptr) unconfirmed_consumer->notify();
     notify_release();
   }
@@ -424,7 +295,7 @@ asio::awaitable<request_result> client_association::request(mms::confirmed_servi
 asio::awaitable<request_result> client_association::request(mms::confirmed_service_request service,
                                                             std::chrono::milliseconds timeout) {
   if (!state_) return detail::ready(request_result(openiec61850::errc::invalid_state));
-  return detail::on_strand(state_->strand, client_state::request_op(state_, std::move(service), timeout));
+  return detail::on_strand(state_->strand, detail::core::request_op(state_, std::move(service), timeout));
 }
 
 asio::awaitable<result<unconfirmed_message>> client_association::next_unconfirmed() {
@@ -436,6 +307,12 @@ void client_association::set_unconfirmed_handler(std::function<void(unconfirmed_
   if (!state_) return;
   asio::dispatch(state_->strand,
                  [s = state_, h = std::move(handler)]() mutable { s->set_handler(std::move(h)); });
+}
+
+void client_association::set_request_handler(std::function<void(incoming_request)> handler) {
+  if (!state_) return;
+  asio::dispatch(state_->strand,
+                 [s = state_, h = std::move(handler)]() mutable { s->request_handler = std::move(h); });
 }
 
 asio::awaitable<result<void>> client_association::release() {

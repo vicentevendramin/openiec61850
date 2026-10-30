@@ -858,12 +858,14 @@ class Client:
         iso: IsoParameters | None = None,
         report_queue_capacity: int = 1024,
         event_queue_capacity: int = 64,
+        file_transfer_timeout: float = 300.0,
         tls: TlsConfig | None = None,
     ) -> Client:
         """Establishes the association.
 
         ``timeout`` bounds each connection phase (TCP connect, COTP handshake, association) and
-        ``request_timeout`` every request (0 disables them). ``password`` uses ACSE password
+        ``request_timeout`` every request (0 disables them), ``file_transfer_timeout`` every
+        :meth:`write_file` and :meth:`upload_file`. ``password`` uses ACSE password
         authentication. ``ap_title``/``ae_qualifier`` are the calling AP-title and AE-qualifier
         (``None`` omits them); ``called_*`` the called ones. ``recovery=True`` (or a
         :class:`Recovery`) enables association recovery; the first connection is not retried.
@@ -886,6 +888,7 @@ class Client:
             "strict_ln_names": strict_ln_names,
             "report_queue_capacity": report_queue_capacity,
             "event_queue_capacity": event_queue_capacity,
+            "file_transfer_timeout": file_transfer_timeout,
         }
         if tls is not None:
             options["tls"] = tls._native()
@@ -1427,6 +1430,51 @@ class Client:
         if own:
             f.close()
         return n
+
+    async def write_file(self, name: str, content: bytes) -> None:
+        """SetFile: ``name`` is created on the server (ObtainFile), which reads ``content`` back
+        from this client before it answers; an existing name is refused."""
+        await self._native.set_file(name, bytes(content))
+
+    async def upload_file(
+        self,
+        name: str,
+        source: str | os.PathLike[str] | IO[bytes],
+        *,
+        source_name: str | None = None,
+    ) -> int:
+        """SetFile from ``source`` (a path, or a seekable binary file object), read chunk by chunk
+        as the server asks for it; returns the number of octets.
+
+        Reads run on the I/O thread, so a file object must answer quickly and never wait for the
+        event loop. The server is told to read ``source_name`` (default: ``name``), and only
+        that name is served, only until this call ends. A failure to read ``source`` is raised
+        as such.
+        """
+        own = isinstance(source, (str, os.PathLike))
+        f: IO[bytes] = open(source, "rb") if own else source  # type: ignore[arg-type,assignment]  # noqa: SIM115
+        failure: list[Exception] = []
+        try:
+            size = f.seek(0, os.SEEK_END)
+
+            def reader(offset: int, n: int) -> bytes:
+                try:
+                    f.seek(offset)
+                    return f.read(n)
+                except Exception as e:  # noqa: BLE001 - raised when the transfer ends
+                    failure.append(e)
+                    return b""  # a short read fails the server's FileRead
+
+            try:
+                await self._native.set_file_stream(name, size, reader, source_name or "")
+            except Iec61850Error:
+                if failure:
+                    raise failure[0] from None
+                raise
+            return size
+        finally:
+            if own:
+                f.close()
 
     async def delete_file(self, name: str) -> None:
         """FileDelete."""

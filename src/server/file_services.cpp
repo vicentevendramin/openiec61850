@@ -6,6 +6,11 @@
 // PDU size) with moreFollows until the end; FileClose releases it. FileDirectory lists a
 // directory recursively (or one file), in name order, paged by the PDU size with continueAfter.
 // Open files cannot be deleted or renamed (file-busy).
+//
+// ObtainFile (ISO 9506-2 Annex C, SetFile) reverses the roles: the request stays outstanding while
+// the server, on the same association, reads the file from the client with FileOpen, FileRead and
+// FileClose. The file is held in memory, bounded by max_obtain_file_size and the size the client
+// declared, and reaches the store only once complete.
 
 #include <algorithm>
 #include <chrono>
@@ -13,6 +18,9 @@
 #include <ctime>
 #include <limits>
 #include <string>
+
+#include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
 
 #include "detail.hpp"
 
@@ -33,15 +41,32 @@ result<std::string> join(const mms::list_view<std::string_view>& name) {
   return normalize_file_path(text);
 }
 
-void fail(reply& out, std::error_code e) {
-  std::int64_t code = ec::file::other;
-  if (e == file_errc::not_found) code = ec::file::file_non_existent;
-  if (e == file_errc::access_denied) code = ec::file::file_access_denied;
-  if (e == file_errc::exists) code = ec::file::duplicate_filename;
-  if (e == file_errc::invalid_name) code = ec::file::filename_syntax_error;
-  if (e == file_errc::busy) code = ec::file::file_busy;
-  if (e == file_errc::no_space) code = ec::file::insufficient_space_in_filestore;
-  out.fail(mms::error_class::file, code);
+std::int64_t file_error_code(std::error_code e) {
+  if (e == file_errc::not_found) return ec::file::file_non_existent;
+  if (e == file_errc::access_denied) return ec::file::file_access_denied;
+  if (e == file_errc::exists) return ec::file::duplicate_filename;
+  if (e == file_errc::invalid_name) return ec::file::filename_syntax_error;
+  if (e == file_errc::busy) return ec::file::file_busy;
+  if (e == file_errc::no_space) return ec::file::insufficient_space_in_filestore;
+  return ec::file::other;
+}
+
+void fail(reply& out, std::error_code e) { out.fail(mms::error_class::file, file_error_code(e)); }
+
+// A file error of ObtainFile, naming the file it is about (ObtainFile-Error).
+mms::service_error obtain_error(std::int64_t code, bool source) {
+  mms::service_error e(mms::error_class::file, code);
+  if (source) {
+    e.service_specific_info = mms::obtain_file_error::source_file;
+  } else {
+    e.service_specific_info = mms::obtain_file_error::destination_file;
+  }
+  return e;
+}
+
+void fail_obtain(reply& out, std::int64_t code, bool source) {
+  out.type = reply::kind::error;
+  out.error = obtain_error(code, source);
 }
 
 std::string generalized_time(std::chrono::system_clock::time_point t) {
@@ -189,6 +214,147 @@ void server_state::dispatch_ext(session& s, const mms::file_directory_request& r
     out.directory.push_back(e);
   }
   out.response = mms::file_directory_response{out.directory, more};
+}
+
+void server_state::dispatch_ext(session& s, const mms::obtain_file_request& r, reply& out) {
+  if (!options.files || !options.files->writable() || options.max_obtain_file_size == 0 ||
+      !options.on_obtain_file) {
+    return out.reject(mms::reject_code::confirmed_request::unrecognized_service);
+  }
+  // The file comes from this client: a third party (sourceFileServer) is not reached.
+  if (r.source_file_server) return fail_obtain(out, ec::file::other, true);
+  std::string source;
+  bool first = true;
+  for (const auto part : r.source_file) {
+    if (!first) source.push_back('/');
+    source.append(part);
+    first = false;
+  }
+  if (source.empty()) return fail_obtain(out, ec::file::filename_syntax_error, true);
+  auto path = join(r.destination_file);
+  if (!path) return fail_obtain(out, file_error_code(path.error()), false);
+  if (path->empty()) return fail_obtain(out, ec::file::filename_syntax_error, false);
+  if (s.obtaining) return out.fail(mms::error_class::resource, ec::resource::capability_unavailable);
+  if (is_open(*this, *path) || std::ranges::find(incoming_files, *path) != incoming_files.end()) {
+    return fail_obtain(out, ec::file::file_busy, false);
+  }
+  if (auto info = options.files->stat(*path); info) {
+    return fail_obtain(out, ec::file::duplicate_filename, false);
+  } else if (info.error() != file_errc::not_found) {
+    return fail_obtain(out, file_error_code(info.error()), false);
+  }
+  {
+    const auto refused = options.on_obtain_file({s.id, std::move(source), *path});
+    if (refused && *refused != file_errc::ok) {
+      return fail_obtain(out, file_error_code(*refused), false);
+    }
+  }
+  out.type = reply::kind::deferred;
+  out.destination = std::move(*path);
+}
+
+namespace {
+
+// Copies the source file of the request from the client; an error names what the client hears.
+struct pulled_file {
+  byte_buffer content;
+  std::optional<mms::service_error> error;
+};
+
+// What a reverse request failed with, as an error about the source file.
+mms::service_error source_failure(const association::request_error& e) {
+  if (e.service_error && e.service_error->cls == mms::error_class::file) {
+    return obtain_error(e.service_error->code, true);
+  }
+  return obtain_error(ec::file::other, true);
+}
+
+asio::awaitable<pulled_file> pull_file(std::shared_ptr<server_state> st, std::shared_ptr<session> s,
+                                       mms::list_view<std::string_view> source) {
+  const auto started = clock::now();
+  const auto budget = st->options.obtain_file_timeout;
+  const auto default_timeout = st->options.association.request_timeout;
+  // What is left of the transfer for one request; negative when it has run out.
+  auto timeout = [&] {
+    if (budget.count() <= 0) return default_timeout;
+    const auto left =
+        budget - std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - started);
+    if (left.count() <= 0) return std::chrono::milliseconds(-1);
+    return default_timeout.count() > 0 ? std::min(left, default_timeout) : left;
+  };
+
+  pulled_file out;
+  auto opened = co_await s->assoc->request(mms::file_open_request{source, 0}, timeout());
+  if (!opened) {
+    out.error = source_failure(opened.failure());
+    co_return out;
+  }
+  const auto* o = std::get_if<mms::file_open_response>(&opened->service());
+  if (o == nullptr) {
+    out.error = obtain_error(ec::file::other, true);
+    co_return out;
+  }
+  const auto frsm = o->frsm_id;
+  const std::uint64_t size = o->attributes.size;
+  if (size > st->options.max_obtain_file_size) {
+    out.error = obtain_error(ec::file::insufficient_space_in_filestore, false);
+  }
+  while (!out.error) {
+    const auto left = timeout();
+    if (left.count() < 0) {
+      out.error = obtain_error(ec::file::other, true);
+      break;
+    }
+    auto r = co_await s->assoc->request(mms::file_read_request{frsm}, left);
+    if (!r) {
+      out.error = source_failure(r.failure());
+      break;
+    }
+    const auto* chunk = std::get_if<mms::file_read_response>(&r->service());
+    // The declared size bounds the file: more data than that, a read that makes no progress or
+    // a file that ends early are all failures of the client.
+    if (chunk == nullptr || chunk->data.size() > size - out.content.size() ||
+        (chunk->more_follows && chunk->data.empty()) ||
+        (!chunk->more_follows && out.content.size() + chunk->data.size() != size)) {
+      out.error = obtain_error(ec::file::other, true);
+      break;
+    }
+    out.content.insert(out.content.end(), chunk->data.begin(), chunk->data.end());
+    if (!chunk->more_follows) break;
+  }
+  (void)co_await s->assoc->request(mms::file_close_request{frsm});
+  co_return out;
+}
+
+asio::awaitable<void> obtain_file(std::shared_ptr<server_state> st, std::shared_ptr<session> s,
+                                  association::incoming_request req, std::string destination) {
+  const auto& r = std::get<mms::obtain_file_request>(req.service());
+  auto pulled = co_await pull_file(st, s, r.source_file);
+  if (!pulled.error && !s->closed) {
+    if (auto w = st->options.files->write(destination, pulled.content); !w) {
+      pulled.error = obtain_error(file_error_code(w.error()), false);
+    }
+  }
+  if (pulled.error) {
+    s->push(req.respond_error(*pulled.error));
+  } else {
+    s->push(req.respond(mms::obtain_file_response{}));
+  }
+  s->obtaining = false;
+  std::erase(st->incoming_files, destination);
+  task_done(*st);
+}
+
+}  // namespace
+
+void start_obtain_file(std::shared_ptr<server_state> st, std::shared_ptr<session> s,
+                       association::incoming_request req, std::string destination) {
+  s->obtaining = true;
+  st->incoming_files.push_back(destination);
+  st->live_tasks.fetch_add(1);
+  auto strand = st->strand;
+  asio::co_spawn(strand, obtain_file(std::move(st), std::move(s), std::move(req), std::move(destination)),
+                 asio::detached);
 }
 
 }  // namespace openiec61850::server::detail

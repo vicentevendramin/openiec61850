@@ -95,6 +95,18 @@ asio::awaitable<R> with_details(error_details& d, asio::awaitable<R> op) {
   co_return r;
 }
 
+// A file offered to the server for the duration of a set_file().
+struct offered_file {
+  std::string name;
+  file_source source;
+};
+
+// A file the server has open with FileOpen (ISO 9506-2 file read state machine).
+struct served_file {
+  std::shared_ptr<offered_file> file;
+  std::uint64_t position = 0;
+};
+
 // One coroutine waiting on the strand. notify() may come before the wait.
 struct waiter {
   explicit waiter(const strand_type& s) : timer(s, clock::time_point::max()) {}
@@ -210,6 +222,9 @@ struct client_state : std::enable_shared_from_this<client_state> {
 
   std::map<std::string, subscription> subscriptions;  // key: rcb.to_string()
   std::map<std::string, control_channel> controls;    // key: control_key()
+  std::map<std::string, std::shared_ptr<offered_file>, std::less<>> offered;  // by source name
+  std::map<std::int32_t, served_file> served;                                 // by FRSM ID
+  std::int32_t next_frsm = 1;
 
   mutable std::mutex mutex;  // guards info and entry_ids (read from any thread)
   association::association_info info;
@@ -301,6 +316,9 @@ asio::awaitable<result<mms::type_description>> type_description_on(assoc_ptr a,
 // mapped with request_error_code() (services.cpp).
 asio::awaitable<result<association::service_response>> call_on(assoc_ptr a,
                                                                mms::confirmed_service_request svc);
+asio::awaitable<result<association::service_response>> call_on(assoc_ptr a,
+                                                               mms::confirmed_service_request svc,
+                                                               std::chrono::milliseconds timeout);
 
 // --- setting groups, logs, files, GoCBs (acsi_services.cpp)
 
@@ -318,6 +336,10 @@ asio::awaitable<result<std::uint32_t>> get_log_status_op(std::shared_ptr<client_
 asio::awaitable<result<std::vector<file_entry>>> get_file_directory_op(std::shared_ptr<client_state> s, error_details* d, std::string path);
 asio::awaitable<result<byte_buffer>> get_file_op(std::shared_ptr<client_state> s, error_details* d, std::string name);
 asio::awaitable<result<std::uint64_t>> get_file_stream_op(std::shared_ptr<client_state> s, error_details* d, std::string name, std::function<void(byte_buffer)> on_chunk);
+[[nodiscard]] file_source memory_source(byte_buffer content);
+asio::awaitable<result<void>> set_file_op(std::shared_ptr<client_state> s, error_details* d, std::string name, file_source source);
+// Answers a confirmed request of the server (the reverse services of set_file_op).
+void serve_request(const std::shared_ptr<client_state>& s, association::incoming_request req);
 asio::awaitable<result<void>> delete_file_op(std::shared_ptr<client_state> s, error_details* d, std::string name);
 asio::awaitable<result<void>> rename_file_op(std::shared_ptr<client_state> s, error_details* d, std::string from, std::string to);
 asio::awaitable<result<gocb_values>> get_gocb_values_op(std::shared_ptr<client_state> s, error_details* d, model::object_reference gocb);

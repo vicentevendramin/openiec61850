@@ -7,6 +7,7 @@
 #include <asio/as_tuple.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/detached.hpp>
+#include <asio/dispatch.hpp>
 #include <asio/use_awaitable.hpp>
 
 #include "handshake.hpp"
@@ -16,6 +17,14 @@ namespace openiec61850::association::detail {
 
 namespace acse = iso::acse;
 using asio::awaitable;
+
+namespace {
+
+// Late responses to abandoned (timed out or cancelled) requests are discarded silently; this
+// bounds how many invokeIDs are remembered for that.
+constexpr std::size_t max_abandoned = 4096;
+
+}  // namespace
 
 clock::time_point deadline_after(std::chrono::milliseconds timeout) noexcept {
   if (timeout <= std::chrono::milliseconds::zero()) return clock::time_point::max();
@@ -87,6 +96,8 @@ void core::terminate(std::error_code reason, bool graceful) {
   error = reason;
   set_state(association_state::closed);
   (void)pres.on_transport_disconnect();
+  for (auto& [id, p] : pending_) p->done.notify();
+  slot_waiters.notify_all();
   on_terminated();
   closed_waiters.notify_all();
   if (graceful) {
@@ -241,4 +252,212 @@ awaitable<std::error_code> core::wait_closed_op(std::shared_ptr<core> self) {
   co_return self->error;
 }
 
+// --- confirmed requests issued by this side
+
+std::uint32_t core::allocate_invoke_id() {
+  while (pending_.contains(next_invoke_id_) || abandoned_.contains(next_invoke_id_)) ++next_invoke_id_;
+  return next_invoke_id_++;
+}
+
+void core::abandon(std::uint32_t id) {
+  if (abandoned_order_.size() == max_abandoned) {
+    abandoned_.erase(abandoned_order_.front());
+    abandoned_order_.pop_front();
+  }
+  abandoned_.insert(id);
+  abandoned_order_.push_back(id);
+}
+
+// Hands the slot to the oldest waiter, or frees it.
+void core::release_slot() {
+  if (closed()) return;
+  if (!slot_waiters.notify_one()) {
+    --outstanding;
+    if (outstanding == 0) on_requests_idle();
+  }
+}
+
+awaitable<request_result> core::request_op(std::shared_ptr<core> self,
+                                           mms::confirmed_service_request service,
+                                           std::chrono::milliseconds timeout) {
+  struct slot_guard {
+    core* s;
+    ~slot_guard() { s->release_slot(); }
+  };
+  struct pending_guard {
+    core* s;
+    std::uint32_t id;
+    ~pending_guard() { s->pending_.erase(id); }
+  };
+
+  if (self->closed()) co_return self->error;
+  if (self->current_state() != association_state::established) {
+    co_return openiec61850::errc::invalid_state;
+  }
+  const auto deadline = deadline_after(timeout);
+  if (self->outstanding >= self->limit || !self->slot_waiters.empty()) {
+    waiter w(self->strand);
+    registration reg(self->slot_waiters, w);
+    const auto st = co_await wait(w, deadline);
+    if (self->closed()) co_return self->error;
+    if (st != wait_status::notified) {
+      if (w.notified) self->release_slot();  // granted, but the caller is gone
+      co_return st == wait_status::timed_out ? request_result(errc::request_timed_out)
+                                             : request_result(asio::error::operation_aborted);
+    }
+  } else {
+    ++self->outstanding;
+  }
+  const slot_guard slot{self.get()};
+
+  const auto id = self->allocate_invoke_id();
+  auto pdu = encode_mms(mms::confirmed_request{id, {}, std::move(service)});
+  if (!pdu) co_return pdu.error();
+  if (self->peer_max_pdu && pdu->size() > *self->peer_max_pdu) {
+    co_return openiec61850::errc::length_overflow;
+  }
+  pending_request p(self->strand);
+  self->pending_.emplace(id, &p);
+  const pending_guard registered{self.get(), id};
+  if (auto sent = self->send_mms_bytes(*pdu); !sent) co_return sent.error();
+
+  const auto st = co_await wait(p.done, deadline);
+  if (p.outcome) co_return std::move(*p.outcome);
+  if (self->closed()) co_return self->error;
+  self->abandon(id);
+  co_return st == wait_status::timed_out ? request_result(errc::request_timed_out)
+                                         : request_result(asio::error::operation_aborted);
+}
+
+// Completes the pending request `id`; false if there is none.
+bool core::complete(std::uint32_t id, request_result outcome) {
+  const auto it = pending_.find(id);
+  if (it == pending_.end()) return false;
+  if (!it->second->outcome) {
+    it->second->outcome.emplace(std::move(outcome));
+    it->second->done.notify();
+  }
+  return true;
+}
+
+// An answer to an unknown invokeID: discarded if it was abandoned, rejected otherwise.
+void core::unmatched(std::uint32_t id, mms::reject_type type, std::int64_t reason) {
+  if (abandoned_.erase(id) != 0) {
+    std::erase(abandoned_order_, id);
+    return;
+  }
+  reject(id, type, reason);
+}
+
+void core::on_answer(received_pdu m) {
+  const auto& pdu = m.pdu();
+  if (const auto* response = std::get_if<mms::confirmed_response>(&pdu)) {
+    const auto id = response->invoke_id;
+    if (!complete(id, service_response(std::move(m)))) {
+      unmatched(id, mms::reject_type::confirmed_response,
+                mms::reject_code::confirmed_response::invalid_invoke_id);
+    }
+  } else if (const auto* e = std::get_if<mms::confirmed_error>(&pdu)) {
+    request_error err{errc::service_error, service_error_info::from(e->error), e->modifier_position, {}};
+    if (!complete(e->invoke_id, std::move(err))) {
+      unmatched(e->invoke_id, mms::reject_type::confirmed_error,
+                mms::reject_code::confirmed_error::invalid_invoke_id);
+    }
+  } else if (const auto* r = std::get_if<mms::reject_pdu>(&pdu);
+             r != nullptr && r->original_invoke_id && r->type != mms::reject_type::confirmed_response &&
+             r->type != mms::reject_type::confirmed_error) {
+    // A reject of one of our answers names an invokeID of the peer's, not of a request of ours.
+    request_error err{errc::request_rejected, {}, {}, reject_info{r->original_invoke_id, r->type, r->reason}};
+    (void)complete(*r->original_invoke_id, std::move(err));
+  }
+}
+
+// --- confirmed requests received
+
+bool core::admit(std::uint32_t id, bool open) {
+  using namespace mms::reject_code;
+  if (incoming.contains(id)) {
+    reject(id, mms::reject_type::confirmed_request, confirmed_request::invalid_invoke_id);
+  } else if (incoming.size() >= incoming_limit) {
+    reject(id, mms::reject_type::confirmed_request, confirmed_request::max_serv_outstanding_exceeded);
+  } else if (!open) {
+    reject(id, mms::reject_type::confirmed_request, confirmed_request::other);
+  } else {
+    incoming.insert(id);
+    return true;
+  }
+  return false;
+}
+
+incoming_request core::make_incoming(std::shared_ptr<core> self, received_pdu m) {
+  return incoming_request(std::move(self), std::move(m));
+}
+
+awaitable<result<void>> core::answer_op(std::shared_ptr<core> self, std::uint32_t id, byte_buffer pdu) {
+  if (self->closed()) co_return self->error;
+  if (self->incoming.erase(id) == 0) co_return openiec61850::errc::invalid_state;
+  auto sent = self->send_mms_bytes(pdu);
+  if (!sent) co_return sent.error();
+  co_return co_await wait_sent(std::move(*sent));
+}
+
+awaitable<result<void>> core::send_op(std::shared_ptr<core> self, byte_buffer pdu) {
+  if (self->closed()) co_return self->error;
+  auto sent = self->send_mms_bytes(pdu);
+  if (!sent) co_return sent.error();
+  co_return co_await wait_sent(std::move(*sent));
+}
+
 }  // namespace openiec61850::association::detail
+
+namespace openiec61850::association {
+
+// --- incoming_request
+
+incoming_request::incoming_request(std::shared_ptr<detail::core> state, received_pdu message) noexcept
+    : state_(std::move(state)), message_(std::move(message)) {}
+
+incoming_request& incoming_request::operator=(incoming_request&& other) noexcept {
+  if (this != &other) {
+    const incoming_request previous(std::move(*this));  // answered on destruction if needed
+    state_ = std::move(other.state_);
+    message_ = std::move(other.message_);
+    answered_ = other.answered_;
+  }
+  return *this;
+}
+
+incoming_request::~incoming_request() {
+  if (!state_ || answered_) return;
+  auto pdu = detail::encode_mms(mms::confirmed_error{
+      invoke_id(), std::nullopt, mms::service_error(mms::error_class::service, mms::error_code::service::other)});
+  if (!pdu) return;
+  asio::dispatch(state_->strand, [s = state_, id = invoke_id(), bytes = std::move(*pdu)]() mutable {
+    if (s->closed() || s->incoming.erase(id) == 0) return;
+    (void)s->send_mms_bytes(bytes);
+  });
+}
+
+asio::awaitable<result<void>> incoming_request::answer(result<byte_buffer> pdu) {
+  if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
+  if (answered_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
+  if (!pdu) return detail::ready(result<void>(pdu.error()));
+  answered_ = true;
+  return detail::on_strand(state_->strand, detail::core::answer_op(state_, invoke_id(), std::move(*pdu)));
+}
+
+asio::awaitable<result<void>> incoming_request::respond(const mms::confirmed_service_response& response) {
+  return answer(detail::encode_mms(mms::confirmed_response{invoke_id(), response}));
+}
+
+asio::awaitable<result<void>> incoming_request::respond_error(const mms::service_error& error,
+                                                              std::optional<std::uint32_t> modifier_position) {
+  return answer(detail::encode_mms(mms::confirmed_error{invoke_id(), modifier_position, error}));
+}
+
+asio::awaitable<result<void>> incoming_request::reject(std::int64_t reason) {
+  return answer(detail::encode_mms(
+      mms::reject_pdu{invoke_id(), mms::reject_type::confirmed_request, reason}));
+}
+
+}  // namespace openiec61850::association

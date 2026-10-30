@@ -4,9 +4,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <system_error>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <asio/awaitable.hpp>
@@ -99,8 +102,15 @@ struct send_completion {
   std::optional<result<void>> outcome;
 };
 
+struct pending_request {
+  explicit pending_request(const strand_type& s) : done(s) {}
+  waiter done;
+  std::optional<request_result> outcome;
+};
+
 // The strand-confined state common to both roles: the channel, the presentation (and session)
-// protocol machine, the reader coroutine and the termination logic.
+// protocol machine, the reader coroutine, the termination logic, and the confirmed services in
+// both directions (each direction has its own invokeIDs).
 class core : public std::enable_shared_from_this<core> {
  public:
   core(transport::cotp_channel ch, ps::role role, const ps::connection_options& options,
@@ -134,6 +144,25 @@ class core : public std::enable_shared_from_this<core> {
 
   [[nodiscard]] static asio::awaitable<std::error_code> wait_closed_op(std::shared_ptr<core> self);
 
+  // Confirmed requests issued by this side.
+  [[nodiscard]] static asio::awaitable<request_result> request_op(std::shared_ptr<core> self,
+                                                                  mms::confirmed_service_request service,
+                                                                  std::chrono::milliseconds timeout);
+  // Confirmed-Response, Confirmed-Error or Reject, matched to the request it answers.
+  void on_answer(received_pdu m);
+  [[nodiscard]] bool requests_idle() const noexcept {
+    return outstanding == 0 && slot_waiters.empty();
+  }
+
+  // Confirmed requests received. admit() counts one, or rejects it (`open`: the state allows it).
+  [[nodiscard]] bool admit(std::uint32_t id, bool open);
+  [[nodiscard]] static incoming_request make_incoming(std::shared_ptr<core> self, received_pdu m);
+  [[nodiscard]] static asio::awaitable<result<void>> answer_op(std::shared_ptr<core> self,
+                                                               std::uint32_t id, byte_buffer pdu);
+  // Writes an already encoded PDU that answers nothing.
+  [[nodiscard]] static asio::awaitable<result<void>> send_op(std::shared_ptr<core> self,
+                                                             byte_buffer pdu);
+
   strand_type strand;
   transport::cotp_channel channel;
   ps::connection pres;
@@ -144,18 +173,40 @@ class core : public std::enable_shared_from_this<core> {
   waiter_list closed_waiters;
   association_info info;
 
+  // Issued: the negotiated limit and the peer's largest PDU; requests holding a slot (sent or about
+  // to be), and those waiting for one, in order.
+  std::size_t limit = 1;
+  std::optional<std::size_t> peer_max_pdu;
+  std::size_t outstanding = 0;
+  waiter_list slot_waiters;
+  // Received, not answered yet.
+  std::size_t incoming_limit = 1;
+  std::unordered_set<std::uint32_t> incoming;
+
  protected:
   virtual void on_mms(received_pdu pdu) = 0;
   // FN received; answered with RLRE by default.
   virtual void on_release_indication(bool collision);
   virtual void on_release_confirm();
   virtual void on_terminated() = 0;
+  // The last issued request has finished.
+  virtual void on_requests_idle() {}
 
  private:
+  std::uint32_t allocate_invoke_id();
+  void abandon(std::uint32_t id);
+  void release_slot();
+  bool complete(std::uint32_t id, request_result outcome);
+  void unmatched(std::uint32_t id, mms::reject_type type, std::int64_t reason);
+
   static asio::awaitable<void> reader(std::shared_ptr<core> self);
   void handle_tsdu(byte_buffer tsdu);
   void on_bad_mms(byte_view encoding, std::error_code ec);
 
+  std::unordered_map<std::uint32_t, pending_request*> pending_;
+  std::unordered_set<std::uint32_t> abandoned_;
+  std::deque<std::uint32_t> abandoned_order_;
+  std::uint32_t next_invoke_id_ = 0;
   std::atomic<association_state> state_{association_state::established};
 };
 

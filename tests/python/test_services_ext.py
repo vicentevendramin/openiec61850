@@ -428,3 +428,171 @@ def test_sync_facade(tmp_path):
             c.rename_file("readme.txt", "r2")
             c.delete_file("r2")
             assert len(c.list_files()) == 2
+
+
+# --- SetFile (MMS ObtainFile)
+
+
+def _accept(event):
+    return None
+
+
+async def test_set_file_is_off_without_the_hook():
+    store = iec.MemoryFileStore()
+    async with await iec.Server.start(make_model(), "127.0.0.1", 0, files=store) as srv:
+        async with await iec.Client.connect("127.0.0.1", srv.port) as c:
+            with pytest.raises(iec.RequestRejected):
+                await c.write_file("a", b"x")
+
+
+async def test_set_file_into_memory_store(tmp_path):
+    store = iec.MemoryFileStore()
+    seen = []
+    big = bytes(i % 251 for i in range(100_000))
+    async with await iec.Server.start(make_model(), "127.0.0.1", 0, files=store, on_obtain_file=seen.append) as srv:
+        async with await iec.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+            await c.write_file("fw/image.bin", big)
+            assert store.get("fw/image.bin") == big
+            assert seen == [iec.ObtainFileEvent(seen[0].association, "fw/image.bin", "fw/image.bin")]
+
+            path = tmp_path / "local.bin"
+            path.write_bytes(b"from disk")
+            assert await c.upload_file("disk.bin", path) == 9
+            assert store.get("disk.bin") == b"from disk"
+
+            assert await c.upload_file("obj.bin", io.BytesIO(b"object"), source_name="local") == 6
+            assert store.get("obj.bin") == b"object"
+            assert seen[-1].source == "local"
+
+            with pytest.raises(iec.FileError) as e:
+                await c.write_file("obj.bin", b"again")
+            assert e.value.file_error == iec.FileErrorCode.DUPLICATE_FILENAME
+            with pytest.raises(iec.FileError) as e:
+                await c.write_file("../evil", b"x")
+            assert e.value.file_error == iec.FileErrorCode.FILENAME_SYNTAX_ERROR
+            assert await c.read_file("obj.bin") == b"object"
+
+
+async def test_set_file_directory_store(tmp_path):
+    store = iec.DirectoryFileStore(tmp_path)
+    async with await iec.Server.start(make_model(), "127.0.0.1", 0, files=store, on_obtain_file=_accept) as srv:
+        async with await iec.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+            await c.write_file("sub/dir/a.bin", b"abc")
+    assert (tmp_path / "sub/dir/a.bin").read_bytes() == b"abc"
+    store.write("local.bin", b"x")
+    assert (tmp_path / "local.bin").read_bytes() == b"x"
+    with pytest.raises(iec.FileStoreError) as e:
+        store.write("local.bin", b"y")
+    assert e.value.errno == errno.EEXIST
+
+
+async def test_set_file_refused():
+    store = iec.MemoryFileStore()
+
+    def hook(event):
+        if event.destination.startswith("locked/"):
+            return False
+        if event.destination.startswith("full/"):
+            return iec.FileErrorCode.INSUFFICIENT_SPACE_IN_FILESTORE
+        if event.destination.startswith("broken/"):
+            raise RuntimeError("expected by the test")
+        return None
+
+    async with await iec.Server.start(
+        make_model(), "127.0.0.1", 0, files=store, on_obtain_file=hook, max_obtain_file_size=10
+    ) as srv:
+        async with await iec.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+            for name, code in (
+                ("locked/a", iec.FileErrorCode.FILE_ACCESS_DENIED),
+                ("broken/a", iec.FileErrorCode.FILE_ACCESS_DENIED),
+                ("full/a", iec.FileErrorCode.INSUFFICIENT_SPACE_IN_FILESTORE),
+            ):
+                with pytest.raises(iec.FileError) as e:
+                    await c.write_file(name, b"x")
+                assert e.value.file_error == code
+            with pytest.raises(iec.FileError) as e:
+                await c.write_file("big", bytes(11))
+            assert e.value.file_error == iec.FileErrorCode.INSUFFICIENT_SPACE_IN_FILESTORE
+            await c.write_file("fits", bytes(10))
+            assert store.get("big") is None and store.get("fits") == bytes(10)
+
+
+async def test_set_file_needs_a_writable_store():
+    class ReadOnly(iec.FileStore):
+        def list(self, directory):
+            return []
+
+        def stat(self, path):
+            raise FileNotFoundError(path)
+
+        def read(self, path, offset, size):
+            return b""
+
+        def remove(self, path):
+            raise PermissionError(path)
+
+        def rename(self, current, new):
+            raise PermissionError(current)
+
+    for files in (None, ReadOnly()):
+        async with await iec.Server.start(make_model(), "127.0.0.1", 0, files=files, on_obtain_file=_accept) as srv:
+            async with await iec.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+                with pytest.raises(iec.Iec61850Error):
+                    await c.write_file("a", b"x")
+
+
+async def test_set_file_python_store_and_failing_source():
+    class Dict(iec.FileStore):
+        def __init__(self):
+            self.files = {}
+
+        def list(self, directory):
+            return [iec.FileInfo(k, len(v)) for k, v in sorted(self.files.items())]
+
+        def stat(self, path):
+            if path not in self.files:
+                raise FileNotFoundError(path)
+            return iec.FileInfo(path, len(self.files[path]))
+
+        def read(self, path, offset, size):
+            return self.files[path][offset : offset + size]
+
+        def remove(self, path):
+            del self.files[path]
+
+        def rename(self, current, new):
+            self.files[new] = self.files.pop(current)
+
+        def write(self, path, content):
+            if path == "nospace":
+                raise OSError(errno.ENOSPC, "full")
+            self.files[path] = content
+
+    class Broken(io.BytesIO):
+        def read(self, *a):
+            raise OSError("expected by the test")
+
+    store = Dict()
+    async with await iec.Server.start(make_model(), "127.0.0.1", 0, files=store, on_obtain_file=_accept) as srv:
+        async with await iec.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+            await c.write_file("a.bin", b"payload")
+            assert store.files == {"a.bin": b"payload"}
+            with pytest.raises(iec.FileError) as e:
+                await c.write_file("nospace", b"x")
+            assert e.value.file_error == iec.FileErrorCode.INSUFFICIENT_SPACE_IN_FILESTORE
+            with pytest.raises(OSError, match="expected by the test"):
+                await c.upload_file("b.bin", Broken(b"data"))
+            assert "b.bin" not in store.files
+            await c.write_file("c.bin", b"still fine")
+
+
+def test_set_file_sync(tmp_path):
+    store = iec.MemoryFileStore()
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"sync file")
+    with sync.Server.start(make_model(), "127.0.0.1", 0, files=store, on_obtain_file=_accept) as srv:
+        with sync.Client.connect("127.0.0.1", srv.port, **FAST) as c:
+            c.write_file("a", b"sync")
+            assert c.upload_file("b", path) == 9
+            assert c.read_file("b") == b"sync file"
+    assert store.get("a") == b"sync"

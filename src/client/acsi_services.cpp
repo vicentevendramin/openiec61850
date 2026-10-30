@@ -1,6 +1,7 @@
 // Setting groups (7-2 §16 / 8-1 §16), logs (7-2 §17.3 / 8-1 §17.3), files (7-2 §23 / 8-1 §23)
 // and GoCB attributes (7-2 §18.2 / 8-1 §18.1).
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -8,6 +9,9 @@
 #include <span>
 #include <string_view>
 #include <utility>
+
+#include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
 
 #include "detail.hpp"
 
@@ -466,6 +470,136 @@ awaitable<result<byte_buffer>> get_file_op(std::shared_ptr<client_state> s, erro
   });
   if (!r) co_return r.error();
   co_return std::move(*content);
+}
+
+file_source memory_source(byte_buffer content) {
+  file_source source;
+  source.size = content.size();
+  source.read = [c = std::make_shared<const byte_buffer>(std::move(content))](
+                    std::uint64_t offset, std::span<std::uint8_t> out) -> result<std::size_t> {
+    if (offset >= c->size()) return std::size_t{0};
+    const auto n = std::min<std::size_t>(out.size(), c->size() - static_cast<std::size_t>(offset));
+    std::copy_n(c->begin() + static_cast<std::ptrdiff_t>(offset), n, out.begin());
+    return n;
+  };
+  return source;
+}
+
+awaitable<result<void>> set_file_op(std::shared_ptr<client_state> s, error_details* d,
+                                    std::string name, file_source source) {
+  if (name.empty() || !source.read) co_return misuse;
+  if (source.size > std::numeric_limits<std::uint32_t>::max()) {
+    co_return openiec61850::errc::value_out_of_range;
+  }
+  auto a = s->current(d);
+  if (!a) co_return a.error();
+  auto file = std::make_shared<offered_file>();
+  file->name = source.name.empty() ? name : source.name;
+  file->source = std::move(source);
+  if (!s->offered.emplace(file->name, file).second) co_return misuse;
+  // Withdrawn on every way out, cancellation included.
+  struct withdraw {
+    client_state* s;
+    offered_file* file;
+    ~withdraw() {
+      s->offered.erase(file->name);
+      std::erase_if(s->served, [&](const auto& e) { return e.second.file.get() == file; });
+    }
+  } guard{s.get(), file.get()};
+
+  const std::array<std::string_view, 1> from{file->name};
+  const std::array<std::string_view, 1> to{name};
+  auto r = co_await call_on(*a, mms::obtain_file_request{std::nullopt, from, to},
+                            s->options.file_transfer_timeout);
+  if (!r) co_return r.error();
+  if (response_as<mms::obtain_file_response>(*r) == nullptr) co_return violation;
+  co_return result<void>{};
+}
+
+namespace {
+
+// Largest FileRead answer, and files the server may hold open at once: it decides how much of
+// this side's memory and time a set_file() costs.
+constexpr std::size_t max_served_chunk = 65000;
+constexpr std::size_t max_served_files = 8;
+
+mms::service_error file_error(std::int64_t code) { return {mms::error_class::file, code}; }
+
+awaitable<void> answer_file_open(std::shared_ptr<client_state> s, association::incoming_request req) {
+  namespace ec = mms::error_code;
+  const auto& r = std::get<mms::file_open_request>(req.service());
+  const auto it = s->offered.find(join(r.file_name));
+  if (it == s->offered.end()) {
+    (void)co_await req.respond_error(file_error(ec::file::file_non_existent));
+    co_return;
+  }
+  const auto size = it->second->source.size;
+  if (r.initial_position > size) {
+    (void)co_await req.respond_error(file_error(ec::file::position_invalid));
+    co_return;
+  }
+  if (s->served.size() >= max_served_files) {
+    (void)co_await req.respond_error({mms::error_class::resource, ec::resource::capability_unavailable});
+    co_return;
+  }
+  std::int32_t id = s->next_frsm;
+  while (s->served.contains(id)) id = id == std::numeric_limits<std::int32_t>::max() ? 1 : id + 1;
+  s->next_frsm = id == std::numeric_limits<std::int32_t>::max() ? 1 : id + 1;
+  s->served.emplace(id, served_file{it->second, r.initial_position});
+  mms::file_open_response resp;
+  resp.frsm_id = id;
+  resp.attributes.size = static_cast<std::uint32_t>(size);
+  (void)co_await req.respond(resp);
+}
+
+awaitable<void> answer_file_read(std::shared_ptr<client_state> s, association::incoming_request req) {
+  const auto it = s->served.find(std::get<mms::file_read_request>(req.service()).frsm_id);
+  if (it == s->served.end() || !s->assoc) {
+    (void)co_await req.respond_error(file_error(mms::error_code::file::other));
+    co_return;
+  }
+  auto& f = it->second;
+  const auto limit = s->assoc->info().negotiated.local_detail_called;
+  std::size_t chunk = max_served_chunk;
+  if (limit && *limit > 0) {
+    chunk = std::min(chunk, std::max<std::size_t>(static_cast<std::size_t>(*limit), 128) - 32);
+  }
+  chunk = static_cast<std::size_t>(std::min<std::uint64_t>(chunk, f.file->source.size - f.position));
+  byte_buffer data(chunk);
+  auto n = data.empty() ? result<std::size_t>(std::size_t{0}) : f.file->source.read(f.position, data);
+  // A source shorter than announced is a failure, not an end of file.
+  if (!n || *n > chunk || (*n == 0 && chunk > 0)) {
+    (void)co_await req.respond_error(file_error(mms::error_code::file::other));
+    co_return;
+  }
+  data.resize(*n);
+  f.position += *n;
+  (void)co_await req.respond(mms::file_read_response{data, f.position < f.file->source.size});
+}
+
+awaitable<void> answer_file_close(std::shared_ptr<client_state> s, association::incoming_request req) {
+  if (s->served.erase(std::get<mms::file_close_request>(req.service()).frsm_id) == 0) {
+    (void)co_await req.respond_error(file_error(mms::error_code::file::other));
+  } else {
+    (void)co_await req.respond(mms::file_close_response{});
+  }
+}
+
+awaitable<void> answer_unrecognized(association::incoming_request req) {
+  (void)co_await req.reject(mms::reject_code::confirmed_request::unrecognized_service);
+}
+
+}  // namespace
+
+void serve_request(const std::shared_ptr<client_state>& s, association::incoming_request req) {
+  const auto& service = req.service();
+  auto answer = [&]() -> awaitable<void> {
+    if (std::holds_alternative<mms::file_open_request>(service)) return answer_file_open(s, std::move(req));
+    if (std::holds_alternative<mms::file_read_request>(service)) return answer_file_read(s, std::move(req));
+    if (std::holds_alternative<mms::file_close_request>(service)) return answer_file_close(s, std::move(req));
+    return answer_unrecognized(std::move(req));
+  };
+  asio::co_spawn(s->strand, answer(), asio::detached);
 }
 
 awaitable<result<void>> delete_file_op(std::shared_ptr<client_state> s, error_details* d,

@@ -397,6 +397,15 @@ class Client:
         """Chunks are written (and ``on_chunk`` called) on the facade's loop thread."""
         return _run(self._c.download_file(name, dest, on_chunk=on_chunk))
 
+    def write_file(self, name: str, content: bytes) -> None:
+        _run(self._c.write_file(name, content))
+
+    def upload_file(
+        self, name: str, source: str | os.PathLike[str] | IO[bytes], *, source_name: str | None = None
+    ) -> int:
+        """Reads run on the native I/O thread, as for the asyncio client."""
+        return _run(self._c.upload_file(name, source, source_name=source_name))
+
     def delete_file(self, name: str) -> None:
         _run(self._c.delete_file(name))
 

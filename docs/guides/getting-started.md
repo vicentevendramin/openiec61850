@@ -123,10 +123,19 @@ lln0.goose_control(iec.GooseControl("gcb01", go_id="GO1", data_set="DS1", app_id
 the hooks, so they must return quickly. `server.select_active_setting_group(ld, sg)`,
 `await server.read_setting_group(ref, sg)` and `await server.goose_controls()` give local access.
 
+Clients can also send files to a writable store (a native store, or a `FileStore` that overrides
+`write`) when `on_obtain_file` is given: SetFile is MMS ObtainFile, so the server reads the file back from the client on the
+same association. `on_obtain_file(event)` runs first and returns None to accept, False or an
+`iec.FileErrorCode` to refuse; `max_obtain_file_size` and `obtain_file_timeout` bound the transfer.
+The file reaches the store only when complete, and an existing name is refused. Without the hook or
+a writable store the service is rejected and not advertised.
+
 On the client: `sgcb_values`, `select_active_sg`, `select_edit_sg`, `set_edit_sg_value`,
 `confirm_edit_sg_values`, `edit_sg_value`; `lcb_values`, `set_lcb_values`, `query_log_by_time`,
 `query_log_after`, `log_status` (entries are `LogEntry` objects); `list_files`, `read_file`,
-`download_file(name, path_or_file)` (streamed chunk by chunk), `delete_file`, `rename_file`
+`download_file(name, path_or_file)` (streamed chunk by chunk), `write_file(name, content)`,
+`upload_file(name, path_or_file)` (SetFile; only that file is offered, only during the call),
+`delete_file`, `rename_file`
 (failures raise `iec.FileError` with `file_error`); `gocb_values`, `set_gocb_values`. The
 `sync.Client` facade has the same methods.
 

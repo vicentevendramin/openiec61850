@@ -71,7 +71,8 @@ struct client_state;
 // Confirmed requests may be issued concurrently from any number of coroutines (ADR 0004). Each
 // one gets the next free invokeID; at most negotiated max_serv_outstanding_calling are sent at a
 // time and the others wait, in order, for a free slot. Responses are correlated by invokeID and
-// may arrive in any order.
+// may arrive in any order. Confirmed requests of the server (the reverse services of obtainFile)
+// go to set_request_handler().
 //
 // Threading: as transport::cotp_channel. All state lives on the channel's strand; one reader
 // coroutine there dispatches every incoming PDU. Coroutine methods may be awaited from any
@@ -110,6 +111,12 @@ class client_association {
   // handed to `handler` on the strand; it must not throw nor block. An empty function restores
   // the queue. Any thread.
   void set_unconfirmed_handler(std::function<void(unconfirmed_message)> handler);
+
+  // Serves the confirmed requests of the server. Each one is handed to `handler` on the strand
+  // (it must not throw nor block) and bounded by the negotiated max_serv_outstanding_called, also
+  // while a request of this side is outstanding. An empty function, the default, rejects them with
+  // unrecognized-service. Any thread.
+  void set_request_handler(std::function<void(incoming_request)> handler);
 
   // Orderly release: waits for the outstanding requests, MMS Conclude-Request/-Response, then
   // A-RELEASE (RLRQ/RLRE on P-RELEASE) and the transport is closed. New requests fail with

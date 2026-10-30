@@ -824,6 +824,17 @@ awaitable<result<association::service_response>> call_on(assoc_ptr a,
   co_return co_await call(std::move(a), std::move(svc));
 }
 
+awaitable<result<association::service_response>> call_on(assoc_ptr a,
+                                                         mms::confirmed_service_request svc,
+                                                         std::chrono::milliseconds timeout) {
+  auto r = co_await a->request(std::move(svc), timeout);
+  if (!r) {
+    a.record(r.failure());
+    co_return request_error_code(r.failure());
+  }
+  co_return std::move(*r);
+}
+
 awaitable<result<std::vector<result<mms::data>>>> read_variables_on(
     assoc_ptr a, std::vector<model::mms_variable> vars) {
   const auto specs = specs_of(vars);

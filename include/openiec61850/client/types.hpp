@@ -3,7 +3,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -58,6 +60,8 @@ struct client_options {
   std::size_t report_queue_capacity = 1024;
   // Connection events kept for next_event(); at least 1, oldest dropped on overflow.
   std::size_t event_queue_capacity = 64;
+  // A whole set_file(): the server reads the file meanwhile. Zero disables it.
+  std::chrono::milliseconds file_transfer_timeout{300000};
 };
 
 enum class connection_state : std::uint8_t {
@@ -268,6 +272,16 @@ struct log_entry {
 
 // ---------------------------------------------------------------------------------------------
 // Files (7-2 §23, 8-1 §23)
+
+// The local file offered by client::set_file().
+struct file_source {
+  std::uint64_t size = 0;  // at most 2^32 - 1 (sizeOfFile is an Unsigned32)
+  // Reads up to out.size() octets at `offset`; returns the count. Runs on the client strand: it
+  // must not block for long. An error fails the server's read, and with it set_file().
+  std::function<result<std::size_t>(std::uint64_t offset, std::span<std::uint8_t> out)> read;
+  // What the server is told to read back (sourceFile). Empty: the remote name.
+  std::string name;
+};
 
 struct file_entry {
   std::string name;

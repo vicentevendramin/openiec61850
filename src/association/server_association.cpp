@@ -1,7 +1,6 @@
 #include "openiec61850/association/server_association.hpp"
 
 #include <deque>
-#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -34,15 +33,9 @@ struct server_state final : core {
 
   server_options options;
   association_request peer;
-  std::size_t limit = 1;
 
-  std::unordered_set<std::uint32_t> outstanding;  // received, not answered yet
-  std::deque<received_pdu> requests;              // not yet taken by next_request()
+  std::deque<received_pdu> requests;  // not yet taken by next_request()
   waiter* consumer = nullptr;
-
-  static incoming_request make_incoming(std::shared_ptr<server_state> s, received_pdu m) {
-    return incoming_request(std::move(s), std::move(m));
-  }
 
   // --- establishment
 
@@ -106,7 +99,11 @@ struct server_state final : core {
     self->info.negotiated = to_negotiated(self->peer.initiate, negotiated);
     self->info.peer_ap_title = self->peer.calling_ap_title;
     self->info.peer_ae_qualifier = self->peer.calling_ae_qualifier;
-    self->limit = static_cast<std::size_t>(self->info.negotiated.max_serv_outstanding_calling);
+    self->incoming_limit = static_cast<std::size_t>(self->info.negotiated.max_serv_outstanding_calling);
+    self->limit = static_cast<std::size_t>(self->info.negotiated.max_serv_outstanding_called);
+    if (const auto& d = self->info.negotiated.local_detail_calling; d && *d > 0) {
+      self->peer_max_pdu = static_cast<std::size_t>(*d);
+    }
     self->start_reader();
     co_return result<void>{};
   }
@@ -134,22 +131,6 @@ struct server_state final : core {
     }
   }
 
-  static awaitable<result<void>> answer_op(std::shared_ptr<server_state> self, std::uint32_t id,
-                                           byte_buffer pdu) {
-    if (self->closed()) co_return self->error;
-    if (self->outstanding.erase(id) == 0) co_return openiec61850::errc::invalid_state;
-    auto sent = self->send_mms_bytes(pdu);
-    if (!sent) co_return sent.error();
-    co_return co_await wait_sent(std::move(*sent));
-  }
-
-  static awaitable<result<void>> send_op(std::shared_ptr<server_state> self, byte_buffer pdu) {
-    if (self->closed()) co_return self->error;
-    auto sent = self->send_mms_bytes(pdu);
-    if (!sent) co_return sent.error();
-    co_return co_await wait_sent(std::move(*sent));
-  }
-
   // --- core hooks
 
   void on_mms(received_pdu m) override {
@@ -157,24 +138,15 @@ struct server_state final : core {
     switch (mms::type_of(pdu)) {
       case mms::pdu_type::confirmed_request: {
         const auto id = std::get<mms::confirmed_request>(pdu).invoke_id;
-        if (outstanding.contains(id)) {
-          reject(id, mms::reject_type::confirmed_request,
-                 mms::reject_code::confirmed_request::invalid_invoke_id);
-        } else if (outstanding.size() >= limit) {
-          reject(id, mms::reject_type::confirmed_request,
-                 mms::reject_code::confirmed_request::max_serv_outstanding_exceeded);
-        } else if (current_state() != association_state::established) {
-          reject(id, mms::reject_type::confirmed_request, mms::reject_code::confirmed_request::other);
-        } else {
-          outstanding.insert(id);
+        if (admit(id, current_state() == association_state::established)) {
           requests.push_back(std::move(m));
           if (consumer != nullptr) consumer->notify();
         }
         break;
       }
       case mms::pdu_type::conclude_request:
-        // ISO 9506-1 §8.4: refused while requests are outstanding.
-        if (!outstanding.empty()) {
+        // ISO 9506-1 §8.4: refused while requests are outstanding, in either direction.
+        if (!incoming.empty() || !requests_idle()) {
           (void)send_mms(mms::conclude_error{mms::service_error(
               mms::error_class::conclude, mms::error_code::conclude::further_communication_required)});
         } else {
@@ -188,12 +160,9 @@ struct server_state final : core {
             mms::service_error(mms::error_class::cancel, mms::error_code::cancel::cancel_not_possible)});
         break;
       case mms::pdu_type::confirmed_response:
-        reject(std::get<mms::confirmed_response>(pdu).invoke_id, mms::reject_type::confirmed_response,
-               mms::reject_code::confirmed_response::invalid_invoke_id);
-        break;
       case mms::pdu_type::confirmed_error:
-        reject(std::get<mms::confirmed_error>(pdu).invoke_id, mms::reject_type::confirmed_error,
-               mms::reject_code::confirmed_error::invalid_invoke_id);
+      case mms::pdu_type::reject:
+        on_answer(std::move(m));
         break;
       case mms::pdu_type::unconfirmed:
         reject(std::nullopt, mms::reject_type::unconfirmed, mms::reject_code::unconfirmed::unrecognized_service);
@@ -211,55 +180,6 @@ struct server_state final : core {
 }  // namespace detail
 
 using detail::server_state;
-
-// --- incoming_request
-
-incoming_request::incoming_request(std::shared_ptr<server_state> state, received_pdu message) noexcept
-    : state_(std::move(state)), message_(std::move(message)) {}
-
-incoming_request& incoming_request::operator=(incoming_request&& other) noexcept {
-  if (this != &other) {
-    const incoming_request previous(std::move(*this));  // answered on destruction if needed
-    state_ = std::move(other.state_);
-    message_ = std::move(other.message_);
-    answered_ = other.answered_;
-  }
-  return *this;
-}
-
-incoming_request::~incoming_request() {
-  if (!state_ || answered_) return;
-  auto pdu = detail::encode_mms(mms::confirmed_error{
-      invoke_id(), std::nullopt, mms::service_error(mms::error_class::service, mms::error_code::service::other)});
-  if (!pdu) return;
-  asio::dispatch(state_->strand, [s = state_, id = invoke_id(), bytes = std::move(*pdu)]() mutable {
-    if (s->closed() || s->outstanding.erase(id) == 0) return;
-    (void)s->send_mms_bytes(bytes);
-  });
-}
-
-asio::awaitable<result<void>> incoming_request::answer(result<byte_buffer> pdu) {
-  if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
-  if (answered_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
-  if (!pdu) return detail::ready(result<void>(pdu.error()));
-  answered_ = true;
-  return detail::on_strand(state_->strand,
-                           server_state::answer_op(state_, invoke_id(), std::move(*pdu)));
-}
-
-asio::awaitable<result<void>> incoming_request::respond(const mms::confirmed_service_response& response) {
-  return answer(detail::encode_mms(mms::confirmed_response{invoke_id(), response}));
-}
-
-asio::awaitable<result<void>> incoming_request::respond_error(const mms::service_error& error,
-                                                              std::optional<std::uint32_t> modifier_position) {
-  return answer(detail::encode_mms(mms::confirmed_error{invoke_id(), modifier_position, error}));
-}
-
-asio::awaitable<result<void>> incoming_request::reject(std::int64_t reason) {
-  return answer(detail::encode_mms(
-      mms::reject_pdu{invoke_id(), mms::reject_type::confirmed_request, reason}));
-}
 
 // --- server_association
 
@@ -291,6 +211,17 @@ asio::awaitable<result<incoming_request>> server_association::next_request() {
   return detail::on_strand(state_->strand, server_state::next_request_op(state_));
 }
 
+asio::awaitable<request_result> server_association::request(mms::confirmed_service_request service) {
+  if (!state_) return detail::ready(request_result(openiec61850::errc::invalid_state));
+  return request(std::move(service), state_->options.request_timeout);
+}
+
+asio::awaitable<request_result> server_association::request(mms::confirmed_service_request service,
+                                                            std::chrono::milliseconds timeout) {
+  if (!state_) return detail::ready(request_result(openiec61850::errc::invalid_state));
+  return detail::on_strand(state_->strand, detail::core::request_op(state_, std::move(service), timeout));
+}
+
 asio::awaitable<result<void>> server_association::send_unconfirmed(const mms::information_report& report) {
   return send_unconfirmed(mms::unconfirmed_service{report});
 }
@@ -299,7 +230,7 @@ asio::awaitable<result<void>> server_association::send_unconfirmed(const mms::un
   if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
   auto pdu = detail::encode_mms(mms::unconfirmed_pdu{service});
   if (!pdu) return detail::ready(result<void>(pdu.error()));
-  return detail::on_strand(state_->strand, server_state::send_op(state_, std::move(*pdu)));
+  return detail::on_strand(state_->strand, detail::core::send_op(state_, std::move(*pdu)));
 }
 
 void server_association::abort() noexcept {

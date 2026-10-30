@@ -461,6 +461,20 @@ result<void> put_request(ber::writer& w, const file_directory_request& r) {
   return {};
 }
 
+result<void> put_request(ber::writer& w, const obtain_file_request& r) {
+  const auto m = w.begin(service(confirmed_service::obtain_file));
+  if (r.source_file_server) w.write_tlv(context(0, true), *r.source_file_server);
+  if (auto e = write_file_name(w, context(1, true), r.source_file); !e) return e;
+  if (auto e = write_file_name(w, context(2, true), r.destination_file); !e) return e;
+  w.end(m);
+  return {};
+}
+
+result<void> put_response(ber::writer& w, const obtain_file_response&) {
+  w.write_null(service(confirmed_service::obtain_file, false));
+  return {};
+}
+
 result<void> put_response(ber::writer& w, const file_open_response& r) {
   const auto m = w.begin(service(confirmed_service::file_open));
   w.write_integer(r.frsm_id, context(0));
@@ -637,7 +651,7 @@ result<void> write_pdu(ber::writer& w, const conclude_error& p) {
 }
 
 // By variant index; other_service (index 8) carries its own tag.
-constexpr std::uint32_t service_tags[] = {2, 1, 4, 5, 6, 12, 11, 13, 0, 65, 67, 68, 72, 73, 74, 75, 76, 77};
+constexpr std::uint32_t service_tags[] = {2, 1, 4, 5, 6, 12, 11, 13, 0, 65, 67, 68, 72, 73, 74, 75, 76, 77, 46};
 static_assert(std::size(service_tags) == std::variant_size_v<confirmed_service_request>);
 static_assert(std::size(service_tags) == std::variant_size_v<confirmed_service_response>);
 
