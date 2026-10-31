@@ -20,6 +20,12 @@ cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
 pip install -e ".[test]" && pytest
 ```
 
+The `[soak]` tests run for a few seconds by default; for a real soak set the seconds per case:
+
+```bash
+OPENIEC61850_SOAK_SECONDS=300 build/tsan/tests/openiec61850_tests '[soak]'
+```
+
 ThreadSanitizer suppressions live in `tests/tsan.supp` and are for verified third-party false
 positives only. Outside `ctest --preset tsan`, pass them with
 `TSAN_OPTIONS=suppressions=tests/tsan.supp`.

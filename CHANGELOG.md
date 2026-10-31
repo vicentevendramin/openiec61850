@@ -9,6 +9,11 @@ release may break the API. The release process is in
 
 ## [Unreleased]
 
+### Fixed
+
+- TLS: an abort with traffic in flight no longer keeps the socket open for the whole close
+  timeout (1 s); the pending read is cancelled before the TLS shutdown.
+
 ### Added
 
 - `benchmarks/reference/`: the reference benchmark against libiec61850 (provisional results, not

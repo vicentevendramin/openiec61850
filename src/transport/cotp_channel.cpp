@@ -447,6 +447,10 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
       self->error = asio::error::operation_aborted;  // the channel is over for its other users
       self->open = false;
       self->arm_deadline(tls_close_timeout);
+      // A read still pending competes with the shutdown for the stream's input and, with data in
+      // flight, leaves it waiting out the whole deadline with the socket open.
+      std::error_code ignored;
+      self->socket.cancel(ignored);
       (void)co_await self->tls->async_shutdown(use_tuple);
     }
 #endif
