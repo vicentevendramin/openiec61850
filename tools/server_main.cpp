@@ -59,7 +59,8 @@ constexpr const char* usage_text =
     "  --simulate            random-walk MX analog values, toggle status-only BOOLEAN stVal\n"
     "  --period MS           simulation period (default 1000)\n"
     "  --control-delay MS    complete operations after MS (enhanced security: CommandTermination)\n"
-    "  --verbose             log associations, writes, controls and SCL diagnostics\n"
+    "  --max-associations N  concurrent associations (default 32; 0: unlimited)\n"
+    "  --verbose            log associations, writes, controls and SCL diagnostics\n"
     "  --help                this text\n"
     "\n"
     "Prints \"listening on ADDR:PORT\" once ready; SIGINT / SIGTERM stop it.\n";
@@ -172,13 +173,14 @@ const char* action_name(srv::control_action a) {
 int main(int argc, char** argv) {
   const tools::arguments args(argc, argv,
                               {"scl", "ied", "ap", "port", "bind", "password", "period", "control-delay",
-                               "tls-ca", "tls-cert", "tls-key", "tls-crl", "tls-peer-name"});
+                               "max-associations", "tls-ca", "tls-cert", "tls-key", "tls-crl",
+                               "tls-peer-name"});
   if (args.flag("help")) {
     std::fputs(usage_text, stdout);
     return 0;
   }
   if (auto u = args.unknown({"scl", "ied", "ap", "port", "bind", "password", "period", "control-delay",
-                             "simulate", "verbose", "tls", "tls-ca", "tls-cert", "tls-key", "tls-crl",
+                             "max-associations", "simulate", "verbose", "tls", "tls-ca", "tls-cert", "tls-key", "tls-crl",
                              "tls-peer-name", "tls-no-verify"})) {
     std::fprintf(stderr, "openiec61850-server: unknown option --%s\n%s", u->c_str(), usage_text);
     return 2;
@@ -196,8 +198,11 @@ int main(int argc, char** argv) {
   const auto port = tools::parse_number(args.value("port").value_or("102"), 0, 65535);
   const auto period = tools::parse_number(args.value("period").value_or("1000"), 10, 3600000);
   const auto delay = tools::parse_number(args.value("control-delay").value_or("0"), 0, 3600000);
-  if (!port || !period || !delay) {
-    std::fputs("openiec61850-server: invalid --port, --period or --control-delay\n", stderr);
+  const auto max_associations =
+      tools::parse_number(args.value("max-associations").value_or("32"), 0, 1000000);
+  if (!port || !period || !delay || !max_associations) {
+    std::fputs("openiec61850-server: invalid --port, --period, --control-delay or --max-associations\n",
+               stderr);
     return 2;
   }
   std::error_code ec;
@@ -226,7 +231,7 @@ int main(int argc, char** argv) {
   const std::chrono::milliseconds control_delay{*delay};
 
   srv::server_options opts;
-  opts.max_associations = 32;
+  opts.max_associations = static_cast<std::size_t>(*max_associations);
   auto tls = tools::tls_from_arguments(args, true);
   if (!tls) {
     std::fprintf(stderr, "openiec61850-server: TLS configuration: %s\n", tls.error().message().c_str());
