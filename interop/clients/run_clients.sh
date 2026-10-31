@@ -32,7 +32,7 @@ mkdir -p "${logs}"
 pass=0
 fail=0
 
-# check NAME EXPECTED_EXIT(any|0|...) -- command...   then the patterns as "count:regex" lines
+# check NAME EXPECTED_EXIT(any|0|interrupted|crash-at-exit) -- command...   then the patterns as "count:regex" lines
 # on stdin: each regex must match at least `count` output lines.
 check() {
   local name="$1" expect="$2"
@@ -42,6 +42,8 @@ check() {
   local status=$?
   local problems=()
   if [[ "${expect}" == "0" && ${status} -ne 0 ]]; then
+    problems+=("exit status ${status}")
+  elif [[ "${expect}" == "crash-at-exit" && ${status} -ne 0 && ${status} -ne 139 ]]; then
     problems+=("exit status ${status}")
   elif [[ "${expect}" == "interrupted" && ${status} -ne 0 && ${status} -ne 124 ]]; then
     problems+=("exit status ${status}")
@@ -119,7 +121,9 @@ check client_example_rcbAsync/rcb interrupted -- iec61850_client_example_rcbAsyn
 1:^RptEna = [01]\$
 1:^RptID = Events1\$
 EOF
-check client_async/services 0 -- iec61850_client_async "${host}" "${port}" <<EOF
+# This example segfaults while tearing down after its work is done, also against the libiec61850
+# example server, so its output decides (ADR 0007).
+check client_async/services crash-at-exit -- iec61850_client_async "${host}" "${port}" <<EOF
 1:^LD: ${ld} variables:\$
 1:^  ${ld}/GGIO1\\\$MX\\\$AnIn1\\\$mag\\\$f\$
 1:^${ld}/GGIO1\.AnIn1\.mag\.f: -?[0-9]
