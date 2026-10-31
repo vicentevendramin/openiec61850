@@ -148,12 +148,21 @@ TEST_CASE("Control: an element of an array of data objects", "[server]") {
                                 control_options());
     REQUIRE(s);
     auto c = co_await connect(options_for(*s));
-    CHECK(co_await c.write(oref("LD/CSWI1.Pos(1).Oper[CO]"), oper(true, 7)));
+    {
+      auto outcome = co_await c.write(oref("LD/CSWI1.Pos(1).Oper[CO]"), oper(true, 7));
+      CHECK(outcome);
+    }
     REQUIRE(requests().size() == 1);
     CHECK(requests()[0].object == oref("LD/CSWI1.Pos(1)"));
-    CHECK_FALSE(co_await c.write(oref("LD/CSWI1.Pos(2).Oper[CO]"), oper(true, 8)));
+    {
+      auto outcome = co_await c.write(oref("LD/CSWI1.Pos(2).Oper[CO]"), oper(true, 8));
+      CHECK_FALSE(outcome);
+    }
     // The CommandTermination, sent with an AlternateAccess, leaves the association usable.
-    CHECK(co_await c.read(oref("LD/CSWI1.Pos(1).ctlModel[CF]")));
+    {
+      auto outcome = co_await c.read(oref("LD/CSWI1.Pos(1).ctlModel[CF]"));
+      CHECK(outcome);
+    }
     s->stop();
   });
 }

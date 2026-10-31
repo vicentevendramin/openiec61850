@@ -120,7 +120,10 @@ TEST_CASE("Setting groups: activation, edit buffer and reservation", "[server][s
     CHECK(v->edit_sg == 0);
     CHECK_FALSE(v->cnf_edit);
     CHECK(v->resv_tms == 0);
-    CHECK(co_await read_ok(c, set_mag) == mms::data::floating_point(1.0F));
+    {
+      auto outcome = co_await read_ok(c, set_mag) == mms::data::floating_point(1.0F);
+      CHECK(outcome);
+    }
     auto lnd = co_await c.get_logical_node_directory(oref("IED1LD0/LLN0"));
     REQUIRE(lnd);
     CHECK(lnd->sgcb);
@@ -132,7 +135,10 @@ TEST_CASE("Setting groups: activation, edit buffer and reservation", "[server][s
     REQUIRE(en);
     auto act = co_await c.select_active_sg("IED1LD0", 2);
     CHECK(act);
-    CHECK(co_await read_ok(c, set_mag) == mms::data::floating_point(2.0F));
+    {
+      auto outcome = co_await read_ok(c, set_mag) == mms::data::floating_point(2.0F);
+      CHECK(outcome);
+    }
     auto rpt = co_await next_report(c);
     REQUIRE(rpt.entries.size() == 1);
     CHECK(rpt.entries[0].value == mms::data::floating_point(2.0F));
@@ -159,7 +165,10 @@ TEST_CASE("Setting groups: activation, edit buffer and reservation", "[server][s
     CHECK(*edit == mms::data::floating_point(3.0F));
     auto set = co_await c.set_edit_sg_value(oref(set_mag_se), mms::data::floating_point(3.5F));
     CHECK(set);
-    CHECK(co_await read_ok(c, set_mag_se) == mms::data::floating_point(3.5F));
+    {
+      auto outcome = co_await read_ok(c, set_mag_se) == mms::data::floating_point(3.5F);
+      CHECK(outcome);
+    }
     CHECK(co_await read_ok(c, set_mag) == mms::data::floating_point(2.0F));  // not confirmed
 
     auto other = co_await connect(options_for(s));
@@ -180,7 +189,10 @@ TEST_CASE("Setting groups: activation, edit buffer and reservation", "[server][s
     CHECK(*g2 == mms::data::floating_point(2.0F));
     auto act3 = co_await c.select_active_sg("IED1LD0", 3);
     CHECK(act3);
-    CHECK(co_await read_ok(c, set_mag) == mms::data::floating_point(3.5F));
+    {
+      auto outcome = co_await read_ok(c, set_mag) == mms::data::floating_point(3.5F);
+      CHECK(outcome);
+    }
     (void)co_await next_report(c);
 
     // Confirming the active group changes the SG values at once.
@@ -188,7 +200,10 @@ TEST_CASE("Setting groups: activation, edit buffer and reservation", "[server][s
     CHECK(set2);
     auto cnf2 = co_await c.confirm_edit_sg_values("IED1LD0");
     CHECK(cnf2);
-    CHECK(co_await read_ok(c, set_mag) == mms::data::floating_point(4.0F));
+    {
+      auto outcome = co_await read_ok(c, set_mag) == mms::data::floating_point(4.0F);
+      CHECK(outcome);
+    }
     auto rpt2 = co_await next_report(c);
     CHECK(rpt2.entries[0].value == mms::data::floating_point(4.0F));
 
@@ -213,7 +228,10 @@ TEST_CASE("Setting groups: activation, edit buffer and reservation", "[server][s
     CHECK(s.select_active_setting_group("NOPE", 1).error() == srv::errc::object_not_found);
     CHECK(s.update(oref(set_mag_se), mms::data::floating_point(1.0F)).error() == srv::errc::access_denied);
     co_await sleep(50ms);
-    CHECK(co_await read_ok(c, set_mag) == mms::data::floating_point(1.0F));
+    {
+      auto outcome = co_await read_ok(c, set_mag) == mms::data::floating_point(1.0F);
+      CHECK(outcome);
+    }
     s.stop();
   });
 }

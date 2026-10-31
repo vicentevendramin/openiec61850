@@ -524,7 +524,10 @@ TEST_CASE("Control models: elements of arrays of data objects", "[server][contro
     REQUIRE(direct.structure());
     CHECK(direct.structure()->type == mms::data_type::structure);
     CHECK(direct.ctl_val_type() == mms::data_type::boolean);
-    CHECK(co_await direct.operate(on, as(1)));
+    {
+      auto outcome = co_await direct.operate(on, as(1));
+      CHECK(outcome);
+    }
     REQUIRE(app().taken().size() == 1);
     CHECK(app().taken().back().object == oref("CTL/GGIO1.ArrD(1)"));
 
@@ -533,21 +536,48 @@ TEST_CASE("Control models: elements of arrays of data objects", "[server][contro
     CHECK_FALSE(co_await sbo.operate(on, as(1)));  // not selected
     CHECK(sbo.last_error()->control_object == "CTL/GGIO1$CO$ArrN(1)$Oper");
     CHECK(sbo.last_error()->cause == add_cause::object_not_selected);
-    CHECK(co_await sbo.select(as(1)));
+    {
+      auto outcome = co_await sbo.select(as(1));
+      CHECK(outcome);
+    }
     CHECK(sbo.selected());
-    CHECK(co_await sbo.operate(on, as(1)));
+    {
+      auto outcome = co_await sbo.operate(on, as(1));
+      CHECK(outcome);
+    }
 
     auto enh = co_await control_of(c, "CTL/GGIO1.ArrS(0)");
-    CHECK(co_await enh.select_with_value(on, as(1)));
-    CHECK(co_await enh.operate(on, as(1)));
+    {
+      auto outcome = co_await enh.select_with_value(on, as(1));
+      CHECK(outcome);
+    }
+    {
+      auto outcome = co_await enh.operate(on, as(1));
+      CHECK(outcome);
+    }
     CHECK(app().taken().back().object == oref("CTL/GGIO1.ArrS(0)"));
-    CHECK(co_await enh.select_with_value(on, as(1)));
-    CHECK(co_await enh.cancel(as(1)));
+    {
+      auto outcome = co_await enh.select_with_value(on, as(1));
+      CHECK(outcome);
+    }
+    {
+      auto outcome = co_await enh.cancel(as(1));
+      CHECK(outcome);
+    }
     CHECK(app().taken().back().action == srv::control_action::cancel);
 
-    CHECK(co_await c.operate(oref("CTL/GGIO1.ArrD(0)"), on, as(1)));
-    CHECK(co_await c.operate(oref("CTL/GGIO1.ArrS(1)"), on, as(1)));
-    CHECK(co_await c.operate(oref("CTL/GGIO1.Plain.Sub(1)"), on, as(1)));
+    {
+      auto outcome = co_await c.operate(oref("CTL/GGIO1.ArrD(0)"), on, as(1));
+      CHECK(outcome);
+    }
+    {
+      auto outcome = co_await c.operate(oref("CTL/GGIO1.ArrS(1)"), on, as(1));
+      CHECK(outcome);
+    }
+    {
+      auto outcome = co_await c.operate(oref("CTL/GGIO1.Plain.Sub(1)"), on, as(1));
+      CHECK(outcome);
+    }
 
     auto missing = co_await c.get_control(oref("CTL/GGIO1.ArrD(2)"));
     CHECK_FALSE(missing);
@@ -586,7 +616,10 @@ TEST_CASE("Control models: elements of arrays of data objects", "[server][contro
     CHECK_FALSE(*done0);  // still waiting: that termination was not for it
     CHECK_FALSE(first.last_error());
     CHECK(r0.completion.complete(srv::control_result::ok()));
-    CHECK(co_await wait_for(done0));
+    {
+      auto outcome = co_await wait_for(done0);
+      CHECK(outcome);
+    }
     CHECK_FALSE(first.last_error());
     s.stop();
   });

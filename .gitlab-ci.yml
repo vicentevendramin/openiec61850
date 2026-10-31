@@ -74,7 +74,15 @@ package:wheels:
     - if: $CI_COMMIT_TAG
     - when: manual
       allow_failure: true
+  tags: [docker]
+  services:
+    - name: docker:27-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   script:
+    - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io > /dev/null
     - python3 -m venv .venv && .venv/bin/pip install -q cibuildwheel
     - .venv/bin/cibuildwheel --platform linux --output-dir wheelhouse
   artifacts:
@@ -108,6 +116,9 @@ interop:libiec61850:
   timeout: 1h
   needs: []
   cache: []
+  services:
+    - name: docker:27-dind
+      alias: docker
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_PIPELINE_SOURCE == "push"
@@ -116,6 +127,8 @@ interop:libiec61850:
     LIBIEC61850_VERSION: "1.6.0"
     INTEROP_TIMEOUT: "5"
     CLIENT_TIMEOUT: "8"
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   before_script:
     - apk add --no-cache bash > /dev/null
     - docker info > /dev/null

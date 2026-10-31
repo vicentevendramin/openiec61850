@@ -422,20 +422,38 @@ TEST_CASE("SCL model: arrays of data objects", "[server][scl]") {
     const auto whole = co_await read_ok(c, "AProt/GGIO1.Sig[SP]");
     CHECK(whole == set_values({7, 8, 7}));
     CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1)[SP]") == set_value(8));
-    CHECK_FALSE(co_await c.read(oref("AProt/GGIO1.Sig(3)[SP]")));
+    {
+      auto outcome = co_await c.read(oref("AProt/GGIO1.Sig(3)[SP]"));
+      CHECK_FALSE(outcome);
+    }
 
     // Writes: an attribute of an element, an element, the array, and bad ones.
-    CHECK(co_await c.write(oref("AProt/GGIO1.Sig(0).setVal[SP]"), mms::data::integer(1)));
+    {
+      auto outcome = co_await c.write(oref("AProt/GGIO1.Sig(0).setVal[SP]"), mms::data::integer(1));
+      CHECK(outcome);
+    }
     const auto element = set_value(2);
-    CHECK(co_await c.write(oref("AProt/GGIO1.Sig(1)[SP]"), element));
+    {
+      auto outcome = co_await c.write(oref("AProt/GGIO1.Sig(1)[SP]"), element);
+      CHECK(outcome);
+    }
     CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(0).setVal[SP]") == mms::data::integer(1));
     CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1).setVal[SP]") == mms::data::integer(2));
     const auto all = set_values({4, 5, 6});
-    CHECK(co_await c.write(oref("AProt/GGIO1.Sig[SP]"), all));
+    {
+      auto outcome = co_await c.write(oref("AProt/GGIO1.Sig[SP]"), all);
+      CHECK(outcome);
+    }
     CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(2).setVal[SP]") == mms::data::integer(6));
     const auto short_array = set_values({2});
-    CHECK_FALSE(co_await c.write(oref("AProt/GGIO1.Sig[SP]"), short_array));
-    CHECK_FALSE(co_await c.write(oref("AProt/GGIO1.Sig(0).stVal[ST]"), mms::data::integer(1)));
+    {
+      auto outcome = co_await c.write(oref("AProt/GGIO1.Sig[SP]"), short_array);
+      CHECK_FALSE(outcome);
+    }
+    {
+      auto outcome = co_await c.write(oref("AProt/GGIO1.Sig(0).stVal[ST]"), mms::data::integer(1));
+      CHECK_FALSE(outcome);
+    }
 
     // Directory: the array is one name, no name reaches past it.
     auto names = co_await c.get_name_list(mms::object_class::named_variable, "AProt");
@@ -473,9 +491,15 @@ TEST_CASE("SCL model: arrays of data objects", "[server][scl]") {
     auto el_def = co_await c.get_data_definition(oref("AProt/GGIO1.Sig(1)"));
     REQUIRE(el_def);
     CHECK(el_def->type == client::data_definition::kind::structure);
-    CHECK_FALSE(co_await c.get_data_definition(oref("AProt/GGIO1.Sig(3)[ST]")));
+    {
+      auto outcome = co_await c.get_data_definition(oref("AProt/GGIO1.Sig(3)[ST]"));
+      CHECK_FALSE(outcome);
+    }
     // No variable reaches inside the array by name.
-    CHECK_FALSE(co_await c.get_data_definition(oref("AProt/GGIO1.Sig.stVal[ST]")));
+    {
+      auto outcome = co_await c.get_data_definition(oref("AProt/GGIO1.Sig.stVal[ST]"));
+      CHECK_FALSE(outcome);
+    }
     auto attrs = co_await c.get_data_definition(oref("AProt/GGIO1.Sig[ST]"));
     REQUIRE(attrs);
     CHECK(attrs->type == client::data_definition::kind::array);
@@ -492,7 +516,10 @@ TEST_CASE("SCL model: arrays of data objects", "[server][scl]") {
 
     // Reports name the element.
     client::report_settings rs;
-    REQUIRE(co_await c.enable_reporting(oref("AProt/LLN0.urcb[RP]"), rs));
+    {
+      auto outcome = co_await c.enable_reporting(oref("AProt/LLN0.urcb[RP]"), rs);
+      REQUIRE(outcome);
+    }
     CHECK(s->update(oref("AProt/GGIO1.Sig(1).stVal[ST]"), mms::data::integer(22)));
     const auto rpt = co_await next_report(c);
     REQUIRE(rpt.entries.size() == 1);
@@ -502,7 +529,10 @@ TEST_CASE("SCL model: arrays of data objects", "[server][scl]") {
     CHECK(rpt.entries[0].value == mms::data::integer(22));
 
     // A member indexed into an array attribute keeps the index in its DataRef.
-    REQUIRE(co_await c.enable_reporting(oref("AProt/LLN0.urcbH[RP]"), rs));
+    {
+      auto outcome = co_await c.enable_reporting(oref("AProt/LLN0.urcbH[RP]"), rs);
+      REQUIRE(outcome);
+    }
     CHECK(s->update(oref("AProt/GGIO1.Sig(1).hist(1)[ST]"), mms::data::integer(3)));
     const auto hist = co_await next_report(c);
     REQUIRE(hist.entries.size() == 1);
