@@ -80,8 +80,9 @@ namespace {
 
 awaitable<result<std::vector<result<mms::data>>>> read_on(assoc_ptr a,
                                                           mms::variable_access_specification spec,
-                                                          std::optional<std::size_t> expected) {
-  auto r = co_await call(a, mms::read_request{false, spec});
+                                                          std::optional<std::size_t> expected,
+                                                          bool with_result = false) {
+  auto r = co_await call(a, mms::read_request{with_result, spec});
   if (!r) co_return r.error();
   const auto* rr = response_as<mms::read_response>(*r);
   if (rr == nullptr) co_return violation;
@@ -298,7 +299,12 @@ std::error_code assign(rcb_values& out, std::string_view name, const mms::data& 
   if (name == "IntgPd") return set_from(out.intg_pd, [&] { return to_u32(d); });
   if (name == "GI") return set_from(out.gi, [&] { return to_bool(d); });
   if (name == "PurgeBuf") return set_from(out.purge_buf, [&] { return to_bool(d); });
-  if (name == "EntryID") return set_from(out.entry_id, [&] { return to_entry_id(d); });
+  if (name == "EntryID") {
+    // IEC61850bean 1.9.0 has an empty octet string until its first report: no entry yet, as with
+    // an all-zero EntryID. Any other length than 8 is still an error.
+    if (auto bytes = to_bytes(d); bytes && bytes->empty()) return {};
+    return set_from(out.entry_id, [&] { return to_entry_id(d); });
+  }
   if (name == "TimeOfEntry") return set_from(out.time_of_entry, [&] { return to_entry_time(d); });
   if (name == "ResvTms") {
     return set_from(out.resv_tms, [&]() -> result<std::int32_t> {
@@ -747,8 +753,11 @@ awaitable<result<std::vector<result<mms::data>>>> get_data_set_values_op(
   if (!name) co_return name.error();
   auto a = s->current(d);
   if (!a) co_return a.error();
+  // specificationWithResult (ISO 9506-2 Read) defaults to FALSE, but IEC61850bean 1.9.0 refuses a
+  // named variable list without TRUE. Asking for it is valid for every server; the
+  // specification in the response is not used, and bean leaves it out.
   co_return co_await read_on(*a, mms::variable_access_specification::named(name->view()),
-                             std::nullopt);
+                             std::nullopt, true);
 }
 
 awaitable<result<std::vector<result<void>>>> set_data_set_values_op(

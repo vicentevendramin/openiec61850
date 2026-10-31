@@ -349,3 +349,17 @@ TEST_CASE("callback bridge for code without coroutines", "[client]") {
     CHECK(client::to_float(**got).value() == 1.5F);
   });
 }
+
+TEST_CASE("data set values from a server that needs specificationWithResult", "[client]") {
+  run([]() -> awaitable<void> {
+    testing::fake_server_options so;
+    so.list_read_needs_result = true;  // and its response has no specification, like IEC61850bean
+    testing::fake_server server(co_await asio::this_coro::executor, so);
+    REQUIRE(server.start());
+    auto c = co_await connect(options_for(server));
+    auto values = co_await c.get_data_set_values(ref("IED1LD0/LLN0.DS1"));
+    REQUIRE(values);
+    CHECK(values->size() == 4);
+    (void)co_await c.release();
+  });
+}

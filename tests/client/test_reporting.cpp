@@ -36,6 +36,11 @@ float totw_mag(const mms::data& totw) {
   return client::to_float(client::component(client::component(totw, 0).value(), 0).value()).value();
 }
 
+mms::data octets(std::size_t size) {
+  const std::vector<std::uint8_t> bytes(size);
+  return mms::data::octet_string(bytes);
+}
+
 std::ptrdiff_t position(const std::vector<std::string>& log, std::string_view item) {
   const auto it = std::find(log.begin(), log.end(), item);
   return it == log.end() ? -1 : it - log.begin();
@@ -98,6 +103,30 @@ TEST_CASE("RCB attributes are read and written", "[client]") {
     CHECK(not_rcb.error() == openiec61850::errc::invalid_state);
     auto missing = co_await c.get_rcb_values(ref("IED1LD0/LLN0.brcb99[BR]"));
     CHECK(missing.error() == client::errc::object_not_found);
+  });
+}
+
+TEST_CASE("an empty EntryID means no entry yet; other lengths stay invalid", "[client]") {
+  run([]() -> awaitable<void> {
+    testing::fake_server server(co_await asio::this_coro::executor);
+    REQUIRE(server.start());
+    auto c = co_await connect(options_for(server));
+
+    REQUIRE(server.set_value("IED1LD0", "LLN0$BR$brcb01$EntryID", octets(0)));
+    auto empty = co_await c.get_rcb_values(ref(brcb_text));
+    REQUIRE(empty);
+    CHECK(!empty->entry_id);
+    CHECK(empty->rpt_id == "brcb01-id");
+    client::report_settings s;
+    auto enabled = co_await c.enable_reporting(ref(brcb_text), s);
+    REQUIRE(enabled);
+    auto disabled = co_await c.disable_reporting(ref(brcb_text));
+    REQUIRE(disabled);
+
+    REQUIRE(server.set_value("IED1LD0", "LLN0$BR$brcb01$EntryID", octets(3)));
+    auto truncated = co_await c.get_rcb_values(ref(brcb_text));
+    CHECK(!truncated);
+    (void)co_await c.release();
   });
 }
 

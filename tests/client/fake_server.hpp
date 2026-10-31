@@ -79,6 +79,8 @@ namespace openiec61850::testing {
 struct fake_server_options {
   // Identifiers per GetNameList response (moreFollows when truncated); zero: no limit.
   std::size_t name_list_page = 0;
+  // Refuses a Read of a named variable list without specificationWithResult, as IEC61850bean does.
+  bool list_read_needs_result = false;
   association::server_options association;
 };
 

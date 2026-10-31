@@ -140,6 +140,11 @@ TEST_CASE("malformed reports", "[client]") {
   const auto seq = model::optional_fields::of({optional_field::sequence_number}).to_mms();
   CHECK(client::parse_report(built({vs("r"), seq, bits({}, 4)}).ir).error() ==
         errc::protocol_violation);
+  // data-reference announced but no references: the layout IEC61850bean 1.9.0 sends. The values
+  // are not visible strings, so nothing may be guessed from them.
+  const auto refs = model::optional_fields::of({optional_field::data_reference}).to_mms();
+  CHECK(client::parse_report(built({vs("r"), refs, bits({0}, 4), mms::data::boolean(true)}).ir)
+            .error() == errc::protocol_violation);
   // Inclusion longer than the data set.
   CHECK(client::parse_report(built({vs("r"), none, bits({}, 5)}).ir, members()).error() ==
         errc::protocol_violation);

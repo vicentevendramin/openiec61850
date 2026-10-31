@@ -903,6 +903,10 @@ struct fake_server::state : std::enable_shared_from_this<fake_server::state> {
         (void)co_await r.respond_error(definition_error(mms::error_code::definition::object_undefined));
         co_return;
       }
+      if (opts.list_read_needs_result && !q.specification_with_result) {
+        (void)co_await r.respond_error(definition_error(mms::error_code::definition::object_undefined));
+        co_return;
+      }
       targets = l->members;
     } else {
       for (const auto v : q.spec.variables) {
