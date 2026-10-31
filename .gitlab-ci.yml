@@ -15,7 +15,7 @@ default:
   before_script:
     - apt-get update -qq
     - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq
-        build-essential clang lld libstdc++-14-dev cmake ninja-build git curl zip unzip tar pkg-config
+        build-essential clang clang-tools lld cmake ninja-build git curl zip unzip tar pkg-config
         python3 python3-venv python3-dev > /dev/null
     - mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
     - git clone -q https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
@@ -40,7 +40,7 @@ test:asan-ubsan:
     ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
     UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
   script:
-    - cmake --preset asan || { grep -A40 'CMAKE_HAVE_LIBC_PTHREAD' build/asan/CMakeFiles/CMakeConfigureLog.yaml | tail -60; exit 1; }
+    - cmake --preset asan
     - cmake --build --preset asan
     - ctest --preset asan
 
