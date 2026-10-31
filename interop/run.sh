@@ -67,7 +67,8 @@ if [[ "${only}" == bean ]]; then
 fi
 
 # The clients image is built FROM the libiec61850 one (additional_contexts).
-"${compose[@]}" build basic-io control openiec61850-server runner clients
+"${compose[@]}" build basic-io control openiec61850-server runner
+"${compose[@]}" build clients
 
 if [[ "${only}" == all || "${only}" == runner ]]; then
   echo "== openiec61850 client -> libiec61850 example servers"

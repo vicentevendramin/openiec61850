@@ -93,8 +93,8 @@ services:
     image: openiec61850-interop/clients:${LIBIEC61850_VERSION:-1.6.0}
     build:
       context: ./clients
-      additional_contexts:
-        libiec61850: service:basic-io
+      args:
+        LIBIEC61850_VERSION: ${LIBIEC61850_VERSION:-1.6.0}
     depends_on:
       openiec61850-server: {condition: service_healthy}
     command: ["--timeout", "${CLIENT_TIMEOUT:-8}", "openiec61850-server", "102"]
