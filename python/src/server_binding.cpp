@@ -263,6 +263,17 @@ class native_model {
                           n.size, n.count,
                           nb::make_tuple(n.triggers.dchg, n.triggers.qchg, n.triggers.dupd));
   }
+  [[nodiscard]] bool has_fc(node_id id, const std::string& name) const {
+    const auto f = model::parse_functional_constraint(name);
+    if (!f) throw nb::value_error(("unknown functional constraint '" + name + "'").c_str());
+    return at(id).has_fc(*f);
+  }
+  // FC SG attributes: the value of each setting group, empty when they all start with value.
+  [[nodiscard]] nb::object group_values(node_id id) const {
+    nb::list out;
+    for (const auto& v : at(id).group_values) out.append(data_to_py(v));
+    return out;
+  }
   [[nodiscard]] nb::object initial_value(node_id id) const {
     const node& n = at(id);
     if (!n.holds_value()) return nb::none();
@@ -868,6 +879,16 @@ nb::dict association_request_to_py(const association::association_request& r) {
   d["calling_ae_qualifier"] = r.calling_ae_qualifier ? nb::cast(*r.calling_ae_qualifier) : nb::none();
   d["called_ap_title"] = opt_oid(r.called_ap_title);
   d["called_ae_qualifier"] = r.called_ae_qualifier ? nb::cast(*r.called_ae_qualifier) : nb::none();
+  d["mechanism_name"] = opt_oid(r.mechanism_name);
+  d["calling_presentation_selector"] = to_bytes(r.calling_presentation_selector);
+  d["called_presentation_selector"] = to_bytes(r.called_presentation_selector);
+  d["local_detail_calling"] =
+      r.initiate.local_detail_calling ? nb::cast(*r.initiate.local_detail_calling) : nb::none();
+  d["max_serv_outstanding_calling"] = r.initiate.max_serv_outstanding_calling;
+  d["max_serv_outstanding_called"] = r.initiate.max_serv_outstanding_called;
+  d["nesting_level"] = r.initiate.data_structure_nesting_level
+                           ? nb::cast(static_cast<int>(*r.initiate.data_structure_nesting_level))
+                           : nb::none();
   d["remote"] = nb::make_tuple(r.remote_endpoint.address().to_string(), r.remote_endpoint.port());
   d["tls"] = tls_session_to_py(r.tls);
   return d;
@@ -907,7 +928,8 @@ void report_unraisable(nb::python_error& e, const char* where) {
 
 server::server_options server_options_from_py(nb::dict d, hook on_write, hook on_control,
                                               hook authorize, hook on_setting_group,
-                                              hook on_goose_control, hook on_obtain_file) {
+                                              hook on_goose_control, hook on_obtain_file,
+                                              hook accept_connection) {
   server::server_options o;
   auto given = [&](const char* k) { return d.contains(k) && !d[k].is_none(); };
   if (given("max_associations")) o.max_associations = nb::cast<std::size_t>(d["max_associations"]);
@@ -932,6 +954,42 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
   if (given("association_timeout")) o.association.association_timeout = seconds_from_py(d["association_timeout"]);
   if (given("handshake_timeout")) o.association.transport.handshake_timeout = seconds_from_py(d["handshake_timeout"]);
   if (given("tls")) o.association.transport.tls = tls_context_from_py(d["tls"], true);
+  if (given("iso")) server_iso_from_py(d["iso"], o.association);
+  // AP title and AE-qualifier: absent keeps the default, None omits the field.
+  if (d.contains("ap_title")) {
+    o.association.ap_title = std::nullopt;
+    if (given("ap_title")) {
+      const auto text = nb::cast<std::string>(d["ap_title"]);
+      auto oid = ber::oid::from_string(text);
+      if (!oid) throw nb::value_error(("invalid object identifier '" + text + "'").c_str());
+      o.association.ap_title = *oid;
+    }
+  }
+  if (d.contains("ae_qualifier")) {
+    o.association.ae_qualifier = std::nullopt;
+    if (given("ae_qualifier")) o.association.ae_qualifier = nb::cast<std::int64_t>(d["ae_qualifier"]);
+  }
+  if (accept_connection) {
+    o.association.transport.cotp.accept_connection =
+        [fn = std::move(accept_connection)](
+            const iso::cotp::connection_request& r) -> std::optional<std::uint8_t> {
+      constexpr std::uint8_t refused = iso::cotp::disconnect_reason::not_specified;
+      if (interpreter_finalizing()) return refused;
+      const nb::gil_scoped_acquire gil;
+      const auto tsap = [](const std::optional<byte_buffer>& b) -> nb::object {
+        return b ? nb::object(to_bytes(*b)) : nb::none();
+      };
+      try {
+        const nb::object v = nb::handle(fn->get())(tsap(r.calling_tsap), tsap(r.called_tsap));
+        if (v.is_none()) return std::nullopt;
+        return nb::cast<std::uint8_t>(v);
+      } catch (nb::python_error& err) {
+        report_unraisable(err, "openiec61850 accept_connection");
+      } catch (...) {
+      }
+      return refused;
+    };
+  }
   if (given("log_capacity")) o.log_capacity = nb::cast<std::size_t>(d["log_capacity"]);
   if (given("max_open_files")) o.max_open_files = nb::cast<std::size_t>(d["max_open_files"]);
   if (d.contains("files")) o.files = file_store_from_py(d["files"]);
@@ -1044,9 +1102,10 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
       if (interpreter_finalizing()) return denied;
       const nb::gil_scoped_acquire gil;
       try {
-        if (nb::cast<bool>(nb::handle(fn->get())(association_request_to_py(r)))) {
-          return association_decision::accepted();
-        }
+        // True, False, or the acse-service-user diagnostic of a refusal.
+        const nb::object v = nb::handle(fn->get())(association_request_to_py(r));
+        if (PyBool_Check(v.ptr()) == 0) return association_decision::rejected(nb::cast<std::int64_t>(v));
+        if (nb::cast<bool>(v)) return association_decision::accepted();
       } catch (nb::python_error& err) {
         report_unraisable(err, "openiec61850 authorize");
       } catch (...) {
@@ -1106,7 +1165,10 @@ class native_server {
     if (ec) throw nb::value_error(("invalid listen address '" + host + "'").c_str());
     auto o = server_options_from_py(options, make_hook(on_write), make_hook(on_control),
                                     make_hook(authorize), make_hook(on_setting_group),
-                                    make_hook(on_goose_control), make_hook(on_obtain_file));
+                                    make_hook(on_goose_control), make_hook(on_obtain_file),
+                                    make_hook(options.contains("accept_connection")
+                                                  ? nb::handle(options["accept_connection"])
+                                                  : nb::handle(nb::none())));
     server::data_model copy = m.get();
     const asio::ip::tcp::endpoint ep{address, static_cast<std::uint16_t>(port)};
     std::optional<result<server::server>> r;
@@ -1218,6 +1280,14 @@ void bind_server(nb::module_& m) {
       },
       nb::arg("basic_type"), nb::arg("size") = 0, nb::arg("count") = 0, nb::arg("edition") = 2,
       "The data definition dict of a basic type (an array of it when count > 0).");
+  m.def(
+      "normalize_file_path",
+      [](const std::string& path) {
+        auto r = server::normalize_file_path(path);
+        if (!r) raise_error(r.error());
+        return std::move(*r);
+      },
+      nb::arg("path"));
 
   nb::class_<native_model>(m, "Model", "Native immutable server data model. Use openiec61850.Model.")
       .def_prop_ro("edition", &native_model::edition)
@@ -1225,6 +1295,8 @@ void bind_server(nb::module_& m) {
       .def("logical_devices", &native_model::logical_devices)
       .def("node", &native_model::node_info, nb::arg("id"),
            "(name, kind, parent, children, fc, basic_type, size, count, (dchg, qchg, dupd))")
+      .def("has_fc", &native_model::has_fc, nb::arg("id"), nb::arg("fc"))
+      .def("group_values", &native_model::group_values, nb::arg("id"))
       .def("initial_value", &native_model::initial_value, nb::arg("id"))
       .def("reference_of", &native_model::reference_of, nb::arg("id"))
       .def("find", &native_model::find, nb::arg("ref"))

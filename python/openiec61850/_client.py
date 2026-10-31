@@ -127,6 +127,18 @@ class IsoParameters:
     unconfirmed_queue_capacity: int | None = None
     keep_alive: bool | None = None
     no_delay: bool | None = None
+    read_buffer_size: int | None = None
+    local_reference: int | None = None
+    max_tsdu_size: int | None = None
+    max_tpkt_size: int | None = None
+    session_versions: int | None = None  # bit 0: version 1, bit 1: version 2 (X.225)
+    version_number: int | None = None
+    parameter_cbb: tuple[bytes, int] | None = None  # (octets, bit count), as in NegotiatedParameters
+    services_supported: tuple[bytes, int] | None = None
+    # One phase each, instead of the ``timeout`` of Client.connect.
+    connect_timeout: float | None = None
+    handshake_timeout: float | None = None
+    association_timeout: float | None = None
 
 
 class ConnectionState(str, enum.Enum):

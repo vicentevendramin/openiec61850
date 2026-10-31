@@ -71,6 +71,12 @@ nb::object type_to_py(const mms::type_description& t, const std::string& name) {
                         ? nb::object(nb::str("FLOAT64"))
                         : nb::none();
   o["size"] = t.size < 0 ? -t.size : t.size;
+  o["fc"] = nb::none();
+  o["kind"] = t.type == mms::data_type::structure ? "structure"
+              : t.type == mms::data_type::array   ? "array"
+                                                  : "basic";
+  o["variable_length"] = t.size < 0;
+  o["array_size"] = t.number_of_elements;
   nb::list children;
   for (const auto& c : t.components) children.append(type_to_py(c.type, c.name));
   o["children"] = children;
@@ -161,6 +167,10 @@ class native_control {
   }
   [[nodiscard]] int ctl_num() const { return c_.ctl_num(); }
   [[nodiscard]] bool selected() const { return c_.selected(); }
+  [[nodiscard]] nb::object structure() const {
+    const auto& st = c_.structure();
+    return st ? type_to_py(*st, c_.reference().to_string()) : nb::none();
+  }
   [[nodiscard]] nb::object has_oper_time() const {
     const auto v = c_.has_oper_time();
     return v ? nb::cast(*v) : nb::none();
@@ -634,6 +644,7 @@ void bind_client(nb::module_& m) {
       .def_prop_ro("selected", &native_control::selected)
       .def_prop_ro("has_oper_time", &native_control::has_oper_time)
       .def_prop_ro("ctl_val_type", &native_control::ctl_val_type)
+      .def_prop_ro("structure", &native_control::structure)
       .def_prop_ro("last_error", &native_control::last_error)
       .def("select", &native_control::select, nb::arg("options") = nb::none())
       .def("select_with_value", &native_control::select_with_value, nb::arg("value"),

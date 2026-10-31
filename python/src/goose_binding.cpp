@@ -15,9 +15,11 @@
 #include <nanobind/stl/vector.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -307,6 +309,10 @@ class native_link {
     if (!lb_) return nb::none();
     return nb::cast(lb_->dropped());
   }
+  [[nodiscard]] nb::object interface_index() const {
+    const auto raw = std::dynamic_pointer_cast<goose::raw_socket_link>(l_);
+    return raw ? nb::cast(raw->interface_index()) : nb::none();
+  }
 
  private:
   std::shared_ptr<goose::link> l_;
@@ -321,9 +327,36 @@ class native_network {
     return {l, l};
   }
   [[nodiscard]] std::uint64_t frames_sent() const noexcept { return n_->frames_sent(); }
+  // filter(frame, to) on the sender's thread; False drops the frame for that link. Without the
+  // GIL here: the old filter goes under the network mutex, and filter_ keeps its callable from
+  // being released there, where waiting for the GIL could deadlock with attach().
+  void set_filter(nb::handle filter) {
+    auto next = filter.is_none() ? nullptr : std::make_shared<py_ref>(filter);
+    {
+      const nb::gil_scoped_release release;
+      if (next) {
+        n_->set_filter([next](byte_view frame, const mac_address& to) {
+          if (interpreter_finalizing()) return true;
+          const nb::gil_scoped_acquire gil;
+          try {
+            return nb::cast<bool>(nb::handle(next->get())(
+                nb::bytes(reinterpret_cast<const char*>(frame.data()), frame.size()), mac_to_py(to)));
+          } catch (nb::python_error& e) {
+            e.discard_as_unraisable("openiec61850 loopback filter");
+          } catch (...) {
+          }
+          return true;
+        });
+      } else {
+        n_->set_filter({});
+      }
+    }
+    filter_ = std::move(next);
+  }
 
  private:
   std::shared_ptr<goose::loopback_network> n_;
+  std::shared_ptr<py_ref> filter_;
 };
 
 native_link raw_socket_open(nb::dict options) {
@@ -732,6 +765,187 @@ class native_receiver {
 // ------------------------------------------------------------------ 9-2 LE helpers
 
 // seqData of 9-2 LE: [(value, quality32)] x 8 <-> 64 octets.
+// ------------------------------------------------------------------ frames, without I/O
+
+goose::frame_header header_from_py(nb::dict dict) {
+  const dict_view d{dict};
+  goose::frame_header h;
+  h.destination = mac_from_py(d.at("destination"));
+  h.source = mac_from_py(d.at("source"));
+  h.vlan = vlan_from_py(d.at("vlan"));
+  d.read("app_id", h.app_id);
+  d.read("reserved1", h.reserved1);
+  d.read("reserved2", h.reserved2);
+  return h;
+}
+
+nb::object decode_frame_py(nb::handle frame) {
+  const auto b = bytes_from_py(frame);
+  const auto f = value_or_raise(goose::decode_frame(b));
+  nb::dict d;
+  d["destination"] = mac_to_py(f.destination);
+  d["source"] = mac_to_py(f.source);
+  d["vlan"] = vlan_to_py(f.vlan);
+  d["ether_type"] = f.ether_type;
+  d["app_id"] = f.app_id;
+  d["length"] = f.length;
+  d["reserved1"] = f.reserved1;
+  d["reserved2"] = f.reserved2;
+  d["apdu"] = to_bytes(f.apdu);
+  return d;
+}
+
+std::uint16_t peek_ether_type_py(nb::handle frame) {
+  return goose::peek_ether_type(bytes_from_py(frame));
+}
+
+// An event dict as a subscription gives it, with the raw security field of the message.
+nb::object decode_goose_py(nb::handle frame) {
+  const auto b = bytes_from_py(frame);
+  const auto v = value_or_raise(goose::decode(b));
+  goose::event e;
+  e.msg = value_or_raise(goose::to_message(v));
+  nb::object d = goose_event_to_py(e);
+  d["message"]["security"] = v.pdu.security ? nb::object(to_bytes(*v.pdu.security)) : nb::none();
+  return d;
+}
+
+nb::bytes encode_goose_py(nb::dict header, nb::dict fields, nb::handle values) {
+  const dict_view d{fields};
+  const auto gocb_ref = nb::cast<std::string>(d.at("gocb_ref"));
+  const auto dat_set = nb::cast<std::string>(d.at("dat_set"));
+  const auto go_id = nb::cast<std::string>(d.at("go_id"));
+  goose::pdu_fields f;
+  f.gocb_ref = gocb_ref;
+  f.dat_set = dat_set;
+  f.go_id = go_id;
+  d.read("time_allowed_to_live", f.time_allowed_to_live);
+  if (d.given("t")) f.t = *utc_from_py(d.at("t"));
+  d.read("st_num", f.st_num);
+  d.read("sq_num", f.sq_num);
+  d.read("simulation", f.simulation);
+  d.read("conf_rev", f.conf_rev);
+  d.read("nds_com", f.nds_com);
+  d.read_opt("num_dat_set_entries", f.num_dat_set_entries);
+  const auto v = values_from_py(values);
+  byte_buffer out;
+  if (auto r = goose::encode(header_from_py(header), f, v, out); !r) raise_error(r.error());
+  return nb::bytes(reinterpret_cast<const char*>(out.data()), out.size());
+}
+
+nb::object asdu_to_py(const sv::asdu_view& a) {
+  nb::dict d;
+  d["sv_id"] = std::string(a.sv_id);
+  d["dat_set"] = a.dat_set ? nb::cast(std::string(*a.dat_set)) : nb::none();
+  d["smp_cnt"] = a.smp_cnt;
+  d["conf_rev"] = a.conf_rev;
+  d["refr_tm"] = a.refr_tm ? utc_to_py(*a.refr_tm) : nb::none();
+  d["smp_synch"] = a.smp_synch;
+  d["smp_rate"] = opt(a.smp_rate);
+  d["seq_data"] = to_bytes(a.seq_data);
+  d["smp_mod"] = opt(a.smp_mod);
+  d["gm_identity"] = a.gm_identity ? nb::object(to_bytes(*a.gm_identity)) : nb::none();
+  return d;
+}
+
+// (ASDU dicts, raw security field | None)
+nb::object decode_sv_py(nb::handle frame) {
+  const auto b = bytes_from_py(frame);
+  const auto v = value_or_raise(sv::decode(b));
+  nb::list asdus;
+  for (const auto& a : v.pdu.asdus) asdus.append(asdu_to_py(a));
+  return nb::make_tuple(asdus, v.pdu.security ? nb::object(to_bytes(*v.pdu.security)) : nb::none());
+}
+
+nb::bytes encode_sv_py(nb::dict header, nb::handle asdus) {
+  // What the sv::asdu values borrow.
+  struct owned {
+    std::string sv_id;
+    std::string dat_set;
+    byte_buffer seq_data;
+  };
+  std::deque<owned> strings;
+  std::vector<sv::asdu> list;
+  for (nb::handle h : asdus) {
+    const dict_view d{nb::cast<nb::dict>(h)};
+    auto& o = strings.emplace_back();
+    o.sv_id = nb::cast<std::string>(d.at("sv_id"));
+    o.seq_data = bytes_from_py(d.at("seq_data"));
+    sv::asdu a;
+    a.sv_id = o.sv_id;
+    a.seq_data = o.seq_data;
+    if (d.given("dat_set")) {
+      o.dat_set = nb::cast<std::string>(d.at("dat_set"));
+      a.dat_set = o.dat_set;
+    }
+    d.read("smp_cnt", a.smp_cnt);
+    d.read("conf_rev", a.conf_rev);
+    if (d.given("refr_tm")) a.refr_tm = utc_from_py(d.at("refr_tm"));
+    d.read("smp_synch", a.smp_synch);
+    d.read_opt("smp_rate", a.smp_rate);
+    d.read_opt("smp_mod", a.smp_mod);
+    if (d.given("gm_identity")) {
+      const auto id = bytes_from_py(d.at("gm_identity"));
+      if (id.size() != 8) throw nb::value_error("gmIdentity has 8 octets");
+      std::array<std::uint8_t, 8> gm{};
+      std::copy(id.begin(), id.end(), gm.begin());
+      a.gm_identity = gm;
+    }
+    list.push_back(a);
+  }
+  byte_buffer out;
+  if (auto r = sv::encode(header_from_py(header), list, out); !r) raise_error(r.error());
+  return nb::bytes(reinterpret_cast<const char*>(out.data()), out.size());
+}
+
+std::uint32_t retransmission_interval_py(std::uint32_t sq_num, std::uint32_t min_time, std::uint32_t max_time) {
+  return static_cast<std::uint32_t>(
+      goose::retransmission_interval(sq_num, std::chrono::milliseconds{min_time}, std::chrono::milliseconds{max_time})
+          .count());
+}
+
+// `now` is in seconds of any monotonic clock (time.monotonic()), as long as one tracker keeps to it.
+goose::sequence_tracker::clock::time_point tracker_time(double now) {
+  using clock = goose::sequence_tracker::clock;
+  return clock::time_point{std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>{now})};
+}
+
+class native_sequence_tracker {
+ public:
+  nb::object on_message(std::uint32_t st_num, std::uint32_t sq_num, std::uint32_t tal_ms, double now) {
+    const auto c = t_.on_message(st_num, sq_num, tal_ms, tracker_time(now));
+    return nb::make_tuple(static_cast<int>(c.status), c.lost);
+  }
+  [[nodiscard]] bool expired(double now) const { return t_.expired(tracker_time(now)); }
+  [[nodiscard]] nb::object deadline() const {
+    const auto d = t_.deadline();
+    if (!d) return nb::none();
+    return nb::cast(std::chrono::duration<double>(d->time_since_epoch()).count());
+  }
+  void reset() { t_.reset(); }
+  [[nodiscard]] bool has_state() const { return t_.has_state(); }
+  [[nodiscard]] std::uint32_t st_num() const { return t_.st_num(); }
+  [[nodiscard]] std::uint32_t sq_num() const { return t_.sq_num(); }
+  [[nodiscard]] std::uint32_t margin() const { return static_cast<std::uint32_t>(t_.margin.count()); }
+  void set_margin(std::uint32_t ms_value) { t_.margin = std::chrono::milliseconds{ms_value}; }
+
+ private:
+  goose::sequence_tracker t_;
+};
+
+class native_smp_cnt_tracker {
+ public:
+  explicit native_smp_cnt_tracker(std::uint32_t wrap) : t_(wrap) {}
+  nb::object on_sample(std::uint16_t smp_cnt) {
+    const auto c = t_.on_sample(smp_cnt);
+    return nb::make_tuple(static_cast<int>(c.status), c.lost);
+  }
+  void reset() { t_.reset(); }
+
+ private:
+  sv::smp_cnt_tracker t_;
+};
+
 nb::object le_decode(nb::handle data) {
   const auto b = bytes_from_py(data);
   const auto s = value_or_raise(sv::le::decode(b));
@@ -766,6 +980,7 @@ void bind_goose(nb::module_& m) {
   nb::class_<native_link>(m, "GooseLink", "A layer 2 link (internal; see openiec61850.goose).")
       .def_prop_ro("address", &native_link::address)
       .def_prop_ro("dropped", &native_link::dropped)
+      .def_prop_ro("interface_index", &native_link::interface_index)
       .def("send", &native_link::send, nb::arg("frame"))
       .def("close", &native_link::close)
       .def_static("open_raw", &raw_socket_open, nb::arg("options"));
@@ -773,7 +988,25 @@ void bind_goose(nb::module_& m) {
   nb::class_<native_network>(m, "LoopbackNetwork", "In-memory broadcast domain (internal).")
       .def(nb::init<>())
       .def("attach", &native_network::attach, nb::arg("mac"), nb::arg("queue_capacity") = 1024)
+      .def("set_filter", &native_network::set_filter, nb::arg("filter").none())
       .def_prop_ro("frames_sent", &native_network::frames_sent);
+
+  nb::class_<native_sequence_tracker>(m, "SequenceTracker", "stNum / sqNum / TAL supervision (internal).")
+      .def(nb::init<>())
+      .def("on_message", &native_sequence_tracker::on_message, nb::arg("st_num"), nb::arg("sq_num"),
+           nb::arg("tal_ms"), nb::arg("now"))
+      .def("expired", &native_sequence_tracker::expired, nb::arg("now"))
+      .def_prop_ro("deadline", &native_sequence_tracker::deadline)
+      .def("reset", &native_sequence_tracker::reset)
+      .def_prop_ro("has_state", &native_sequence_tracker::has_state)
+      .def_prop_ro("st_num", &native_sequence_tracker::st_num)
+      .def_prop_ro("sq_num", &native_sequence_tracker::sq_num)
+      .def_prop_rw("margin", &native_sequence_tracker::margin, &native_sequence_tracker::set_margin);
+
+  nb::class_<native_smp_cnt_tracker>(m, "SmpCntTracker", "smpCnt continuity (internal).")
+      .def(nb::init<std::uint32_t>(), nb::arg("wrap") = 0)
+      .def("on_sample", &native_smp_cnt_tracker::on_sample, nb::arg("smp_cnt"))
+      .def("reset", &native_smp_cnt_tracker::reset);
 
   nb::class_<native_goose_publisher>(m, "GoosePublisher", "GOOSE publisher (internal).")
       .def_static("create", &native_goose_publisher::create, nb::arg("link"), nb::arg("config"),
@@ -822,6 +1055,14 @@ void bind_goose(nb::module_& m) {
   m.def("goose_config_from_scl", &config_from_scl, nb::arg("kind"), nb::arg("source"), nb::arg("is_text"),
         nb::arg("ied"), nb::arg("ld_inst"), nb::arg("cb_name"), nb::arg("access_point") = "",
         nb::arg("frequency") = 50);
+  m.def("goose_decode_frame", &decode_frame_py, nb::arg("frame"));
+  m.def("goose_peek_ether_type", &peek_ether_type_py, nb::arg("frame"));
+  m.def("goose_decode", &decode_goose_py, nb::arg("frame"));
+  m.def("goose_encode", &encode_goose_py, nb::arg("header"), nb::arg("fields"), nb::arg("values"));
+  m.def("sv_decode", &decode_sv_py, nb::arg("frame"));
+  m.def("sv_encode", &encode_sv_py, nb::arg("header"), nb::arg("asdus"));
+  m.def("goose_retransmission_interval", &retransmission_interval_py, nb::arg("sq_num"),
+        nb::arg("min_time"), nb::arg("max_time"));
   m.def("le_decode", &le_decode, nb::arg("seq_data"));
   m.def("le_encode", &le_encode, nb::arg("channels"));
 }

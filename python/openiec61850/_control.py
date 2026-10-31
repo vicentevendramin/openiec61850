@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from openiec61850._types import CtlModel, ObjectReference, OrCat, Timestamp
+from openiec61850._types import CtlModel, MmsType, ObjectReference, OrCat, Timestamp
 from openiec61850._values import TypeSpec, encode, spec_from_definition
 
 __all__ = [
@@ -176,6 +176,20 @@ class Control:
     def has_oper_time(self) -> bool | None:
         """Whether Oper has operTm (time-activated control); ``None`` when unknown."""
         return self._native.has_oper_time
+
+    @property
+    def ctl_val_type(self) -> MmsType | None:
+        """The MMS type of ctlVal; ``None`` when the CO structure was not read."""
+        t = self._native.ctl_val_type
+        return MmsType(t["mms_type"]) if t is not None else None
+
+    @property
+    def structure(self) -> Any:
+        """The CO structure of the object as a :class:`DataDefinition`; ``None`` when not read."""
+        from openiec61850._client import DataDefinition
+
+        t = self._native.structure
+        return DataDefinition._from(t) if t is not None else None
 
     @property
     def last_error(self) -> LastApplError | None:

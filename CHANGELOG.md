@@ -60,6 +60,10 @@ release may break the API. The release process is in
 - Python package `openiec61850`: `asyncio` client and server APIs, typed values, exception
   hierarchy, `openiec61850.sync` blocking facades. Release wheels never ship the test-only
   `openiec61850._testing` extension.
+  Python also covers the rest of the stack options (`IsoParameters`, `ServerIsoParameters`, the
+  responding AP title, `accept_connection`), the `authorize` diagnostic (`AcseDiagnostic`), the
+  CO structure of a `Control`, and GOOSE / SV frames and supervision without I/O
+  (`encode_goose`, `decode_goose`, `encode_sv`, `decode_sv`, `SequenceTracker`, `SmpCntTracker`).
 - Command-line tools `openiec61850-server` and `openiec61850-client`.
 - Google Benchmark suite and a libiec61850 interoperability harness run as Docker binaries
   (both directions).

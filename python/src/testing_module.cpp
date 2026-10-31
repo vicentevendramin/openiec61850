@@ -152,7 +152,8 @@ class fake_server_host {
   void fail_next(int service, std::optional<int> error_class, std::int64_t error_code,
                  std::optional<std::int64_t> additional_code,
                  std::optional<std::string> additional_description,
-                 std::optional<std::uint32_t> modifier_position, std::int64_t reject_reason) {
+                 std::optional<std::uint32_t> modifier_position, std::int64_t reject_reason,
+                 std::optional<nb::bytes> service_specific_info) {
     testing::fake_server::injected_failure f;
     if (error_class) {
       openiec61850::association::service_error_info e;
@@ -160,6 +161,7 @@ class fake_server_host {
       e.code = error_code;
       e.additional_code = additional_code;
       e.additional_description = std::move(additional_description);
+      if (service_specific_info) e.service_specific_info = py::bytes_from_py(*service_specific_info);
       f.error = std::move(e);
       f.modifier_position = modifier_position;
     }
@@ -242,7 +244,7 @@ NB_MODULE(_testing, m) {
       .def("fail_next", &fake_server_host::fail_next, nb::arg("service"), nb::arg("error_class") = nb::none(),
            nb::arg("error_code") = 0, nb::arg("additional_code") = nb::none(),
            nb::arg("additional_description") = nb::none(), nb::arg("modifier_position") = nb::none(),
-           nb::arg("reject_reason") = 0)
+           nb::arg("reject_reason") = 0, nb::arg("service_specific_info") = nb::none())
       .def("buffered_entries", &fake_server_host::buffered_entries, nb::arg("brcb"))
       .def("rcb_enabled", &fake_server_host::rcb_enabled, nb::arg("rcb"));
 }

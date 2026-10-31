@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "openiec61850/association/server_association.hpp"
 #include "openiec61850/client/report.hpp"
 #include "openiec61850/client/types.hpp"
 #include "openiec61850/mms/data.hpp"
@@ -70,6 +71,8 @@ client::gocb_settings gocb_settings_from_py(nb::handle d, const model::parse_opt
 client::report_settings report_settings_from_py(nb::handle d, const model::parse_options& opts);
 client::rcb_settings rcb_settings_from_py(nb::handle d, const model::parse_options& opts);
 client::client_options client_options_from_py(nb::handle d);
+// The keys of openiec61850.ServerIsoParameters.
+void server_iso_from_py(nb::handle d, association::server_options& o);
 // The native form of openiec61850.TlsConfig; raises when it cannot be loaded.
 std::shared_ptr<transport::tls_context> tls_context_from_py(nb::handle config, bool server);
 // A dict for openiec61850.TlsSession, or None.

@@ -66,7 +66,14 @@ from datetime import datetime, timezone
 from typing import Any, Union
 
 from openiec61850 import _core
-from openiec61850._client import DataDefinition, TlsConfig, TlsSession
+from openiec61850._client import (
+    DEFAULT_AE_QUALIFIER,
+    DEFAULT_AP_TITLE,
+    DataDefinition,
+    TlsConfig,
+    TlsSession,
+    _oid_text,
+)
 from openiec61850._control import AddCause, Originator, add_cause
 from openiec61850._errors import FileErrorCode, FileStoreError, InvalidOperation, ObjectNotFound, SclError, ServiceError
 from openiec61850._types import (
@@ -85,6 +92,7 @@ from openiec61850._types import (
 from openiec61850._values import TypeSpec, decode, encode, spec_from_definition
 
 __all__ = [
+    "AcseDiagnostic",
     "AssociationRequest",
     "ControlAction",
     "ControlRequest",
@@ -114,6 +122,8 @@ __all__ = [
     "ReportControl",
     "SclDiagnostic",
     "Server",
+    "ServerIsoParameters",
+    "normalize_file_path",
 ]
 
 _log = logging.getLogger("openiec61850.server")
@@ -345,6 +355,27 @@ class ModelNode:
     def children(self) -> tuple[ModelNode, ...]:
         return tuple(ModelNode(self._model, c) for c in self._info[3])
 
+    def _ancestor(self, kind: NodeKind) -> ModelNode | None:
+        n: ModelNode | None = self
+        while n is not None and n.kind is not kind:
+            n = n.parent
+        return n
+
+    @property
+    def logical_node(self) -> ModelNode | None:
+        """The LN holding this node (itself for an LN; ``None`` for an LD)."""
+        return self._ancestor(NodeKind.LOGICAL_NODE)
+
+    @property
+    def logical_device(self) -> ModelNode | None:
+        """The LD holding this node (itself for an LD)."""
+        return self._ancestor(NodeKind.LOGICAL_DEVICE)
+
+    def has_fc(self, fc: FC | str) -> bool:
+        """True when this subtree holds a data attribute with ``fc`` (FC SG attributes of an LD
+        with an SGCB also count as SE)."""
+        return bool(self._model._native.has_fc(self._id, str(FC(fc).value)))
+
     def child(self, name: str) -> ModelNode | None:
         for c in self.children:
             if c.name == name:
@@ -393,6 +424,13 @@ class ModelNode:
         if t is None:
             return None
         return decode(t, spec_from_definition(self._model._native.node_definition(self._id)))
+
+    @property
+    def group_values(self) -> tuple[Any, ...]:
+        """FC SG attributes: the initial value of each setting group, group 1 first (empty when
+        every group starts with :attr:`initial_value`)."""
+        spec = spec_from_definition(self._model._native.node_definition(self._id))
+        return tuple(decode(t, spec) for t in self._model._native.group_values(self._id))
 
     def definition(self, fc: FC | str | None = None) -> DataDefinition:
         """The type of the node seen under ``fc`` (like :meth:`Client.data_definition`)."""
@@ -858,6 +896,48 @@ class ControlRequest:
         return bool(self._completion.complete(int(r.kind), int(r.cause)))
 
 
+class AcseDiagnostic(enum.IntEnum):
+    """AARE result-source-diagnostic acse-service-user (X.227): why ``authorize`` refused."""
+
+    NO_REASON_GIVEN = 1
+    APPLICATION_CONTEXT_NAME_NOT_SUPPORTED = 2
+    CALLING_AP_TITLE_NOT_RECOGNIZED = 3
+    CALLING_AP_INVOCATION_ID_NOT_RECOGNIZED = 4
+    CALLING_AE_QUALIFIER_NOT_RECOGNIZED = 5
+    CALLING_AE_INVOCATION_ID_NOT_RECOGNIZED = 6
+    CALLED_AP_TITLE_NOT_RECOGNIZED = 7
+    CALLED_AP_INVOCATION_ID_NOT_RECOGNIZED = 8
+    CALLED_AE_QUALIFIER_NOT_RECOGNIZED = 9
+    CALLED_AE_INVOCATION_ID_NOT_RECOGNIZED = 10
+    AUTHENTICATION_MECHANISM_NAME_NOT_RECOGNIZED = 11
+    AUTHENTICATION_MECHANISM_NAME_REQUIRED = 12
+    AUTHENTICATION_FAILURE = 13
+
+
+@dataclass(frozen=True)
+class ServerIsoParameters:
+    """ISO stack addressing and MMS limits of a server; ``None`` keeps the default. The Initiate
+    values are upper bounds of what is negotiated with each client."""
+
+    session_selector: bytes | None = None
+    presentation_selector: bytes | None = None
+    max_tpdu_size: int | None = None
+    max_tsdu_size: int | None = None
+    max_tpkt_size: int | None = None
+    local_reference: int | None = None
+    read_buffer_size: int | None = None
+    keep_alive: bool | None = None
+    no_delay: bool | None = None
+    local_detail: int | None = None
+    max_serv_outstanding_calling: int | None = None
+    max_serv_outstanding_called: int | None = None
+    nesting_level: int | None = None
+    max_nesting: int | None = None
+    version_number: int | None = None
+    parameter_cbb: tuple[bytes, int] | None = None  # (octets, bit count), as in NegotiatedParameters
+    services_supported: tuple[bytes, int] | None = None
+
+
 @dataclass(frozen=True)
 class AssociationRequest:
     """What a client asked for when associating (for the ``authorize`` hook)."""
@@ -869,6 +949,14 @@ class AssociationRequest:
     called_ae_qualifier: int | None
     remote: tuple[str, int]
     tls: TlsSession | None = None  # with the client certificate; None on a plain connection
+    mechanism_name: str | None = None
+    calling_presentation_selector: bytes = b""
+    called_presentation_selector: bytes = b""
+    # The Initiate-RequestPDU proposal.
+    local_detail_calling: int | None = None
+    max_serv_outstanding_calling: int = 0
+    max_serv_outstanding_called: int = 0
+    nesting_level: int | None = None
 
 
 @dataclass(frozen=True)
@@ -967,6 +1055,12 @@ class ObtainFileEvent:
     association: int
     source: str
     destination: str
+
+
+def normalize_file_path(path: str) -> str:
+    """A file name as the server hands it to a store: "/"-separated, relative, with no "..", "."
+    or empty segments (:class:`FileStoreError` with EINVAL otherwise)."""
+    return str(_core.normalize_file_path(path))
 
 
 class FileStore:
@@ -1308,7 +1402,7 @@ def _make_dispatchers(
             _log.exception("on_control hook failed for %s", d.get("object"))
             return (1, int(AddCause.UNKNOWN))
 
-    def auth(d: dict[str, Any]) -> bool:
+    def auth(d: dict[str, Any]) -> bool | int:
         try:
             req = AssociationRequest(
                 password=d["password"],
@@ -1318,8 +1412,16 @@ def _make_dispatchers(
                 called_ae_qualifier=d["called_ae_qualifier"],
                 remote=tuple(d["remote"]),  # type: ignore[arg-type]
                 tls=TlsSession(**d["tls"]) if d["tls"] is not None else None,
+                mechanism_name=d["mechanism_name"],
+                calling_presentation_selector=bytes(d["calling_presentation_selector"]),
+                called_presentation_selector=bytes(d["called_presentation_selector"]),
+                local_detail_calling=d["local_detail_calling"],
+                max_serv_outstanding_calling=d["max_serv_outstanding_calling"],
+                max_serv_outstanding_called=d["max_serv_outstanding_called"],
+                nesting_level=d["nesting_level"],
             )
-            return bool(_now(authorize(req), "authorize"))  # type: ignore[misc]
+            r = _now(authorize(req), "authorize")  # type: ignore[misc]
+            return int(r) if isinstance(r, AcseDiagnostic) else bool(r)
         except Exception:
             _log.exception("authorize hook failed")
             return False
@@ -1457,6 +1559,10 @@ class Server:
         on_obtain_file: ObtainFileHook | None = None,
         max_obtain_file_size: int = 64 * 1024 * 1024,
         obtain_file_timeout: float = 300.0,
+        ap_title: str | Sequence[int] | None = DEFAULT_AP_TITLE,
+        ae_qualifier: int | None = DEFAULT_AE_QUALIFIER,
+        iso: ServerIsoParameters | None = None,
+        accept_connection: Callable[[bytes | None, bytes | None], int | None] | None = None,
     ) -> Server:
         """Listens on ``host:port`` (port 0: ephemeral, see :attr:`local_endpoint`).
 
@@ -1464,7 +1570,8 @@ class Server:
         None to accept or a :class:`DataAccessError` to refuse a client write to SP, SV, CF, DC,
         BL, SG or SE (unset: accepted); ``on_control(request)`` returns a :class:`ControlResult`
         (or an awaitable of one for an Operate; unset: every command refused with
-        not-supported); ``authorize(request)`` returns True to accept an association.
+        not-supported); ``authorize(request)`` returns True to accept an association, False to
+        refuse it with authentication-failure, or the :class:`AcseDiagnostic` of the refusal.
         ``password`` requires that ACSE password (checked before ``authorize``).
         ``operate_timeout`` (seconds, 0: none) refuses pending operations with time-limit-over.
 
@@ -1485,6 +1592,12 @@ class Server:
 
         ``tls`` serves over TLS only; the
         ``authorize`` hook sees the client certificate in ``request.tls``.
+
+        ``ap_title`` / ``ae_qualifier`` are sent as responding AP-title and AE-qualifier (``None``
+        omits them); ``iso`` (:class:`ServerIsoParameters`) sets the stack addressing and limits.
+        ``accept_connection(calling_tsap, called_tsap)`` runs on the I/O thread for every COTP
+        connection request: it returns None to accept or a disconnect reason (X.224 §13.5.3) to
+        refuse with a DR; an exception refuses too.
         """
         if not isinstance(model, Model):
             raise TypeError("model must be an openiec61850.Model")
@@ -1513,6 +1626,10 @@ class Server:
             "obtain_file_timeout": float(obtain_file_timeout),
             "files": _native_files(files),
             "tls": tls._native() if tls is not None else None,
+            "ap_title": _oid_text(ap_title),
+            "ae_qualifier": ae_qualifier,
+            "iso": {k: v for k, v in vars(iso).items() if v is not None} if iso is not None else None,
+            "accept_connection": accept_connection,
         }
         write, control, auth, sg, gc, obtain = _make_dispatchers(
             model, loop, on_write, on_control, authorize, on_setting_group, on_goose_control, on_obtain_file

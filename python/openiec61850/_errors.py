@@ -541,7 +541,7 @@ def _make_error(category: str, value: int, message: str, details: dict[str, Any]
             exc.add_cause = add_cause(value - 1)  # type: ignore[attr-defined]
         if details:
             for key in ("error_code", "additional_code", "additional_description", "modifier_position",
-                        "reject_reason", "original_invoke_id"):
+                        "reject_reason", "original_invoke_id", "service_specific_info"):
                 setattr(exc, key, details.get(key))
             exc.error_class = _enum(ErrorClass, details.get("error_class"))  # type: ignore[attr-defined]
             exc.reject_type = _enum(RejectType, details.get("reject_type"))  # type: ignore[attr-defined]

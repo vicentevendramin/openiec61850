@@ -134,6 +134,11 @@ nb::object error_details_to_py(const client::error_details& d) {
   o["additional_code"] = d.service_error ? opt(d.service_error->additional_code) : nb::none();
   o["additional_description"] =
       d.service_error ? opt(d.service_error->additional_description) : nb::none();
+  o["service_specific_info"] =
+      d.service_error && !d.service_error->service_specific_info.empty()
+          ? nb::object(nb::bytes(reinterpret_cast<const char*>(d.service_error->service_specific_info.data()),
+                                 d.service_error->service_specific_info.size()))
+          : nb::none();
   o["modifier_position"] = opt(d.modifier_position);
   o["reject_type"] = d.reject ? nb::cast(static_cast<int>(d.reject->type)) : nb::none();
   o["reject_reason"] = d.reject ? nb::cast(d.reject->reason) : nb::none();

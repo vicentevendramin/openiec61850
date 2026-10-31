@@ -86,6 +86,19 @@ nb::object endpoint_to_py(const asio::ip::tcp::endpoint& e) {
   throw nb::python_error();
 }
 
+// (octets, bit count), bit 0 first, as support_to_py() gives it.
+mms::support_options support_from_py(nb::handle h) {
+  const auto t = nb::cast<nb::tuple>(h);
+  const auto octets = bytes_from_py(t[0]);
+  const auto bits = nb::cast<std::size_t>(t[1]);
+  if (bits > mms::support_options::max_bits || bits > octets.size() * 8) {
+    throw nb::value_error("support options: bit count out of range");
+  }
+  mms::support_options s(bits);
+  for (std::size_t i = 0; i < bits; ++i) s.set(i, (octets[i / 8] & (0x80U >> (i % 8))) != 0);
+  return s;
+}
+
 std::optional<ber::oid> oid_from_py(nb::handle h) {
   if (h.is_none()) return std::nullopt;
   const auto text = nb::cast<std::string>(h);
@@ -557,6 +570,43 @@ nb::object tls_session_to_py(const std::optional<transport::tls_session_info>& s
   return std::move(o);
 }
 
+namespace {
+
+void transport_from_py(const dict_reader& d, transport::channel_options& t) {
+  if (d.given("max_tpdu_size")) t.cotp.max_tpdu_size = nb::cast<std::size_t>(d.at("max_tpdu_size"));
+  if (d.given("max_tsdu_size")) t.cotp.max_tsdu_size = nb::cast<std::size_t>(d.at("max_tsdu_size"));
+  if (d.given("max_tpkt_size")) t.cotp.max_tpkt_size = nb::cast<std::size_t>(d.at("max_tpkt_size"));
+  d.read("local_reference", t.cotp.local_reference);
+  d.read("keep_alive", t.keep_alive);
+  d.read("no_delay", t.no_delay);
+  if (d.given("read_buffer_size")) t.read_buffer_size = nb::cast<std::size_t>(d.at("read_buffer_size"));
+}
+
+void init_detail_from_py(const dict_reader& d, mms::init_detail& i) {
+  d.read("version_number", i.version_number);
+  if (d.given("parameter_cbb")) i.parameter_cbb = support_from_py(d.at("parameter_cbb"));
+  if (d.given("services_supported")) i.services = support_from_py(d.at("services_supported"));
+}
+
+}  // namespace
+
+void server_iso_from_py(nb::handle h, association::server_options& o) {
+  const auto d = reader(h);
+  transport_from_py(d, o.transport);
+  if (d.given("session_selector")) o.session_selector = bytes_from_py(d.at("session_selector"));
+  if (d.given("presentation_selector")) {
+    o.presentation_selector = bytes_from_py(d.at("presentation_selector"));
+  }
+  if (d.given("local_detail")) o.limits.local_detail_called = nb::cast<std::int32_t>(d.at("local_detail"));
+  d.read("max_serv_outstanding_calling", o.limits.max_serv_outstanding_calling);
+  d.read("max_serv_outstanding_called", o.limits.max_serv_outstanding_called);
+  if (d.given("nesting_level")) {
+    o.limits.data_structure_nesting_level = nb::cast<std::int8_t>(d.at("nesting_level"));
+  }
+  d.read("max_nesting", o.decode.max_nesting);
+  init_detail_from_py(d, o.limits.detail);
+}
+
 client::client_options client_options_from_py(nb::handle h) {
   const auto d = reader(h);
   client::client_options o;
@@ -584,7 +634,8 @@ client::client_options client_options_from_py(nb::handle h) {
   if (d.given("release_timeout")) a.release_timeout = seconds_from_py(d.at("release_timeout"));
   if (d.given("calling_tsap")) a.transport.cotp.calling_tsap = bytes_from_py(d.at("calling_tsap"));
   if (d.given("called_tsap")) a.transport.cotp.called_tsap = bytes_from_py(d.at("called_tsap"));
-  if (d.given("max_tpdu_size")) a.transport.cotp.max_tpdu_size = nb::cast<std::size_t>(d.at("max_tpdu_size"));
+  transport_from_py(d, a.transport);
+  d.read("session_versions", a.session_versions);
   if (d.given("calling_session_selector")) a.calling_session_selector = bytes_from_py(d.at("calling_session_selector"));
   if (d.given("called_session_selector")) a.called_session_selector = bytes_from_py(d.at("called_session_selector"));
   if (d.given("calling_presentation_selector")) {
@@ -607,8 +658,7 @@ client::client_options client_options_from_py(nb::handle h) {
   }
   d.read("unconfirmed_queue_capacity", a.unconfirmed_queue_capacity);
   d.read("max_nesting", a.decode.max_nesting);
-  d.read("keep_alive", a.transport.keep_alive);
-  d.read("no_delay", a.transport.no_delay);
+  init_detail_from_py(d, a.initiate.detail);
   if (d.given("tls")) a.transport.tls = tls_context_from_py(d.at("tls"), false);
   if (d.given("edition")) o.edition = static_cast<model::edition>(nb::cast<std::uint8_t>(d.at("edition")));
   d.read("strict_ln_names", o.strict_ln_names);

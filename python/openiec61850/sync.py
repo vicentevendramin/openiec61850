@@ -44,7 +44,7 @@ from openiec61850._client import (
 )
 from openiec61850._errors import Iec61850Error
 from openiec61850._control import LastApplError
-from openiec61850._types import CtlModel, EntryID, EntryTime, ObjectClass, ObjectReference
+from openiec61850._types import CtlModel, Edition, EntryID, EntryTime, MmsType, ObjectClass, ObjectReference
 
 __all__ = ["Client", "Control", "ReportSubscription", "ReportStream", "EventStream", "Server"]
 
@@ -204,6 +204,14 @@ class Control:
         return self._c.has_oper_time
 
     @property
+    def ctl_val_type(self) -> MmsType | None:
+        return self._c.ctl_val_type
+
+    @property
+    def structure(self) -> DataDefinition | None:
+        return self._c.structure
+
+    @property
     def last_error(self) -> LastApplError | None:
         return self._c.last_error
 
@@ -259,6 +267,10 @@ class Client:
     @property
     def state(self) -> ConnectionState:
         return self._c.state
+
+    @property
+    def edition(self) -> Edition:
+        return self._c.edition
 
     @property
     def association_info(self) -> AssociationInfo:
@@ -379,6 +391,14 @@ class Client:
 
     def query_log_after(self, log: Ref, time: EntryTime | datetime, entry_id: EntryID | bytes) -> list[LogEntry]:
         return _run(self._c.query_log_after(log, time, entry_id))
+
+    def log_entries(
+        self,
+        log: Ref,
+        start: EntryTime | datetime | None = None,
+        stop: EntryTime | datetime | None = None,
+    ) -> Iterator[LogEntry]:
+        yield from self.query_log_by_time(log, start, stop)
 
     def log_status(self, log: Ref) -> int:
         return _run(self._c.log_status(log))

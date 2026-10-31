@@ -45,6 +45,7 @@ import collections
 import enum
 import os
 import struct
+import time
 import weakref
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -55,8 +56,23 @@ from openiec61850._types import Timestamp, Validity
 from openiec61850._values import TypeSpec, decode, encode, spec_from_tagged
 
 __all__ = [
+    "FrameHeader",
+    "GooseSequenceCheck",
     "Link",
     "LoopbackNetwork",
+    "SequenceTracker",
+    "SmpCntTracker",
+    "SvAsdu",
+    "SvFrame",
+    "decode_frame",
+    "decode_goose",
+    "decode_sv",
+    "encode_goose",
+    "encode_sv",
+    "is_multicast",
+    "peek_ether_type",
+    "retransmission_interval",
+    "samples_per_second",
     "RawSocketLink",
     "VlanTag",
     "GoosePublisherConfig",
@@ -79,11 +95,19 @@ __all__ = [
     "SampleMode",
     "LeSamples",
     "ETHERTYPE_GOOSE",
+    "ETHERTYPE_GSE_MANAGEMENT",
     "ETHERTYPE_SV",
+    "ETHERTYPE_VLAN",
+    "SAMPLES_PER_PERIOD_METERING",
+    "SAMPLES_PER_PERIOD_PROTECTION",
 ]
 
+ETHERTYPE_VLAN = 0x8100
 ETHERTYPE_GOOSE = 0x88B8
+ETHERTYPE_GSE_MANAGEMENT = 0x88B9
 ETHERTYPE_SV = 0x88BA
+SAMPLES_PER_PERIOD_PROTECTION = 80
+SAMPLES_PER_PERIOD_METERING = 256
 
 Mac = Union[str, bytes]
 T = TypeVar("T")
@@ -171,6 +195,19 @@ class LoopbackNetwork:
     def frames_sent(self) -> int:
         return int(self._native.frames_sent)
 
+    def set_filter(self, keep: Callable[[bytes, str], bool] | None) -> None:
+        """Loss injection for tests: ``keep(frame, to)`` runs on the sender's thread for every
+        frame and receiving link (its address); False drops the frame for that link. An exception
+        keeps the frame. ``None`` removes the filter."""
+        if keep is None:
+            self._native.set_filter(None)
+            return
+
+        def native(frame: bytes, to: bytes) -> bool:
+            return bool(keep(frame, _mac_text(to)))  # type: ignore[arg-type]
+
+        self._native.set_filter(native)
+
 
 class RawSocketLink(Link):
     """A Linux AF_PACKET link bound to one interface."""
@@ -201,6 +238,10 @@ class RawSocketLink(Link):
             "socket_priority": int(socket_priority),
         }
         return cls(_core.GooseLink.open_raw(options))
+
+    @property
+    def interface_index(self) -> int:
+        return int(self._native.interface_index)
 
 
 @dataclass(frozen=True)
@@ -569,6 +610,7 @@ class GooseMessage:
     values: tuple[Any, ...]
     sequence: SequenceStatus
     lost: int  # messages (sq gap) or state changes (st gap) known to be missing
+    security: bytes | None = None  # decode_goose(): contents of the [12] field, not interpreted
 
 
 @dataclass(frozen=True)
@@ -603,6 +645,7 @@ def _goose_event(d: dict[str, Any]) -> GooseEvent:
         values=tuple(decode(v) for v in m["values"]),
         sequence=SequenceStatus(m["sequence"]),
         lost=m["lost"],
+        security=m.get("security"),
     )
     return GooseEvent(GooseEventKind(d["kind"]), msg, MismatchReason(d["reason"]), d["dropped_before"])
 
@@ -960,6 +1003,251 @@ class SvSubscriber(_Pump[SvSample]):
     @property
     def stats(self) -> SvSubscriberStats:
         return SvSubscriberStats(**self._native.stats())
+
+
+# ---------------------------------------------------------------------------------------------
+# Frames and supervision without I/O
+
+
+@dataclass(frozen=True)
+class FrameHeader:
+    """The Ethernet / 802.1Q / APPID header of a GOOSE, GSE management or SV frame."""
+
+    destination: str
+    source: str
+    vlan: VlanTag | None
+    ether_type: int
+    app_id: int
+    length: int
+    reserved1: int
+    reserved2: int
+    apdu: bytes
+
+    @property
+    def simulation(self) -> bool:
+        """The Reserved1 S bit (Ed.2)."""
+        return (self.reserved1 & 0x8000) != 0
+
+
+def decode_frame(frame: bytes) -> FrameHeader:
+    """Decodes the header of a frame; padding after Length is ignored."""
+    d = _core.goose_decode_frame(bytes(frame))
+    return FrameHeader(
+        _mac_text(d["destination"]),  # type: ignore[arg-type]
+        _mac_text(d["source"]),  # type: ignore[arg-type]
+        _vlan_from(d["vlan"]),
+        d["ether_type"],
+        d["app_id"],
+        d["length"],
+        d["reserved1"],
+        d["reserved2"],
+        bytes(d["apdu"]),
+    )
+
+
+def peek_ether_type(frame: bytes) -> int:
+    """The EtherType of a frame (after an optional 802.1Q tag), or 0."""
+    return int(_core.goose_peek_ether_type(bytes(frame)))
+
+
+def is_multicast(mac: Mac) -> bool:
+    return (_mac(mac)[0] & 1) != 0
+
+
+def _header(destination: Mac, source: Mac, vlan: VlanTag | None, app_id: int, reserved1: int,
+            reserved2: int) -> dict[str, Any]:
+    return {
+        "destination": _mac(destination),
+        "source": _mac(source),
+        "vlan": _vlan(vlan),
+        "app_id": int(app_id),
+        "reserved1": int(reserved1),
+        "reserved2": int(reserved2),
+    }
+
+
+def encode_goose(
+    destination: Mac,
+    source: Mac,
+    *,
+    gocb_ref: str,
+    dat_set: str,
+    values: Sequence[Any],
+    go_id: str = "",
+    time_allowed_to_live: int = 0,
+    t: Timestamp | None = None,
+    st_num: int = 1,
+    sq_num: int = 0,
+    simulation: bool = False,
+    conf_rev: int = 1,
+    nds_com: bool = False,
+    num_dat_set_entries: int | None = None,
+    vlan: VlanTag | None = VlanTag(),
+    app_id: int = 0,
+    reserved1: int = 0,
+    reserved2: int = 0,
+) -> bytes:
+    """One complete GOOSE frame, e.g. to craft a message in a test (``Link.send`` sends it)."""
+    fields = {
+        "gocb_ref": gocb_ref,
+        "dat_set": dat_set,
+        "go_id": go_id,
+        "time_allowed_to_live": int(time_allowed_to_live),
+        "t": encode(t) if t is not None else None,
+        "st_num": int(st_num),
+        "sq_num": int(sq_num),
+        "simulation": bool(simulation),
+        "conf_rev": int(conf_rev),
+        "nds_com": bool(nds_com),
+        "num_dat_set_entries": num_dat_set_entries,
+    }
+    tagged = _encode_values(values, ())
+    header = _header(destination, source, vlan, app_id, reserved1, reserved2)
+    return bytes(_core.goose_encode(header, fields, tagged))
+
+
+def decode_goose(frame: bytes) -> GooseMessage:
+    """Decodes a whole GOOSE frame (the sequence fields stay at their defaults)."""
+    return _goose_event(_core.goose_decode(bytes(frame))).message
+
+
+@dataclass(frozen=True)
+class SvAsdu:
+    """One ASDU of a savPdu, without the subscription's supervision (:class:`SvSample`)."""
+
+    sv_id: str
+    seq_data: bytes | LeSamples
+    dat_set: str | None = None
+    smp_cnt: int = 0
+    conf_rev: int = 1
+    refr_tm: Timestamp | None = None
+    smp_synch: int = SmpSynch.NONE
+    smp_rate: int | None = None
+    smp_mod: int | None = None
+    gm_identity: bytes | None = None
+
+    def _native(self) -> dict[str, Any]:
+        return {
+            "sv_id": self.sv_id,
+            "seq_data": _seq_data(self.seq_data),
+            "dat_set": self.dat_set,
+            "smp_cnt": int(self.smp_cnt),
+            "conf_rev": int(self.conf_rev),
+            "refr_tm": encode(self.refr_tm) if self.refr_tm is not None else None,
+            "smp_synch": int(self.smp_synch),
+            "smp_rate": self.smp_rate,
+            "smp_mod": self.smp_mod,
+            "gm_identity": self.gm_identity,
+        }
+
+
+@dataclass(frozen=True)
+class SvFrame:
+    """A decoded SV frame."""
+
+    header: FrameHeader
+    asdus: tuple[SvAsdu, ...]
+    security: bytes | None = None  # not interpreted
+
+
+def encode_sv(
+    destination: Mac,
+    source: Mac,
+    asdus: Iterable[SvAsdu],
+    *,
+    vlan: VlanTag | None = VlanTag(),
+    app_id: int = 0x4000,
+    reserved1: int = 0,
+    reserved2: int = 0,
+) -> bytes:
+    """One complete SV frame."""
+    header = _header(destination, source, vlan, app_id, reserved1, reserved2)
+    return bytes(_core.sv_encode(header, [a._native() for a in asdus]))
+
+
+def decode_sv(frame: bytes) -> SvFrame:
+    """Decodes a whole SV frame."""
+    data = bytes(frame)
+    asdus, security = _core.sv_decode(data)
+    out = []
+    for d in asdus:
+        refr = d["refr_tm"]
+        refr_tm = Timestamp.from_raw(refr[1], refr[2], refr[3]) if refr is not None else None
+        out.append(SvAsdu(**{**d, "refr_tm": refr_tm, "seq_data": bytes(d["seq_data"])}))
+    return SvFrame(decode_frame(data), tuple(out), bytes(security) if security is not None else None)
+
+
+def retransmission_interval(sq_num: int, min_time: int, max_time: int) -> int:
+    """The interval in ms before the message with ``sq_num`` (>= 1) of a publisher:
+    min(MinTime * 2^(n-1), MaxTime)."""
+    return int(_core.goose_retransmission_interval(int(sq_num), int(min_time), int(max_time)))
+
+
+def samples_per_second(per_period: int, frequency: int) -> int:
+    """The smpCnt wrap of samples-per-period rates: 4000 for 80 per period at 50 Hz..."""
+    return int(per_period) * int(frequency)
+
+
+@dataclass(frozen=True)
+class GooseSequenceCheck:
+    status: SequenceStatus
+    lost: int  # messages (SQ_GAP) or state changes (ST_GAP) known to be missing
+
+
+class SequenceTracker:
+    """stNum / sqNum / timeAllowedtoLive supervision of one GoCB, without I/O: what a subscription
+    does for each message, for frames obtained elsewhere (e.g. a capture). Times are in seconds
+    of one monotonic clock, :func:`time.monotonic` by default. ``margin`` (ms) is added to every
+    TAL."""
+
+    def __init__(self, *, margin: int = 0) -> None:
+        self._native = _core.SequenceTracker()
+        self._native.margin = int(margin)
+
+    def on_message(self, st_num: int, sq_num: int, tal_ms: int, now: float | None = None) -> GooseSequenceCheck:
+        """Records a message and arms the TAL deadline."""
+        status, lost = self._native.on_message(st_num, sq_num, tal_ms, time.monotonic() if now is None else now)
+        return GooseSequenceCheck(SequenceStatus(status), lost)
+
+    def expired(self, now: float | None = None) -> bool:
+        """True once ``now`` is past the deadline of the last message."""
+        return bool(self._native.expired(time.monotonic() if now is None else now))
+
+    @property
+    def deadline(self) -> float | None:
+        return self._native.deadline
+
+    def reset(self) -> None:
+        """Forgets the previous message: the next one is FIRST."""
+        self._native.reset()
+
+    @property
+    def has_state(self) -> bool:
+        return bool(self._native.has_state)
+
+    @property
+    def st_num(self) -> int:
+        return int(self._native.st_num)
+
+    @property
+    def sq_num(self) -> int:
+        return int(self._native.sq_num)
+
+
+class SmpCntTracker:
+    """smpCnt continuity of one SV stream, without I/O. ``wrap``: the counter range (0: unknown,
+    a drop to 0 from any value is taken as the wrap)."""
+
+    def __init__(self, wrap: int = 0) -> None:
+        self._native = _core.SmpCntTracker(int(wrap))
+
+    def on_sample(self, smp_cnt: int) -> tuple[Continuity, int]:
+        """The continuity of this sample and the samples known to be lost."""
+        status, lost = self._native.on_sample(int(smp_cnt))
+        return _CONTINUITY[status], lost
+
+    def reset(self) -> None:
+        self._native.reset()
 
 
 # ---------------------------------------------------------------------------------------------
