@@ -169,6 +169,15 @@ awaitable<mms::data> read_ok(client::client& c, std::string_view ref) {
   co_return std::move(*v);
 }
 
+// Outside the coroutines: GCC 13 crashes on braced lists of mms::data temporaries inside one.
+mms::data set_value(std::int64_t v) { return mms::data::structure({mms::data::integer(v)}); }
+
+mms::data set_values(std::initializer_list<std::int64_t> values) {
+  std::vector<mms::data> elements;
+  for (const auto v : values) elements.push_back(set_value(v));
+  return mms::data::array(std::move(elements));
+}
+
 }  // namespace
 
 TEST_CASE("SCL model: Ed.1 ICD discovered by our client matches the SCL", "[server][scl]") {
@@ -411,25 +420,20 @@ TEST_CASE("SCL model: arrays of data objects", "[server][scl]") {
 
     // Whole array, one element, element of an inner array of attributes.
     const auto whole = co_await read_ok(c, "AProt/GGIO1.Sig[SP]");
-    CHECK(whole == mms::data::array({mms::data::structure({mms::data::integer(7)}),
-                                     mms::data::structure({mms::data::integer(8)}),
-                                     mms::data::structure({mms::data::integer(7)})}));
-    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1)[SP]") ==
-          mms::data::structure({mms::data::integer(8)}));
+    CHECK(whole == set_values({7, 8, 7}));
+    CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1)[SP]") == set_value(8));
     CHECK_FALSE(co_await c.read(oref("AProt/GGIO1.Sig(3)[SP]")));
 
     // Writes: an attribute of an element, an element, the array, and bad ones.
     CHECK(co_await c.write(oref("AProt/GGIO1.Sig(0).setVal[SP]"), mms::data::integer(1)));
-    const auto element = mms::data::structure({mms::data::integer(2)});
+    const auto element = set_value(2);
     CHECK(co_await c.write(oref("AProt/GGIO1.Sig(1)[SP]"), element));
     CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(0).setVal[SP]") == mms::data::integer(1));
     CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(1).setVal[SP]") == mms::data::integer(2));
-    const auto all = mms::data::array({mms::data::structure({mms::data::integer(4)}),
-                                       mms::data::structure({mms::data::integer(5)}),
-                                       mms::data::structure({mms::data::integer(6)})});
+    const auto all = set_values({4, 5, 6});
     CHECK(co_await c.write(oref("AProt/GGIO1.Sig[SP]"), all));
     CHECK(co_await read_ok(c, "AProt/GGIO1.Sig(2).setVal[SP]") == mms::data::integer(6));
-    const auto short_array = mms::data::array({element});
+    const auto short_array = set_values({2});
     CHECK_FALSE(co_await c.write(oref("AProt/GGIO1.Sig[SP]"), short_array));
     CHECK_FALSE(co_await c.write(oref("AProt/GGIO1.Sig(0).stVal[ST]"), mms::data::integer(1)));
 

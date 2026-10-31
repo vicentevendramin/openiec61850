@@ -94,6 +94,19 @@ struct chunk {
   bool more = false;
 };
 
+// Outside the coroutines: GCC 13 crashes on braced lists of these inside one.
+std::vector<chunk> chunks_of(std::size_t size, bool more = false) {
+  std::vector<chunk> v;
+  v.push_back({pattern(size), more});
+  return v;
+}
+
+std::vector<chunk> two_chunks() {
+  auto v = chunks_of(1, true);
+  v.push_back({pattern(3), false});
+  return v;
+}
+
 awaitable<hostile_outcome> obtain_from_hostile(srv::server& s, std::uint32_t size, std::vector<chunk> chunks) {
   const auto ex = co_await asio::this_coro::executor;
   auto c = co_await assoc::client_association::connect(ex, options_for(s).association);
@@ -395,24 +408,24 @@ TEST_CASE("SetFile: a client that misbehaves stores nothing", "[server][files]")
     const auto source = mms::obtain_file_error::source_file;
 
     // More than declared.
-    auto r = co_await obtain_from_hostile(s, 2, {{pattern(3), false}});
+    auto r = co_await obtain_from_hostile(s, 2, chunks_of(3));
     check_file_error(*r.result, ec::file::other, source);
     CHECK(r.closed);
     // Ends early.
-    r = co_await obtain_from_hostile(s, 5, {{pattern(3), false}});
+    r = co_await obtain_from_hostile(s, 5, chunks_of(3));
     check_file_error(*r.result, ec::file::other, source);
     CHECK(r.closed);
     // moreFollows without progress.
-    r = co_await obtain_from_hostile(s, 5, {{{}, true}});
+    r = co_await obtain_from_hostile(s, 5, chunks_of(0, true));
     check_file_error(*r.result, ec::file::other, source);
     CHECK(r.closed);
     // The declared size is above the bound: closed without a read.
-    r = co_await obtain_from_hostile(s, 101, {});
+    r = co_await obtain_from_hostile(s, 101, std::vector<chunk>{});
     check_file_error(*r.result, ec::file::insufficient_space_in_filestore, mms::obtain_file_error::destination_file);
     CHECK(r.closed);
     CHECK_FALSE(store->get("dst"));
     // A well-behaved one for comparison.
-    r = co_await obtain_from_hostile(s, 4, {{pattern(1), true}, {pattern(3), false}});
+    r = co_await obtain_from_hostile(s, 4, two_chunks());
     REQUIRE(*r.result);
     CHECK(r.closed);
     CHECK(store->get("dst").has_value());
