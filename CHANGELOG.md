@@ -69,3 +69,15 @@ release may break the API. The release process is in
 - Release tooling: cibuildwheel configuration (manylinux_2_28), GitLab release job, GitHub
   Actions for public PR checks and PyPI trusted publishing. The version comes only from
   `project(... VERSION)` in `CMakeLists.txt`.
+
+### Known limitations
+
+This is an alpha release (ADR 0008): the API may change and no conformance to IEC 61850 is
+claimed. Not verified against the text of the standards: the ObtainFile encoding, the `(n)` form
+of data references into arrays of data objects, the 8-1 clauses cited for it, and the mandatory
+cipher suites of IEC 62351-3. TLS was tested against OpenSSL and between openiec61850 peers, not
+against another IEC 61850 implementation. TLS 1.2 keys are not renewed during an association.
+Not implemented: GOOSE and Sampled Values security (IEC 62351-6), certificate authentication in
+ACSE (IEC 62351-4), third-party `sourceFileServer` in ObtainFile. The reference benchmark against
+libiec61850 does not exist yet, so nothing is promised about performance. macOS and Windows
+builds are not exercised in the homelab.
