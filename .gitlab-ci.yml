@@ -134,3 +134,20 @@ interop:libiec61850:
     - docker info > /dev/null
   script:
     - interop/run.sh
+
+# Documentation site (mkdocs.yml), published from the default branch.
+pages:
+  stage: package
+  image: python:3.12-slim
+  needs: []
+  cache: []
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script: []
+  script:
+    - pip install -q mkdocs==1.6.1
+    - cp GLOSSARY.md docs/glossary.md
+    - cp CHANGELOG.md docs/changelog.md
+    - mkdocs build
+  pages:
+    publish: public

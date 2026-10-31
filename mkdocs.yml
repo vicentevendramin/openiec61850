@@ -1,0 +1,15 @@
+# Site of GitLab Pages (job pages in .gitlab-ci.yml). GLOSSARY and CHANGELOG are copied into docs/
+# by that job, so the repository keeps them at the root.
+site_name: openiec61850
+site_dir: public
+docs_dir: docs
+theme: readthedocs
+nav:
+  - Home: index.md
+  - Guides:
+      - Getting started: guides/getting-started.md
+      - Architecture: guides/architecture.md
+      - Contributing: guides/contributing.md
+      - Releasing: guides/releasing.md
+  - Glossary: glossary.md
+  - Changelog: changelog.md
