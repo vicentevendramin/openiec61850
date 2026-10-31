@@ -66,7 +66,7 @@ if [[ "${only}" == bean ]]; then
   exit "${failed}"
 fi
 
-# The clients image is built FROM the libiec61850 one (additional_contexts).
+# The clients image is built FROM the libiec61850 one, so that one comes first.
 "${compose[@]}" build basic-io control openiec61850-server runner
 "${compose[@]}" build clients
 
