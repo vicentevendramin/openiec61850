@@ -163,6 +163,8 @@ class core : public std::enable_shared_from_this<core> {
   // Writes an already encoded PDU that answers nothing.
   [[nodiscard]] static asio::awaitable<result<void>> send_op(std::shared_ptr<core> self,
                                                              byte_buffer pdu);
+  [[nodiscard]] static asio::awaitable<result<void>> send_batch_op(
+      std::shared_ptr<core> self, std::vector<outbound_pdu> batch);
 
   strand_type strand;
   transport::cotp_channel channel;
@@ -183,6 +185,7 @@ class core : public std::enable_shared_from_this<core> {
   // Received, not answered yet.
   std::size_t incoming_limit = 1;
   std::unordered_set<std::uint32_t> incoming;
+  std::size_t max_output_bytes = 0;  // of the channel; 0: no limit
 
  protected:
   virtual void on_mms(received_pdu pdu) = 0;

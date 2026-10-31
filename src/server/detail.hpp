@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -210,17 +211,10 @@ struct open_file {
   std::uint64_t size = 0;
 };
 
-// An answer or a report waiting for its turn on the wire.
-struct outgoing {
-  asio::awaitable<result<void>> send;
-  std::size_t cost = 0;
-  rcb* entry_of = nullptr;  // the BRCB, on the last PDU of a buffered entry
-};
-
 struct session {
-  // What a queued PDU holds besides its bytes (its coroutine frames), as charged to the limit.
-  // Measured: a little over 600 bytes.
-  static constexpr std::size_t entry_overhead = 1024;
+  // What a queued PDU holds besides its bytes, as charged to the limit: its place in the outbox
+  // and the header of its allocation.
+  static constexpr std::size_t entry_overhead = 64;
 
   explicit session(const strand_type& s) : wake(s, clock::time_point::max()) {}
 
@@ -229,11 +223,15 @@ struct session {
   std::string address;       // peer IP address, textual
   byte_buffer address_bytes;  // Owner value
   std::size_t max_pdu = 0;    // the client's local detail; 0: no limit
-  std::deque<outgoing> outbox;
-  std::size_t queued = 0;      // charged to max_queued: the outbox and the PDU being sent
-  std::size_t max_queued = 0;  // channel_options::max_output_bytes; 0: no limit
+  std::vector<association::outbound_pdu> outbox;
+  std::size_t queued = 0;       // charged to max_queued: the outbox and the batch being sent
+  std::size_t outbox_cost = 0;  // the part of `queued` still in the outbox
+  std::size_t max_queued = 0;   // channel_options::max_output_bytes; 0: no limit
   bool reports_paused = false;  // a BRCB stopped at the high-water mark
-  std::map<rcb*, std::size_t> unwritten;  // buffered entries handed over, not written yet
+  // Buffered entries handed over, not known to be written yet (a failed batch counts whole, so
+  // entries it did write are sent again rather than lost); and those of them in the outbox.
+  std::map<rcb*, std::size_t> unwritten;
+  std::map<rcb*, std::size_t> outbox_entries;
   asio::steady_timer wake;
   bool closed = false;
   std::map<std::string, std::shared_ptr<data_set>, std::less<>> aa_sets;
@@ -253,9 +251,9 @@ struct session {
 
   // Past the limit the association ends: nothing a stalled peer provokes can grow the queue. The
   // peer is not reading, so an ABRT would never get there.
-  void push(asio::awaitable<result<void>> a, std::size_t bytes, rcb* entry_of = nullptr) {
+  void push(association::outbound_pdu pdu, rcb* entry_of = nullptr) {
     if (closed || !assoc) return;
-    const auto cost = bytes + entry_overhead;
+    const auto cost = pdu.pdu.size() + entry_overhead;
     if (max_queued > 0 && queued > 0 && queued + cost > max_queued) {
       closed = true;
       outbox.clear();
@@ -263,22 +261,26 @@ struct session {
       return;
     }
     queued += cost;
-    if (entry_of != nullptr) ++unwritten[entry_of];
-    outbox.push_back({std::move(a), cost, entry_of});
+    outbox_cost += cost;
+    if (entry_of != nullptr) {
+      ++unwritten[entry_of];
+      ++outbox_entries[entry_of];
+    }
+    outbox.push_back(std::move(pdu));
     wake.cancel();
   }
 
   void answer(association::incoming_request& req, byte_buffer pdu) {
     if (closed || !assoc) return;
-    const auto bytes = pdu.size();
-    push(req.answer(std::move(pdu)), bytes);
+    if (auto out = req.encoded_answer(std::move(pdu))) push(std::move(*out));
   }
 
   // An already encoded Unconfirmed-PDU.
   void send_unconfirmed(byte_buffer pdu, rcb* entry_of = nullptr) {
     if (closed || !assoc || pdu.empty()) return;
-    const auto bytes = pdu.size();
-    push(assoc->send_encoded(std::move(pdu)), bytes, entry_of);
+    association::outbound_pdu out;
+    out.pdu = std::move(pdu);
+    push(std::move(out), entry_of);
   }
 };
 
@@ -374,6 +376,13 @@ struct execution {
   std::shared_ptr<completion_state> completion;
 };
 
+// One data_update, checked against the model.
+struct resolved_update {
+  std::vector<assignment> plan;
+  node_id t_node = no_node;  // sibling `t` for the automatic timestamp
+  bool has_timestamp = false;
+};
+
 struct server_state : std::enable_shared_from_this<server_state> {
   server_state(asio::any_io_executor ex, data_model m, server_options o);
 
@@ -396,7 +405,11 @@ struct server_state : std::enable_shared_from_this<server_state> {
   std::atomic<std::size_t> associations{0};
   std::atomic<std::size_t> live_tasks{0};
   std::atomic<bool> stopped{false};
-  std::atomic<std::size_t> pending_updates{0};  // data_updates posted, not applied yet
+  std::atomic<std::size_t> pending_updates{0};  // data_updates accepted, not applied yet
+  // What update() hands to the strand, a call per element, applied a bounded number per turn.
+  std::mutex updates_mutex;
+  std::deque<std::vector<resolved_update>> updates;
+  bool updates_scheduled = false;
   std::atomic<std::uint64_t> slow_peer_aborts{0};
   std::optional<association::association_listener> listener;
   asio::ip::tcp::endpoint endpoint;
@@ -420,6 +433,8 @@ struct server_state : std::enable_shared_from_this<server_state> {
 
   // --- setup (server.cpp)
   result<void> init();
+  void apply_updates();
+  void apply_update(std::vector<resolved_update>& items);
 
   // --- model access (access.cpp)
   [[nodiscard]] const node& at(node_id id) const noexcept { return model.at(id); }

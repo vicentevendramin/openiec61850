@@ -29,7 +29,9 @@ bool authentication_diagnostic(std::int64_t d) {
 struct server_state final : core {
   server_state(transport::cotp_channel ch, server_options o)
       : core(std::move(ch), ps::role::responder, responder_options(o), o.decode),
-        options(std::move(o)) {}
+        options(std::move(o)) {
+    max_output_bytes = options.transport.max_output_bytes;
+  }
 
   server_options options;
   association_request peer;
@@ -230,12 +232,12 @@ asio::awaitable<result<void>> server_association::send_unconfirmed(const mms::un
   if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
   auto pdu = detail::encode_mms(mms::unconfirmed_pdu{service});
   if (!pdu) return detail::ready(result<void>(pdu.error()));
-  return send_encoded(std::move(*pdu));
+  return detail::on_strand(state_->strand, detail::core::send_op(state_, std::move(*pdu)));
 }
 
-asio::awaitable<result<void>> server_association::send_encoded(byte_buffer pdu) {
+asio::awaitable<result<void>> server_association::send_batch(std::vector<outbound_pdu> batch) {
   if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
-  return detail::on_strand(state_->strand, detail::core::send_op(state_, std::move(pdu)));
+  return detail::on_strand(state_->strand, detail::core::send_batch_op(state_, std::move(batch)));
 }
 
 void server_association::abort() noexcept {

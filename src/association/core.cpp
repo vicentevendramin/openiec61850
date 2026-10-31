@@ -25,6 +25,13 @@ namespace {
 constexpr std::size_t max_abandoned = 4096;
 // An abort is not a release: the ABRT goes out if it can, a peer that does not read gets no longer.
 constexpr std::chrono::seconds abort_linger{1};
+// A batch goes out in groups: each one waits to be written, which gives the I/O thread to the other
+// associations and keeps what a group charges to max_output_bytes small, whatever the batch.
+constexpr std::size_t batch_group_pdus = 64;
+constexpr std::size_t batch_group_bytes = 256 * 1024;
+// The part of the limit a group may take, and what the transport charges per send at most.
+constexpr std::size_t batch_limit_share = 4;
+constexpr std::size_t batch_send_charge = 4096;
 
 }  // namespace
 
@@ -411,6 +418,40 @@ awaitable<result<void>> core::send_op(std::shared_ptr<core> self, byte_buffer pd
   co_return co_await wait_sent(std::move(*sent));
 }
 
+awaitable<result<void>> core::send_batch_op(std::shared_ptr<core> self,
+                                            std::vector<outbound_pdu> batch) {
+  auto group_pdus = batch_group_pdus;
+  auto group_bytes = batch_group_bytes;
+  if (self->max_output_bytes > 0) {
+    const auto share = self->max_output_bytes / batch_limit_share;
+    group_pdus = std::clamp<std::size_t>(share / batch_send_charge, 1, group_pdus);
+    group_bytes = std::min(group_bytes, share);
+  }
+  std::shared_ptr<send_completion> last;
+  std::size_t pdus = 0;
+  std::size_t bytes = 0;
+  for (auto& item : batch) {
+    if (self->closed()) co_return self->error;
+    if (item.answers && self->incoming.erase(*item.answers) == 0) {
+      co_return openiec61850::errc::invalid_state;
+    }
+    auto sent = self->send_mms_bytes(item.pdu);
+    if (!sent) co_return sent.error();
+    last = std::move(*sent);
+    bytes += item.pdu.size();
+    byte_buffer().swap(item.pdu);
+    if (++pdus >= group_pdus || bytes >= group_bytes) {
+      auto written = co_await wait_sent(std::move(last));
+      if (!written) co_return written;
+      last.reset();
+      pdus = 0;
+      bytes = 0;
+    }
+  }
+  if (last) co_return co_await wait_sent(std::move(last));
+  co_return result<void>{};
+}
+
 }  // namespace openiec61850::association::detail
 
 namespace openiec61850::association {
@@ -452,6 +493,15 @@ asio::awaitable<result<void>> incoming_request::answer(byte_buffer pdu) {
   if (answered_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
   answered_ = true;
   return detail::on_strand(state_->strand, detail::core::answer_op(state_, invoke_id(), std::move(pdu)));
+}
+
+result<outbound_pdu> incoming_request::encoded_answer(byte_buffer pdu) {
+  if (!state_ || answered_) return openiec61850::errc::invalid_state;
+  answered_ = true;
+  outbound_pdu out;
+  out.answers = invoke_id();
+  out.pdu = std::move(pdu);
+  return out;
 }
 
 asio::awaitable<result<void>> incoming_request::respond(const mms::confirmed_service_response& response) {

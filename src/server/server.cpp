@@ -162,6 +162,56 @@ result<std::shared_ptr<server_state>> make_offline_state(asio::any_io_executor e
   return st;
 }
 
+namespace {
+
+// update() calls applied per turn on the strand. The I/O thread goes through the other strands
+// between turns, once each, so this is what a burst of updates costs everyone else: a sender has
+// several hops to make per batch, each a turn of this strand.
+constexpr std::size_t updates_per_turn = 64;
+
+}  // namespace
+
+void server_state::apply_update(std::vector<resolved_update>& items) {
+  ++tick;
+  std::vector<assignment> all;
+  for (auto& item : items) {
+    bool stamp = false;
+    if (options.auto_timestamp && !item.has_timestamp && item.t_node != no_node) {
+      for (const auto& a : item.plan) {
+        const auto& tr = at(a.holder).triggers;
+        if (!tr.dchg && !tr.qchg) continue;
+        const mms::data* cur = &values[a.holder];
+        for (const auto& sel : a.path) cur = &cur->elements()[sel.value];
+        if (!(*cur == a.value)) {
+          stamp = true;
+          break;
+        }
+      }
+    }
+    for (auto& a : item.plan) all.push_back(std::move(a));
+    if (stamp) all.push_back({item.t_node, {}, model::timestamp::now().to_mms()});
+  }
+  apply(std::move(all));
+}
+
+void server_state::apply_updates() {
+  for (std::size_t i = 0; i < updates_per_turn; ++i) {
+    std::vector<resolved_update> items;
+    {
+      const std::lock_guard lock(updates_mutex);
+      if (updates.empty()) {
+        updates_scheduled = false;
+        return;
+      }
+      items = std::move(updates.front());
+      updates.pop_front();
+    }
+    pending_updates.fetch_sub(items.size(), std::memory_order_relaxed);
+    if (!stopped) apply_update(items);
+  }
+  asio::post(strand, [self = shared_from_this()] { self->apply_updates(); });
+}
+
 void respond(session& s, association::incoming_request& req, const mms::mms_pdu& pdu) {
   byte_buffer bytes;
   if (mms::encode_pdu(pdu, bytes)) s.answer(req, std::move(bytes));
@@ -208,19 +258,31 @@ void handle_request(const std::shared_ptr<server_state>& state,
   }
 }
 
+void batch_written(server_state& st, session& s, std::size_t cost,
+                   const std::map<rcb*, std::size_t>& entries) {
+  s.queued -= cost;
+  for (const auto& [r, count] : entries) s.unwritten[r] -= count;
+  if (s.reports_can_resume()) st.resume_reports(s);
+}
+
 awaitable<void> sender(std::shared_ptr<server_state> st, std::shared_ptr<session> s) {
   for (;;) {
+    // All that is queued goes at once: this turn on the strand comes after everything already
+    // waiting for it, update() storms included, so a turn per PDU would fall behind for good. It
+    // costs the strand a swap; send_batch() does the rest in bounded groups on the association's
+    // own strand.
     while (!s->outbox.empty()) {
-      auto next = std::move(s->outbox.front());
-      s->outbox.pop_front();
-      auto r = co_await std::move(next.send);
+      std::vector<association::outbound_pdu> batch;
+      batch.swap(s->outbox);
+      const auto cost = std::exchange(s->outbox_cost, 0);
+      auto entries = std::move(s->outbox_entries);
+      s->outbox_entries.clear();
+      auto r = co_await s->assoc->send_batch(std::move(batch));
       if (!r) {
         s->closed = true;
         s->outbox.clear();
       } else if (!s->closed) {
-        s->queued -= next.cost;
-        if (next.entry_of != nullptr) --s->unwritten[next.entry_of];
-        if (s->reports_can_resume()) st->resume_reports(*s);
+        batch_written(*st, *s, cost, entries);
       }
     }
     if (s->closed) break;
@@ -336,12 +398,6 @@ awaitable<void> accept_loop(std::shared_ptr<server_state> st) {
   }
   task_done(*st);
 }
-
-struct resolved_update {
-  std::vector<assignment> plan;
-  node_id t_node = no_node;  // sibling `t` for the automatic timestamp
-  bool has_timestamp = false;
-};
 
 // The DO holding a data attribute (the attribute's top-level ancestor's parent), or the node
 // itself for a DO.
@@ -479,30 +535,13 @@ result<void> server::update(std::vector<data_update> batch) {
     state_->pending_updates.fetch_sub(count, std::memory_order_relaxed);
     return make_error_code(errc::overloaded);
   }
-  asio::post(state_->strand, [s = state_, items = std::move(items), count]() mutable {
-    s->pending_updates.fetch_sub(count, std::memory_order_relaxed);
-    if (s->stopped) return;
-    ++s->tick;
-    std::vector<detail::assignment> all;
-    for (auto& item : items) {
-      bool stamp = false;
-      if (s->options.auto_timestamp && !item.has_timestamp && item.t_node != no_node) {
-        for (const auto& a : item.plan) {
-          const auto& tr = s->at(a.holder).triggers;
-          if (!tr.dchg && !tr.qchg) continue;
-          const mms::data* cur = &s->values[a.holder];
-          for (const auto& sel : a.path) cur = &cur->elements()[sel.value];
-          if (!(*cur == a.value)) {
-            stamp = true;
-            break;
-          }
-        }
-      }
-      for (auto& a : item.plan) all.push_back(std::move(a));
-      if (stamp) all.push_back({item.t_node, {}, model::timestamp::now().to_mms()});
-    }
-    s->apply(std::move(all));
-  });
+  bool post = false;
+  {
+    const std::lock_guard lock(state_->updates_mutex);
+    state_->updates.push_back(std::move(items));
+    post = !std::exchange(state_->updates_scheduled, true);
+  }
+  if (post) asio::post(state_->strand, [s = state_] { s->apply_updates(); });
   return {};
 }
 

@@ -21,6 +21,10 @@ release may break the API. The release process is in
   association ends, `errc::output_limit_exceeded` (`OutputLimitExceeded`) or `timed_out`, and the
   others do not notice.
 - `server::stop()` and `abort()` no longer hang on a peer that does not read: the ABRT gets 1 s.
+- A client that keeps reading is no longer aborted at `max_output_bytes` during an `update()` storm:
+  the server sent one PDU per turn on its strand, and a turn came after all the updates waiting
+  there. The whole queue now goes out per turn, in bounded groups on the association's strand, and
+  updates are applied 64 calls per turn, so that the rest of the I/O thread gets to run.
 
 ### Changed
 
@@ -31,7 +35,7 @@ release may break the API. The release process is in
   `server_options::max_pending_updates` (8192) changes pending, instead of queueing on the strand
   shared with the clients without limit. Never blocks, and drops nothing it accepted;
   `server::pending_updates()` tells how far behind the strand is.
-- `incoming_request::answer()`, `server_association::send_encoded()`: answers encoded by the caller.
+- `incoming_request::encoded_answer()`, `server_association::send_batch()`: PDUs encoded by the caller.
   The server no longer encodes a response twice to check its size.
 
 ### Added

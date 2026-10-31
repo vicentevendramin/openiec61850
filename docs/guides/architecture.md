@@ -74,7 +74,9 @@ paths (`*_View` vs `*_Owning`).
   thread. In the server URCB reports go down with the association; BRCBs stop at half the limit
   and keep their entries in their bounded buffer for the next association. `update()` never blocks
   nor drops a change it accepted: at `max_pending_updates` (8192) it fails with `errc::overloaded`
-  and the application decides, so that it cannot starve the clients on the strand.
+  and the application decides, so that it cannot starve the clients on the strand. Accepted updates
+  are applied a bounded number per strand turn, and an association's queue leaves whole in one
+  turn, in bounded groups on its own strand, so that a burst delays the others by little.
 
 This replaces the blocking-call-plus-callback-threads model used elsewhere: it scales to many
 associations and to many concurrent requests on one association.

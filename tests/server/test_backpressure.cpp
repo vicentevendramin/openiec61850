@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -362,6 +363,60 @@ TEST_CASE("A slow client that keeps reading stays associated and loses nothing",
   CHECK(c->state() == client::connection_state::established);
 }
 
+TEST_CASE("A client that keeps reading survives an update storm", "[server][backpressure]") {
+  // Most of the storm is not for this client, but it keeps the strand's queue full, and whatever
+  // sends the client's reports has to take turns with all of it.
+  srv::server_options options;
+  options.association.transport.max_output_bytes = limit;
+  rig r(std::move(options));
+  auto c = r.connect_client(r.client_options(r.server->local_endpoint().port()));
+  auto received = std::make_shared<std::atomic<std::uint64_t>>(0);
+  auto gaps = std::make_shared<std::atomic<std::uint64_t>>(0);
+  auto last = std::make_shared<std::atomic<int>>(-1);
+  c->set_report_handler([=](client::report rpt) {
+    const int seq = static_cast<int>(*rpt.seq_num);
+    const int before = last->exchange(seq);
+    if (before >= 0 && seq != (before + 1) % 256) gaps->fetch_add(1);
+    received->fetch_add(1);
+  });
+  r.enable(*c, urcb02);
+
+  const auto noise = oref("IED1LD0/MMXU1.TotW.mag.f[MX]");
+  const auto reported = oref("IED1LD0/GGIO1.Str1.stVal[ST]");
+  std::atomic<std::uint64_t> next{0};
+  std::atomic<std::uint64_t> reports{0};
+  std::atomic<std::size_t> peak{0};
+  std::atomic<bool> stop{false};
+  const auto storm = [&] {
+    while (!stop.load()) {
+      const auto n = next.fetch_add(1) + 1;
+      const bool report = n % 32 == 0;
+      const auto done =
+          report ? r.server->update(reported, mms::data::visible_string(std::to_string(n)))
+                 : r.server->update(noise, mms::data::floating_point(static_cast<float>(n)));
+      if (done) {
+        if (report) reports.fetch_add(1);
+      } else {
+        std::this_thread::sleep_for(50us);
+      }
+      const auto pending = r.server->pending_updates();
+      if (pending > peak.load()) peak = pending;
+    }
+  };
+  std::vector<std::thread> producers;
+  for (int i = 0; i < 3; ++i) producers.emplace_back(storm);
+  std::this_thread::sleep_for(3s);
+  stop = true;
+  for (auto& t : producers) t.join();
+  CHECK(peak.load() > 1024);  // it was a storm
+  CHECK(wait_until([&] { return received->load() >= reports.load() || r.server->association_count() == 0; }, 30s));
+  CHECK(r.server->slow_peer_aborts() == 0);
+  CHECK(r.server->association_count() == 1);
+  CHECK(received->load() == reports.load());
+  CHECK(gaps->load() == 0);
+  CHECK(c->state() == client::connection_state::established);
+}
+
 TEST_CASE("A stalled BRCB keeps its entries for the next association", "[server][backpressure]") {
   srv::server_options options;
   // BRCBs alone stop at half the limit: only the stall timeout ends the association.
@@ -422,6 +477,7 @@ TEST_CASE("A stalled BRCB keeps its entries for the next association", "[server]
   CHECK(wait_until([&] { return count->load() >= last_value; }, 30s));
   CHECK(gaps->load() == 0);
   CHECK_FALSE(overflow->load());
+  CHECK(r.server->slow_peer_aborts() == 1);
 }
 
 TEST_CASE("stop() does not wait for a peer that does not read", "[server][backpressure]") {

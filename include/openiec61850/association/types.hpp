@@ -165,6 +165,12 @@ namespace detail {
 class core;
 }
 
+// An encoded MMS PDU on its way to the peer, for server_association::send_batch().
+struct outbound_pdu {
+  std::optional<std::uint32_t> answers;  // the invokeID of the request it answers, if any
+  byte_buffer pdu;
+};
+
 // A confirmed request received from the peer. It owns the received bytes. Answer it exactly once,
 // in any order relative to the other requests; until then it counts against the peer's negotiated
 // max serv outstanding (further requests beyond it are rejected with
@@ -196,14 +202,16 @@ class incoming_request {
   // RejectPDU (confirmed-requestPDU) with the given reason (mms::reject_code::confirmed_request).
   [[nodiscard]] asio::awaitable<result<void>> reject(
       std::int64_t reason = mms::reject_code::confirmed_request::other);
-  // For a caller that needs the size of the answer first: an already encoded MMS PDU answering
-  // this request (Confirmed-Response, Confirmed-Error or Reject).
-  [[nodiscard]] asio::awaitable<result<void>> answer(byte_buffer pdu);
+  // Marks the request answered by an already encoded MMS PDU (Confirmed-Response, Confirmed-Error
+  // or Reject), to be sent with server_association::send_batch(). errc::invalid_state on a second
+  // answer.
+  [[nodiscard]] result<outbound_pdu> encoded_answer(byte_buffer pdu);
 
  private:
   friend class detail::core;
   incoming_request(std::shared_ptr<detail::core> state, received_pdu message) noexcept;
   asio::awaitable<result<void>> answer(result<byte_buffer> pdu);
+  asio::awaitable<result<void>> answer(byte_buffer pdu);
 
   std::shared_ptr<detail::core> state_;
   received_pdu message_;

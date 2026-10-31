@@ -220,7 +220,7 @@ struct server_options {
   // the max_associations limit and may refuse it, e.g. on peer_request().password.
   //
   // transport.max_output_bytes bounds the output of each association twice: the answers and
-  // reports queued by the server (charged as their bytes plus 1 KiB each) and what the protocol
+  // reports queued by the server (charged as their bytes plus 64 each) and what the protocol
   // layers queue on their own, like the rejects of a request flood; so at most about twice the
   // limit per association. Past it, or after transport.write_stall_timeout without progress, that
   // association alone is aborted without an ABRT, which a peer not reading would not get. The
@@ -232,6 +232,9 @@ struct server_options {
   // they alone never trigger the limit, only the stall timeout; entries queued but not written go
   // back to the buffer and are sent again when the BRCB is enabled again. A client may see an
   // entry twice, as when it resumes from an older EntryID.
+  //
+  // The queue drains on the association's own strand, whole, whatever else waits on the server's,
+  // so that a client that keeps reading is not outrun by update() traffic for other clients.
   association::server_options association;
   // Concurrent associations; further ones are refused. Zero: unlimited.
   std::size_t max_associations = 16;

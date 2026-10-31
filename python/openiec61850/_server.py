@@ -927,7 +927,7 @@ class ServerIsoParameters:
     local_reference: int | None = None
     read_buffer_size: int | None = None
     # Output queued per association for a client that does not read: past the limit (bytes, plus
-    # about 1 KiB per queued PDU), or after the timeout without any progress (seconds), that
+    # a few per queued PDU), or after the timeout without any progress (seconds), that
     # association alone is aborted. 0 disables them. See ``Server`` for its reports.
     max_output_bytes: int | None = None
     write_stall_timeout: float | None = None

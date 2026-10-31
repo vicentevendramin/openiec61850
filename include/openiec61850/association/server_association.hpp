@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include <asio/any_io_executor.hpp>
 #include <asio/awaitable.hpp>
@@ -119,8 +120,11 @@ class server_association {
   // Sends an Unconfirmed-PDU (e.g. an IEC 61850 report); completes once written.
   [[nodiscard]] asio::awaitable<result<void>> send_unconfirmed(const mms::information_report& report);
   [[nodiscard]] asio::awaitable<result<void>> send_unconfirmed(const mms::unconfirmed_service& service);
-  // The same for an already encoded Unconfirmed-PDU.
-  [[nodiscard]] asio::awaitable<result<void>> send_encoded(byte_buffer pdu);
+  // Hands the PDUs over in order, in one go, for a caller that queues them and must not take a
+  // turn per PDU on a busy strand: they are written in groups of a bounded size, so that a long
+  // batch neither holds the I/O thread nor fills the transport's queue. Completes once all are
+  // written, or at the first failure, when any of them may have been written or not.
+  [[nodiscard]] asio::awaitable<result<void>> send_batch(std::vector<outbound_pdu> batch);
 
   // A-ABORT, then the transport is closed. Idempotent, any thread.
   void abort() noexcept;
