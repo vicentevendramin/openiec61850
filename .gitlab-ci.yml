@@ -1,4 +1,6 @@
 # Main CI pipeline (ADR 0006). Runs on the homelab GitLab instance.
+# The runner has 6 cores and 4 GB of RAM: resource_group runs the heavy jobs one at a time, also
+# across pipelines, so that C++ builds never compete for memory.
 stages: [build, test, analysis, interop, package]
 
 variables:
@@ -24,6 +26,7 @@ default:
 
 build:gcc:
   stage: build
+  resource_group: homelab-runner
   script:
     - cmake --preset release -DOPENIEC61850_WARNINGS_AS_ERRORS=ON
     - cmake --build --preset release
@@ -35,6 +38,7 @@ build:gcc:
 
 test:asan-ubsan:
   stage: test
+  resource_group: homelab-runner
   variables:
     CXX: clang++
     ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
@@ -46,6 +50,7 @@ test:asan-ubsan:
 
 test:tsan:
   stage: test
+  resource_group: homelab-runner
   variables:
     CXX: clang++
     TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
@@ -56,6 +61,7 @@ test:tsan:
 
 test:python:
   stage: test
+  resource_group: homelab-runner
   variables:
     # Fail instead of skipping when the fake-server extension is missing.
     OPENIEC61850_REQUIRE_TESTING: "1"
@@ -66,6 +72,7 @@ test:python:
 
 analysis:fuzz-smoke:
   stage: analysis
+  resource_group: homelab-runner
   variables:
     FUZZ_SECONDS: "60"
   script:
@@ -80,6 +87,7 @@ analysis:fuzz-smoke:
 
 package:wheels:
   stage: package
+  resource_group: homelab-runner
   rules:
     - if: $CI_COMMIT_TAG
     - when: manual
@@ -103,6 +111,7 @@ package:wheels:
 # as an artifact. Reference numbers are recorded on a quiet machine, see docs/guides/contributing.md.
 analysis:bench-smoke:
   stage: analysis
+  resource_group: homelab-runner
   script:
     - cmake --preset bench
     - cmake --build --preset bench
@@ -120,11 +129,11 @@ analysis:bench-smoke:
 # external contributions.
 interop:libiec61850:
   stage: interop
+  resource_group: homelab-runner
   image: docker:27
   tags: [docker]
   allow_failure: true  # until the suite has been stable for a while
   timeout: 1h
-  needs: []
   cache: []
   services:
     - name: docker:27-dind
