@@ -446,13 +446,32 @@ TEST_CASE("COTP channel fails on a write stall", "[transport]") {
   });
 }
 
+TEST_CASE("COTP channel notices a write stall with no further sends", "[transport]") {
+  run([]() -> awaitable<void> {
+    channel_options o;
+    o.max_output_bytes = 0;
+    o.write_stall_timeout = 100ms;
+    auto p = co_await open_quiet_pair(o);
+    auto failure = std::make_shared<std::error_code>();
+    // More than the kernel buffers can take, and then nothing else happens.
+    for (int i = 0; i < 1000; ++i) {
+      p.local.async_send(pattern(60000, 1), [failure](result<void> r) {
+        if (r) return;
+        *failure = r.error();
+      });
+    }
+    while (!*failure) co_await yield();
+    CHECK(*failure == asio::error::timed_out);
+  });
+}
+
 TEST_CASE("COTP channel shutdown gives up at its limit", "[transport]") {
   run([]() -> awaitable<void> {
     channel_options o;
     o.max_output_bytes = 0;
     o.write_stall_timeout = 0ms;
     auto p = co_await open_quiet_pair(o);
-    for (int i = 0; i < 400; ++i) p.local.async_send(pattern(60000, 1), [](result<void>) {});
+    for (int i = 0; i < 1000; ++i) p.local.async_send(pattern(60000, 1), [](result<void>) {});
     co_await yield();
     const auto closed = co_await p.local.shutdown(100ms);
     REQUIRE_FALSE(closed);

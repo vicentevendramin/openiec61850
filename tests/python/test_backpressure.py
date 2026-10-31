@@ -2,6 +2,7 @@
 in the C++ tests/server/test_backpressure.cpp)."""
 
 import asyncio
+import socket
 import threading
 
 import pytest
@@ -50,7 +51,13 @@ class StallProxy:
         self._flowing.clear()
 
     async def _serve(self, down_r, down_w):
-        up_r, up_w = await asyncio.open_connection("127.0.0.1", self._port)
+        # A small receive window, so that the server's writes block as soon as its own send buffer
+        # is full, wherever the receive buffers of the machine stand.
+        up = socket.socket()
+        up.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        up.setblocking(False)
+        await asyncio.get_running_loop().sock_connect(up, ("127.0.0.1", self._port))
+        up_r, up_w = await asyncio.open_connection(sock=up)
         self._writers = (down_w, up_w)
         self._tasks = [
             asyncio.ensure_future(self._relay(down_r, up_w, None)),
@@ -83,6 +90,20 @@ async def eventually(condition, timeout=30.0):
         await asyncio.sleep(0.001)
 
 
+async def load_until(s, condition, timeout=30.0):
+    """Keeps the reports coming until ``condition``, for a time and not for a number of loops: how
+    long the kernel buffers take to fill depends on the machine. Few updates are left pending, as
+    the sender of the association shares the strand with them and otherwise crawls."""
+    end = asyncio.get_running_loop().time() + timeout
+    n = 0
+    while not condition():
+        assert asyncio.get_running_loop().time() < end, "timed out"
+        n += 1
+        if s.pending_updates < 16:
+            s.update(TEXT, "x" * 200 + str(n))
+        await asyncio.sleep(0)
+
+
 async def test_a_client_that_stops_reading_is_aborted():
     iso = iec.ServerIsoParameters(max_output_bytes=256 * 1024, write_stall_timeout=0)
     async with await iec.Server.start(model(), "127.0.0.1", 0, iso=iso) as s:
@@ -92,14 +113,7 @@ async def test_a_client_that_stops_reading_is_aborted():
         stalled = await iec.Client.connect("127.0.0.1", port, **FAST)
         await stalled.enable_reporting(URCB)
         proxy.stall()
-        n = 0
-        while s.association_count == 2:
-            assert n < 2_000_000
-            n += 1
-            if s.pending_updates < 64:
-                s.update(TEXT, "x" * 200 + str(n))
-            else:
-                await asyncio.sleep(0)
+        await load_until(s, lambda: s.association_count == 1)
         assert s.slow_peer_aborts == 1
         assert await healthy.read(TEXT)
         await healthy.close()
@@ -115,14 +129,7 @@ async def test_stall_timeout_without_reaching_the_limit():
         stalled = await iec.Client.connect("127.0.0.1", port, **FAST)
         await stalled.enable_reporting(URCB)
         proxy.stall()
-        n = 0
-        while s.association_count == 1:
-            assert n < 2_000_000
-            n += 1
-            if s.pending_updates < 64:
-                s.update(TEXT, "x" * 200 + str(n))
-            else:
-                await asyncio.sleep(0)
+        await load_until(s, lambda: s.association_count == 0)
         assert s.slow_peer_aborts == 1
         stalled.abort()
         await proxy.close()

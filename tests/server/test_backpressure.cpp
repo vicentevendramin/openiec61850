@@ -312,7 +312,7 @@ TEST_CASE("A request flood costs the other associations little", "[server][backp
   CHECK(healthy->state() == client::connection_state::established);
 }
 
-TEST_CASE("A peer that stays silent with little queued hits the stall timeout", "[server][backpressure]") {
+TEST_CASE("A peer that stops reading hits the stall timeout with no output limit", "[server][backpressure]") {
   auto options = limited();
   options.association.transport.max_output_bytes = 0;
   options.association.transport.write_stall_timeout = 200ms;

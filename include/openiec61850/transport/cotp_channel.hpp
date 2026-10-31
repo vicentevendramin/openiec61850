@@ -41,8 +41,9 @@ struct channel_options {
   std::size_t max_output_bytes = 16 * 1024 * 1024;
   // Queued output the socket takes none of for this long means a peer that stopped reading: the
   // channel fails with asio::error::timed_out, within up to twice this time. Any progress restarts
-  // it, so a slow peer is fine. Zero disables it, and then a close that waits for the queued output
-  // (shutdown(), an orderly release) can wait for ever.
+  // it, so a slow peer is fine. What the kernel's socket buffers take counts as progress, so the
+  // time starts once they are full (a few MiB). Zero disables it, and then a close that waits for
+  // the queued output (shutdown(), an orderly release) can wait for ever.
   std::chrono::milliseconds write_stall_timeout{30000};
   // Runs COTP inside TLS (IEC 62351-3): the TLS handshake comes first, right after TCP, and
   // counts against handshake_timeout. Unset is plain RFC 1006.
