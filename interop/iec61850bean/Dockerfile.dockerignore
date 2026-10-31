@@ -1,0 +1,4 @@
+# Context is the repository root; only what iec61850bean/Dockerfile copies is needed.
+*
+!interop/iec61850bean/
+!interop/server/simpleIO.icd

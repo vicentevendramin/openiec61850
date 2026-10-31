@@ -69,12 +69,21 @@ release may break the API. The release process is in
 - Command-line tools `openiec61850-server` and `openiec61850-client`.
 - Google Benchmark suite and a libiec61850 interoperability harness run as Docker binaries
   (both directions).
+- IEC61850bean as the second interoperability peer of ADR 0007, in both directions
+  (`interop/iec61850bean`, `ONLY=bean interop/run.sh`). Run natively; its Docker path has not been
+  run yet, and TLS is not covered. Its defects are listed in `interop/iec61850bean/README.md`.
 - CMake package: `find_package(openiec61850 CONFIG)` exporting `openiec61850::openiec61850`,
   with installed headers and tools, a version file, and a vcpkg overlay port in
   `packaging/vcpkg`.
 - Release tooling: cibuildwheel configuration (manylinux_2_28), GitLab release job, GitHub
   Actions for public PR checks and PyPI trusted publishing. The version comes only from
   `project(... VERSION)` in `CMakeLists.txt`.
+
+### Changed
+
+- `client::get_data_set_values()` sets specificationWithResult, which IEC61850bean requires.
+- `client::get_rcb_values()` reads an empty EntryID as unset instead of failing, which also made
+  enabling a BRCB fail on IEC61850bean.
 
 ### Known limitations
 

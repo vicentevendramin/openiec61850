@@ -2,7 +2,8 @@
 // C++ client and prints a PASS/WARN/SKIP/FAIL summary. It knows nothing about the server's model:
 // everything it touches is found through the directory services first.
 //
-//   openiec61850_interop [--timeout SECONDS] [--no-control] HOST[:PORT] [HOST[:PORT]...]
+//   openiec61850_interop [--timeout SECONDS] [--no-control] [--expect-dchg] [--bean-defects]
+//                        HOST[:PORT] [HOST[:PORT]...]
 //
 // Checks, per server:
 //   connect    association established (ACSE/MMS Initiate)
@@ -11,12 +12,23 @@
 //   read       Read of the first data objects found under ST/MX (one Read, then a read_many)
 //   write      Write-back of a value just read under CF/DC/SP (WARN when every candidate is
 //              refused with a proper negative response: allowed by 7-2, but nothing was written)
+//   data-set   GetDataSetDirectory and GetDataSetValues of the first data set; a dynamic data set
+//              created, read back and deleted (WARN when the creation is refused)
 //   report     enable_reporting(GI) on the first URCB (else BRCB), wait for a report, disable
+//   report/brcb  the same on the first BRCB when the model has both, with EntryID
+//   report/dchg  with --expect-dchg: a report with reason data-change; something else has to change
+//              a member of the data set of the first RCB meanwhile
 //   control/*  operate() on the first BOOLEAN-controlled object of each control model found
 //              (direct / SBO, normal / enhanced security), toggling stVal and restoring it
 //   release    orderly Conclude + A-RELEASE
 // SKIP: the model has nothing to exercise (no RCB, no controllable object). Exit status 0 when
 // nothing FAILed, 1 otherwise, 2 on usage errors.
+//
+// --bean-defects: the target is IEC61850bean, whose defects (interop/iec61850bean/README.md) are
+// each asserted to still be there: WARN while the peer shows it, FAIL once it stops, so that a new
+// release cannot leave a stale entry. Nothing here relaxes what the client accepts. Reports are
+// requested without data-reference, because bean's are undecodable with it; that case is its own
+// check, report/data-reference.
 
 #include <algorithm>
 #include <chrono>
@@ -73,6 +85,8 @@ struct outcome {
 struct settings {
   std::chrono::seconds timeout{5};
   bool control = true;
+  bool expect_dchg = false;
+  bool bean_defects = false;
 };
 
 struct target {
@@ -91,6 +105,17 @@ struct model_summary {
   std::vector<model::object_reference> controllable;  // "LD/LN.DO" with a CO component
   std::optional<model::object_reference> urcb;       // "LD/LN.name[RP]"
   std::optional<model::object_reference> brcb;       // "LD/LN.name[BR]"
+  std::vector<model::object_reference> urcbs;        // every URCB, in discovery order
+  std::optional<model::object_reference> data_set;   // "LD/LN.name"
+  std::string first_ln;                              // "LD/LN"
+};
+
+// What one enable / wait / disable cycle on an RCB gave.
+struct report_cycle {
+  std::vector<client::report> received;
+  std::uint64_t dropped = 0;  // reports the client refused meanwhile
+  std::optional<std::string> enable_error;
+  std::optional<std::string> disable_error;
 };
 
 std::optional<model::object_reference> parse_ref(const std::string& text) {
@@ -136,6 +161,7 @@ class runner {
     co_await discover(*c, m);
     co_await read(*c, m);
     co_await write(*c, m);
+    co_await data_set(*c, m);
     co_await report(*c, m);
     if (settings_.control) {
       co_await control(*c, m);
@@ -144,7 +170,12 @@ class runner {
     }
 
     auto rel = co_await c->release();
-    record("release", rel ? status::pass : status::fail, rel ? "released" : rel.error().message());
+    if (settings_.bean_defects) {
+      known_defect("release", !rel, "no answer to a Conclude-RequestPDU",
+                   rel ? "released" : rel.error().message());
+    } else {
+      record("release", rel ? status::pass : status::fail, rel ? "released" : rel.error().message());
+    }
     co_return std::move(outcomes_);
   }
 
@@ -154,6 +185,16 @@ class runner {
                 std::string(label(s)).c_str(), detail.c_str());
     std::fflush(stdout);
     outcomes_.push_back({target_.name(), std::move(check), s, std::move(detail)});
+  }
+
+  // `present`: the defect showed up. A defect that stopped reproducing is a FAIL, not a PASS: the
+  // entry in interop/iec61850bean/README.md and this expectation have to go.
+  void known_defect(std::string check, bool present, const std::string& defect, const std::string& detail) {
+    if (present) {
+      record(std::move(check), status::warn, "known peer defect, " + defect + " (" + detail + ")");
+    } else {
+      record(std::move(check), status::fail, "known peer defect no longer reproduces: " + defect);
+    }
   }
 
   awaitable<void> discover(client::client& c, model_summary& m) {
@@ -173,6 +214,7 @@ class runner {
       for (const auto& ln : *lns) {
         ++m.lns;
         const std::string ln_text = ld + "/" + ln;
+        if (m.first_ln.empty()) m.first_ln = ln_text;
         auto ln_ref = parse_ref(ln_text);
         if (!ln_ref) continue;  // a name our parser refuses; not this runner's concern
         auto dir = co_await c.get_logical_node_directory(*ln_ref);
@@ -181,7 +223,11 @@ class runner {
           co_return;
         }
         if (!m.urcb && !dir->urcbs.empty()) m.urcb = parse_ref(ln_text + "." + dir->urcbs.front() + "[RP]");
+        for (const auto& name : dir->urcbs) {
+          if (auto r = parse_ref(ln_text + "." + name + "[RP]")) m.urcbs.push_back(*r);
+        }
         if (!m.brcb && !dir->brcbs.empty()) m.brcb = parse_ref(ln_text + "." + dir->brcbs.front() + "[BR]");
+        if (!m.data_set && !dir->data_sets.empty()) m.data_set = parse_ref(ln_text + "." + dir->data_sets.front());
 
         auto dos = co_await c.get_data_directory(*ln_ref);
         if (!dos) {
@@ -277,31 +323,88 @@ class runner {
     }
   }
 
-  awaitable<void> report(client::client& c, const model_summary& m) {
-    const auto rcb = m.urcb ? m.urcb : m.brcb;
-    if (!rcb) {
-      record("report", status::skip, "no report control block");
+  awaitable<void> data_set(client::client& c, const model_summary& m) {
+    if (m.data_set) {
+      auto dir = co_await c.get_data_set_directory(*m.data_set);
+      if (!dir) {
+        record("data-set", status::fail, "directory of " + m.data_set->to_string() + ": " + dir.error().message());
+        co_return;
+      }
+      auto values = co_await c.get_data_set_values(*m.data_set);
+      if (!values) {
+        record("data-set", status::fail, "values of " + m.data_set->to_string() + ": " + values.error().message());
+        co_return;
+      }
+      if (values->size() != dir->members.size()) {
+        record("data-set", status::fail, m.data_set->to_string() + ": " + std::to_string(dir->members.size()) +
+                                             " members but " + std::to_string(values->size()) + " values");
+        co_return;
+      }
+      record("data-set", status::pass, m.data_set->to_string() + ": " + std::to_string(values->size()) + " members read");
+    } else {
+      record("data-set", status::skip, "no data set in the model");
+    }
+
+    const auto dyn = parse_ref(m.first_ln + ".openiecDyn");
+    if (!dyn || m.readable.size() < 2) {
+      record("data-set/dynamic", status::skip, "no place for a dynamic data set");
       co_return;
     }
-    std::vector<client::report> received;
+    std::vector<model::object_reference> members(m.readable.begin(), m.readable.begin() + 2);
+    auto created = co_await c.create_data_set(*dyn, members);
+    if (!created) {
+      record("data-set/dynamic", status::warn, "creation refused: " + created.error().message());
+      co_return;
+    }
+    auto dir = co_await c.get_data_set_directory(*dyn);
+    auto values = co_await c.get_data_set_values(*dyn);
+    auto deleted = co_await c.delete_data_set(*dyn);
+    auto after = co_await c.get_data_set_directory(*dyn);
+    if (!dir || dir->members.size() != 2 || !dir->deletable) {
+      record("data-set/dynamic", status::fail, "directory of the new data set is wrong");
+    } else if (!values || values->size() != 2) {
+      record("data-set/dynamic", status::fail, "values of the new data set are wrong");
+    } else if (!deleted) {
+      record("data-set/dynamic", status::fail, "delete: " + deleted.error().message());
+    } else if (after) {
+      record("data-set/dynamic", status::fail, "still there after the delete");
+    } else {
+      record("data-set/dynamic", status::pass, dyn->to_string() + " created, read and deleted");
+    }
+  }
+
+  static model::optional_fields report_fields(bool buffered, bool data_reference) {
+    auto f = model::optional_fields::of(
+        {model::optional_field::sequence_number, model::optional_field::report_time_stamp,
+         model::optional_field::reason_for_inclusion, model::optional_field::data_set_name,
+         model::optional_field::conf_revision});
+    if (data_reference) f.set(model::optional_field::data_reference, true);
+    if (buffered) {
+      f.set(model::optional_field::buffer_overflow, true);
+      f.set(model::optional_field::entry_id, true);
+    }
+    return f;
+  }
+
+  // Enables `rcb`, waits until `enough` holds for what arrived (or the timeout) and disables it.
+  template <typename Enough>
+  awaitable<report_cycle> cycle(client::client& c, const model::object_reference& rcb,
+                                const client::report_settings& s, Enough enough) {
+    report_cycle out;
+    const auto dropped_before = c.reports_dropped();
     asio::steady_timer wake(co_await asio::this_coro::executor);
     c.set_report_handler([&](client::report r) {
-      received.push_back(std::move(r));
+      out.received.push_back(std::move(r));
       wake.cancel();
     });
-    client::report_settings s;
-    s.general_interrogation = true;
-    s.opt_flds = model::optional_fields::of(
-        {model::optional_field::sequence_number, model::optional_field::reason_for_inclusion,
-         model::optional_field::data_set_name, model::optional_field::data_reference});
-    auto en = co_await c.enable_reporting(*rcb, s);
+    auto en = co_await c.enable_reporting(rcb, s);
     if (!en) {
       c.set_report_handler({});
-      record("report", status::fail, "enable_reporting(" + rcb->to_string() + "): " + en.error().message());
-      co_return;
+      out.enable_error = en.error().message();
+      co_return out;
     }
     const auto deadline = std::chrono::steady_clock::now() + settings_.timeout;
-    while (received.empty() && std::chrono::steady_clock::now() < deadline) {
+    while (!enough(out.received) && std::chrono::steady_clock::now() < deadline) {
       wake.expires_at(deadline);
       try {
         co_await wake.async_wait(asio::use_awaitable);
@@ -309,16 +412,130 @@ class runner {
       }
     }
     c.set_report_handler({});
-    auto dis = co_await c.disable_reporting(*rcb);
-    if (received.empty()) {
-      record("report", status::fail, "no report within the timeout after GI on " + rcb->to_string());
+    auto dis = co_await c.disable_reporting(rcb);
+    if (!dis) out.disable_error = dis.error().message();
+    out.dropped = c.reports_dropped() - dropped_before;
+    co_return out;
+  }
+
+  static bool any_report(const std::vector<client::report>& received) { return !received.empty(); }
+
+  static bool any_data_change(const std::vector<client::report>& received) {
+    for (const auto& r : received) {
+      for (const auto& e : r.entries) {
+        if (e.reason && e.reason->data_change()) return true;
+      }
+    }
+    return false;
+  }
+
+  awaitable<void> report_on(client::client& c, const model::object_reference& rcb, bool buffered,
+                            std::string check) {
+    client::report_settings s;
+    s.general_interrogation = true;
+    s.opt_flds = report_fields(buffered, !settings_.bean_defects);
+    auto got = co_await cycle(c, rcb, s, any_report);
+    if (got.enable_error) {
+      record(check, status::fail, "enable_reporting(" + rcb.to_string() + "): " + *got.enable_error);
       co_return;
     }
-    const auto& r = received.front();
-    std::string detail = rcb->to_string() + ": RptID \"" + r.rpt_id + "\", " +
+    if (got.received.empty()) {
+      record(check, status::fail, "no report within the timeout after GI on " + rcb.to_string() +
+                                      " (" + std::to_string(got.dropped) + " refused by the client)");
+      co_return;
+    }
+    const auto& r = got.received.front();
+    std::string detail = rcb.to_string() + ": RptID \"" + r.rpt_id + "\", " +
                          std::to_string(r.entries.size()) + " entries";
-    if (!dis) detail += "; disable_reporting failed: " + dis.error().message();
-    record("report", r.entries.empty() || !dis ? status::warn : status::pass, detail);
+    if (got.disable_error) detail += "; disable_reporting failed: " + *got.disable_error;
+    bool complete = !r.entries.empty() && !got.disable_error;
+    if (buffered && !r.entry_id) {
+      detail += "; no EntryID";
+      complete = false;
+    }
+    record(check, complete ? status::pass : status::warn, detail);
+  }
+
+  // bean sets OptFlds.data-reference in its reports without sending the references, so the client
+  // has to refuse every one of them (8-1 report layout; the same request works on libiec61850).
+  awaitable<void> report_data_reference(client::client& c, const model::object_reference& rcb, bool buffered) {
+    client::report_settings s;
+    s.opt_flds = report_fields(buffered, true);
+    s.general_interrogation = true;
+    auto got = co_await cycle(c, rcb, s, any_report);
+    if (got.enable_error) {
+      record("report/data-reference", status::fail, *got.enable_error);
+      co_return;
+    }
+    known_defect("report/data-reference", got.received.empty() && got.dropped > 0,
+                 "OptFlds.data-reference set but no references in the report",
+                 std::to_string(got.dropped) + " refused by the client");
+  }
+
+  awaitable<void> report_dchg(client::client& c, const model::object_reference& rcb, bool buffered) {
+    client::report_settings s;
+    s.opt_flds = report_fields(buffered, !settings_.bean_defects);
+    s.trg_ops = model::trigger_conditions::of({model::trigger::data_change});
+    s.intg_pd = 0;
+    auto got = co_await cycle(c, rcb, s, any_data_change);
+    if (got.enable_error) {
+      record("report/dchg", status::fail, "enable_reporting(" + rcb.to_string() + "): " + *got.enable_error);
+    } else if (any_data_change(got.received)) {
+      record("report/dchg", status::pass, rcb.to_string() + ": reason data-change received");
+    } else {
+      record("report/dchg", status::fail, std::to_string(got.received.size()) + " report(s), none for a data change");
+    }
+  }
+
+  // bean accepts one write of OptFlds per RCB for as long as the server runs, even from another
+  // association; the same frames work on libiec61850 and openiec61850-server.
+  awaitable<void> report_opt_flds_rewrite(client::client& c, const model::object_reference& rcb) {
+    client::report_settings s;
+    s.opt_flds = report_fields(false, false);
+    auto got = co_await cycle(c, rcb, s, any_report);
+    known_defect("report/opt-flds-rewrite", got.enable_error.has_value(),
+                 "second write of OptFlds refused", got.enable_error.value_or("accepted"));
+  }
+
+  // bean accepts RptEna and GI on a BRCB, then sends nothing: no GI and no integrity report.
+  awaitable<void> report_brcb_silent(client::client& c, const model::object_reference& rcb) {
+    client::report_settings s;
+    s.general_interrogation = true;
+    s.opt_flds = report_fields(true, false);
+    auto got = co_await cycle(c, rcb, s, any_report);
+    if (got.enable_error) {
+      record("report/brcb", status::fail, "enable_reporting(" + rcb.to_string() + "): " + *got.enable_error);
+      co_return;
+    }
+    known_defect("report/brcb", got.received.empty() && got.dropped == 0, "no report from a BRCB",
+                 "nothing within " + std::to_string(settings_.timeout.count()) + " s of the GI");
+  }
+
+  awaitable<void> report(client::client& c, const model_summary& m) {
+    const auto rcb = m.urcb ? m.urcb : m.brcb;
+    if (!rcb) {
+      record("report", status::skip, "no report control block");
+      co_return;
+    }
+    const bool buffered = !m.urcb;
+    co_await report_on(c, *rcb, buffered, "report");
+    if (m.urcb && m.brcb) {
+      if (settings_.bean_defects) {
+        co_await report_brcb_silent(c, *m.brcb);
+      } else {
+        co_await report_on(c, *m.brcb, true, "report/brcb");
+      }
+    }
+    // Each check takes its own URCB while there are any: see report_opt_flds_rewrite.
+    std::size_t next = 1;
+    const auto spare = [&]() -> const model::object_reference& {
+      return next < m.urcbs.size() ? m.urcbs[next++] : *rcb;
+    };
+    if (settings_.expect_dchg) co_await report_dchg(c, spare(), buffered);
+    if (settings_.bean_defects) {
+      co_await report_data_reference(c, spare(), buffered);
+      co_await report_opt_flds_rewrite(c, *rcb);
+    }
   }
 
   // One operate() per control model found (the first BOOLEAN-controlled object of each), so
@@ -346,6 +563,12 @@ class runner {
         if (auto v = co_await c.read(*st)) current = bool_value(*v);
       }
       auto op = co_await c.operate(obj, mms::data::boolean(!current));
+      const bool enhanced = cm == model::ctl_model::direct_with_enhanced_security ||
+                            cm == model::ctl_model::sbo_with_enhanced_security;
+      if (settings_.bean_defects && enhanced) {
+        known_defect(check, !op, "enhanced security refused", op ? "operated" : op.error().message());
+        continue;
+      }
       if (!op) {
         record(check, status::fail, obj.to_string() + ": " + op.error().message());
         continue;
@@ -403,7 +626,8 @@ std::optional<target> parse_target(std::string_view arg) {
 
 int usage() {
   std::fprintf(stderr,
-               "usage: openiec61850_interop [--timeout SECONDS] [--no-control] HOST[:PORT]...\n");
+               "usage: openiec61850_interop [--timeout SECONDS] [--no-control] [--expect-dchg]\n"
+               "                           [--bean-defects] HOST[:PORT]...\n");
   return 2;
 }
 
@@ -420,6 +644,10 @@ int main(int argc, char** argv) {
       s.timeout = std::chrono::seconds{v};
     } else if (a == "--no-control") {
       s.control = false;
+    } else if (a == "--expect-dchg") {
+      s.expect_dchg = true;
+    } else if (a == "--bean-defects") {
+      s.bean_defects = true;
     } else if (a == "-h" || a == "--help") {
       return usage();
     } else if (auto t = parse_target(a)) {

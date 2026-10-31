@@ -12,7 +12,24 @@
 #
 # or interop/run.sh. The servers are also published on the host (ports below) for running the
 # runner, the example clients, the Python API or a debugger against them by hand.
+#
+# Interop with IEC61850bean (interop/iec61850bean), in both directions:
+#
+#   our client  -> bean console server: `bean-runner` (the same runner image) against `bean-server`
+#   their client -> our server: `bean-client` against `openiec61850-server`
+#
+#   docker compose -f interop/compose.yaml up --detach --wait --build bean-server openiec61850-server
+#   docker compose -f interop/compose.yaml run --rm bean-runner
+#   docker compose -f interop/compose.yaml run --rm bean-client
+#
+# or ONLY=bean interop/run.sh.
 name: openiec61850-interop
+
+x-iec61850bean: &iec61850bean
+  image: openiec61850-interop/iec61850bean:1.9.0
+  build:
+    context: ..
+    dockerfile: interop/iec61850bean/Dockerfile
 
 x-libiec61850: &libiec61850
   image: openiec61850-interop/libiec61850:${LIBIEC61850_VERSION:-1.6.0}
@@ -50,6 +67,27 @@ services:
       basic-io: {condition: service_healthy}
       control: {condition: service_healthy}
     command: ["--timeout", "${INTEROP_TIMEOUT:-5}", "basic-io:102", "control:102"]
+
+  bean-server:
+    <<: *iec61850bean
+    ports: ["127.0.0.1:${BEAN_PORT:-10105}:102"]
+
+  bean-runner:
+    image: openiec61850-interop/runner:local
+    build:
+      context: ..
+      dockerfile: interop/runner/Dockerfile
+    depends_on:
+      bean-server: {condition: service_healthy}
+    command: ["--timeout", "${INTEROP_TIMEOUT:-5}", "--expect-dchg", "--bean-defects", "bean-server:102"]
+
+  bean-client:
+    <<: *iec61850bean
+    entrypoint: ["run_client.sh"]
+    healthcheck: {disable: true}
+    depends_on:
+      openiec61850-server: {condition: service_healthy}
+    command: ["--timeout", "${CLIENT_TIMEOUT:-8}", "openiec61850-server", "102"]
 
   clients:
     image: openiec61850-interop/clients:${LIBIEC61850_VERSION:-1.6.0}

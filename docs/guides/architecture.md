@@ -80,4 +80,4 @@ associations and to many concurrent requests on one association.
 | Fuzzing | `fuzz/<component>/` (libFuzzer) | every decoder that reads network input |
 | Python | `tests/python/` (pytest) | the `asyncio` API against the fake server extension |
 | Benchmarks | `benchmarks/` (Google Benchmark) | codec costs and loopback throughput |
-| Interop | `interop/` (Docker) | the client against libiec61850 example servers (ADR 0007) |
+| Interop | `interop/` (Docker or native) | both directions against libiec61850 and IEC61850bean (ADR 0007) |

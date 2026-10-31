@@ -131,7 +131,8 @@ README, `pyproject.toml` and the GLOSSARY. Current state:
 ## Interop (`interop/`)
 
 ADR 0007 validates interoperability against independent implementations instead of physical
-IEDs. The first peer is libiec61850, tested in both directions:
+IEDs. Two peers are covered: IEC61850bean ([below](#iec61850bean)) and libiec61850, tested in both
+directions:
 
 - **our client against their servers**: the runner drives the libiec61850 example servers;
 - **their clients against our server**: the libiec61850 example clients run against
@@ -175,12 +176,23 @@ services and then runs these checks against each server:
 | `discover` | runs Get{Server,LogicalDevice,LogicalNode,Data}Directory on every LD and LN, then GetDataDefinition |
 | `read` | reads one ST/MX object, then up to 16 objects in one Read |
 | `write` | writes back a CF/DC/SP value just read. **WARN** if every candidate is refused with a proper negative response |
+| `data-set` | GetDataSetDirectory and GetDataSetValues of the first data set |
+| `data-set/dynamic` | creates a data set, reads it back and deletes it. **WARN** if the creation is refused |
 | `report` | `enable_reporting` with GI on the first URCB (else BRCB), waits for a report, disables reporting |
+| `report/brcb` | the same on the first BRCB, when the model has both |
+| `report/dchg` | with `--expect-dchg`: waits for a report with reason data-change |
 | `control/<model>` | for each control model found (direct/SBO, normal/enhanced security), `operate()` on the first BOOLEAN-controlled object, checks that `stVal` follows, then restores it |
 | `release` | Conclude and A-RELEASE |
 
 Each check prints `PASS`, `WARN`, `SKIP` (the model has nothing to exercise) or `FAIL`. The exit
 status is non-zero only on `FAIL`.
+
+### IEC61850bean
+
+`interop/iec61850bean/` runs the released IEC61850bean jars the same way, as a binary only, in
+both directions: `ONLY=bean interop/run.sh`, or `interop/iec61850bean/run_native.sh` on a host
+without Docker. Its [README](../../interop/iec61850bean/README.md) has the coverage and the peer's
+known defects. TLS is not covered, as its console applications have no option for it.
 
 ### Reverse direction: libiec61850 clients against our server
 

@@ -6,6 +6,7 @@ openiec61850 is implemented **only** from the text of the standards (IEC 61850, 
 
 - Do not read, copy, port or "translate" code from libiec61850 or pyiec61850.
 - Running libiec61850 binaries as a test peer and in benchmarks is allowed.
+- The same goes for IEC61850bean: run its released jars, never read its sources or fetch a sources jar.
 - When referring to a standard in comments, cite the clause (e.g. `// ISO 8327-1 §8.3.1`).
 
 ## Environment
