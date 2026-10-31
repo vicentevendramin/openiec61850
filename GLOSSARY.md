@@ -1,6 +1,6 @@
 # openiec61850
 
-Biblioteca clean-room da norma IEC 61850 com núcleo nativo de alta performance e API Python de primeira classe.
+Biblioteca clean-room da norma IEC 61850 com núcleo nativo e API Python de primeira classe.
 
 ## Linguagem
 
@@ -17,6 +17,10 @@ _Evite_: modo compatível, drop-in
 **Benchmark de referência**:
 Medição comparativa entre openiec61850 e libiec61850 na mesma máquina, que serve como critério oficial de "performático".
 _Evite_: teste de performance (genérico)
+
+**Release alfa**:
+Versão pública 0.x publicada depois de cumprir os critérios de release, com API instável e sem declaração de conformidade com a norma.
+_Evite_: pronta, estável, certificada
 
 ### Papéis de comunicação
 

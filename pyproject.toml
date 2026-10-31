@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "openiec61850"
 dynamic = ["version"]
-description = "Clean-room IEC 61850 implementation with a high-performance native core"
+description = "Clean-room IEC 61850 implementation with a C++20 core and an asyncio Python API"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
