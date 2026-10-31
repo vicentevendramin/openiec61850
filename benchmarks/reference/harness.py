@@ -11,7 +11,6 @@ import json
 import os
 import platform
 import resource
-import shlex
 import signal
 import socket
 import statistics
@@ -254,9 +253,10 @@ def summarise(samples):
     return rows
 
 
-def paired_ratio(samples, cell, metric):
+def paired_ratio(samples, cell, metric, clean_only=False):
     """Per-round ours/theirs: the two samples of a round ran next to each other."""
-    by = {(s["round"], s["target"]): s for s in samples if s["cell"] == cell and "failed" not in s}
+    by = {(s["round"], s["target"]): s for s in samples if s["cell"] == cell and "failed" not in s
+          and not (clean_only and s.get("noisy"))}
     ratios = [by[(r, "openiec61850")][metric] / by[(r, "libiec61850")][metric]
               for r, t in by if t == "libiec61850" and (r, "openiec61850") in by
               and by[(r, "libiec61850")][metric]]
@@ -294,13 +294,17 @@ def report(samples, rows, context, out):
                      f"{r['associations_up']['median']:.0f}")
             lines.append(f"| {r['cell']} | {r['target']} | {fmt(r['reads_per_s'])} reads/s | "
                          f"{other} | {flags} |")
-    lines += ["", "Paired per-round ratio openiec61850 / libiec61850 (median, range):", ""]
+    lines += ["", "Paired per-round ratio openiec61850 / libiec61850 (median, range), over all "
+              "samples, then over the rounds where neither sample was noisy:", ""]
     for cell in sorted({s["cell"] for s in samples}):
         metric = "wall_ms_median" if cell.startswith("client/") else "reads_per_s"
         ratio = paired_ratio(samples, cell, metric)
         if ratio:
+            clean = paired_ratio(samples, cell, metric, clean_only=True)
+            quiet = (f"{clean['median']:.3f} ({clean['min']:.3f}-{clean['max']:.3f}), "
+                     f"n={clean['n']}" if clean else "no clean pair")
             lines.append(f"- {cell} {metric}: {ratio['median']:.3f} "
-                         f"({ratio['min']:.3f}-{ratio['max']:.3f})")
+                         f"({ratio['min']:.3f}-{ratio['max']:.3f}), n={ratio['n']}; clean: {quiet}")
     noisy = sum(1 for s in samples if s.get("noisy"))
     total_foreign = [s["foreign_total_cores"] for s in samples if "foreign_total_cores" in s]
     lines += ["", f"Samples: {len(samples)}, noisy: {noisy} (foreign use of the pinned CPUs above "
@@ -311,6 +315,11 @@ def report(samples, rows, context, out):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--reanalyze":
+        raw = Path(sys.argv[2])
+        data = json.loads(raw.read_text(encoding="utf-8"))
+        report(data["samples"], summarise(data["samples"]), data["context"], raw.parent)
+        return
     p = argparse.ArgumentParser()
     for name in ("peer-version", "flags"):
         p.add_argument(f"--{name}", required=True)
@@ -332,8 +341,7 @@ def main():
                "method": {"rounds": args.rounds, "duration_s": args.duration,
                           "warmup_s": args.warmup, "client_runs": args.client_runs,
                           "noisy_threshold_cores": NOISY_CORES},
-               "load_start": os.getloadavg(), "started": time.strftime("%FT%T%z"),
-               "command": shlex.join(sys.argv[1:])}
+               "load_start": os.getloadavg(), "started": time.strftime("%FT%T%z")}
     samples = []
     for round_no in range(args.rounds):
         servers = start_servers(args)

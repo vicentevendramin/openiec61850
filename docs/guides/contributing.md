@@ -60,10 +60,64 @@ Guidelines:
   battery or inside the sanitizer builds.
 - Compare runs with Google Benchmark's `tools/compare.py benchmarks old.json new.json`. When a
   change claims a speed-up, put the comparison in the merge request.
-- The comparison against libiec61850 that the glossary requires runs its binaries on the same
-  machine (ADR 0001 allows running them). Its numbers are recorded the same way, next to ours.
+- The comparison against libiec61850 that the glossary requires is the next section.
 - CI (`analysis:bench-smoke`) runs only a short smoke run and keeps `bench-results/smoke.json` as an
   artifact. Shared runners are too noisy to catch regressions.
+
+### Benchmark de referência (`benchmarks/reference/`)
+
+`run.sh` compares openiec61850 with libiec61850 on one machine, without Docker or sudo. It downloads
+and builds libiec61850, builds our server and a load generator (both Release, with the same stated
+`-O3 -DNDEBUG`), and runs `harness.py`.
+
+```bash
+export VCPKG_ROOT=~/vcpkg
+benchmarks/reference/run.sh                                # 7 rounds, about 20 minutes
+benchmarks/reference/run.sh --rounds 2 --duration 0.5 --warmup 0.2 --client-runs 5   # smoke
+benchmarks/reference/run.sh --only reads                   # reads | associations | clients
+python3 benchmarks/reference/harness.py --reanalyze build/reference/results/raw.json
+# -> build/reference/results/{raw.json,summary.csv,summary.md}; WORK_DIR and OUT move them
+```
+
+**Clean-room (ADR 0001):** libiec61850 is used only through its prebuilt example executables, their
+command line and their output. Nothing is compiled against its API, and `run.sh` deletes its source
+tree after building. Do not read that tree when a number looks wrong.
+
+| Group | Measures |
+|---|---|
+| `read/{scalar,do}/in_flight:N` | our client against each server on one association: closed-loop reads of `GGIO1.AnIn1.mag.f` or `GGIO1.AnIn1`, N=1 sequential, N=5 and 16 pipelined |
+| `associations:A` | A associations, one sequential worker each, two client threads. A=1, 2, 4 on both servers, then 16, 64, 256 on ours |
+| `client/*` | wall time of 100 runs per round of their example clients against each server |
+
+Method:
+
+- Loopback, no TLS. Every server runs on CPUs 4 and 6 and the clients on CPUs 8 and 10.
+- The load generator is the same binary with the same settings for both servers.
+- Each round restarts both servers and runs each cell against both in turns, swapping the order on
+  odd rounds. Each read sample is 1 s of warm-up and 5 s measured.
+- Every sample is kept. The summary gives the median with IQR and range, and paired per-round
+  ratios. A sample is flagged noisy when other processes used more than 0.1 core of the pinned
+  CPUs. Ratios are also shown over only the rounds with no flagged sample, next to the full set.
+- `--simulate --period 100` makes our server change values at the 10 Hz measured on theirs.
+- `raw.json` records the machine, commit, flags, load and peer source hash.
+
+What it cannot show:
+
+- It compares two *example programs*, not two libraries: their example server, their build
+  defaults, its 2-association limit and its update loop, against our command-line tool.
+- It measures our client on both sides, so the client's own ceiling hides server capacity. Check
+  `client_cores`: near 1.0 per client thread means the result is bounded by the client.
+- Their client against their server, the pairing that shows their whole stack, is not measured,
+  because that would need a program written against their API. Their example clients only give wall
+  times, which sit on a floor that does not depend on the server.
+- Loopback says nothing about real networks, and the models are not identical (the value read has
+  the same shape on both; `value_leaves` in `raw.json` checks it).
+
+Record reference numbers only on a quiet machine. Put them in `benchmarks/reference/results/` as
+`summary.md`, `summary.csv`, `raw.json` (if small) and a short reading of them, stating where we
+lose. The maintainer reviews them first: until then ADR 0008 keeps performance claims out of the
+README, `pyproject.toml` and the GLOSSARY. Current state:
+[results](../../benchmarks/reference/results/README.md).
 
 ### Adding a benchmark
 

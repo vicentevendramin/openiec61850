@@ -11,6 +11,8 @@ release may break the API. The release process is in
 
 ### Added
 
+- `benchmarks/reference/`: the reference benchmark against libiec61850 (provisional results, not
+  reviewed), and `--max-associations` in `openiec61850-server`.
 - Native core (C++20, Asio standalone, one I/O thread, `result<T>` + `std::error_code` errors).
 - Full ISO stack for MMS: BER codec (X.690), TPKT and COTP class 0 (RFC 1006, X.224), session
   (X.225, kernel + duplex), presentation (X.226, kernel), ACSE (X.227), with sans-I/O state
