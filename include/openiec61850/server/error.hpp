@@ -14,6 +14,7 @@ enum class errc {
   invalid_model,     // inconsistent model (e.g. a structure without components)
   not_running,       // the server has been stopped
   access_denied,     // the attribute is managed by the server (e.g. RCB attributes)
+  overloaded,        // too many updates pending: nothing was applied, try again later
 };
 
 [[nodiscard]] const std::error_category& error_category() noexcept;

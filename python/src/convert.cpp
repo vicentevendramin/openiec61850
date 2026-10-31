@@ -580,6 +580,8 @@ void transport_from_py(const dict_reader& d, transport::channel_options& t) {
   d.read("keep_alive", t.keep_alive);
   d.read("no_delay", t.no_delay);
   if (d.given("read_buffer_size")) t.read_buffer_size = nb::cast<std::size_t>(d.at("read_buffer_size"));
+  if (d.given("max_output_bytes")) t.max_output_bytes = nb::cast<std::size_t>(d.at("max_output_bytes"));
+  if (d.given("write_stall_timeout")) t.write_stall_timeout = seconds_from_py(d.at("write_stall_timeout"));
 }
 
 void init_detail_from_py(const dict_reader& d, mms::init_detail& i) {

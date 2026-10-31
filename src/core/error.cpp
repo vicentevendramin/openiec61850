@@ -21,6 +21,7 @@ class category final : public std::error_category {
       case errc::nesting_too_deep: return "nesting too deep";
       case errc::value_out_of_range: return "value out of range";
       case errc::invalid_state: return "operation not allowed in the current state";
+      case errc::output_limit_exceeded: return "output limit exceeded, the peer is not reading";
     }
     return "unknown error";
   }

@@ -498,6 +498,14 @@ class Server:
         return self._s.association_count
 
     @property
+    def pending_updates(self) -> int:
+        return self._s.pending_updates
+
+    @property
+    def slow_peer_aborts(self) -> int:
+        return self._s.slow_peer_aborts
+
+    @property
     def local_endpoint(self) -> tuple[str, int]:
         return self._s.local_endpoint
 

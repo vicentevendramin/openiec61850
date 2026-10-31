@@ -23,6 +23,8 @@ namespace {
 // Late responses to abandoned (timed out or cancelled) requests are discarded silently; this
 // bounds how many invokeIDs are remembered for that.
 constexpr std::size_t max_abandoned = 4096;
+// An abort is not a release: the ABRT goes out if it can, a peer that does not read gets no longer.
+constexpr std::chrono::seconds abort_linger{1};
 
 }  // namespace
 
@@ -91,7 +93,7 @@ void core::reject(std::optional<std::uint32_t> invoke_id, mms::reject_type type,
   (void)send_mms(mms::reject_pdu{invoke_id, type, reason});
 }
 
-void core::terminate(std::error_code reason, bool graceful) {
+void core::terminate(std::error_code reason, bool graceful, std::chrono::milliseconds linger) {
   if (closed()) return;
   error = reason;
   set_state(association_state::closed);
@@ -103,8 +105,9 @@ void core::terminate(std::error_code reason, bool graceful) {
   if (graceful) {
     asio::co_spawn(
         strand,
-        [](std::shared_ptr<core> self) -> awaitable<void> { (void)co_await self->channel.shutdown(); }(
-            shared_from_this()),
+        [](std::shared_ptr<core> self, std::chrono::milliseconds at_most) -> awaitable<void> {
+          (void)co_await self->channel.shutdown(at_most);
+        }(shared_from_this(), linger),
         asio::detached);
   } else {
     channel.close();
@@ -122,7 +125,7 @@ void core::abort_with(std::error_code reason) {
     }
   }
   flush(out);
-  terminate(reason, true);
+  terminate(reason, true, abort_linger);
 }
 
 awaitable<result<byte_buffer>> core::receive_before(std::chrono::milliseconds timeout) {
@@ -440,10 +443,15 @@ incoming_request::~incoming_request() {
 
 asio::awaitable<result<void>> incoming_request::answer(result<byte_buffer> pdu) {
   if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
-  if (answered_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
   if (!pdu) return detail::ready(result<void>(pdu.error()));
+  return answer(std::move(*pdu));
+}
+
+asio::awaitable<result<void>> incoming_request::answer(byte_buffer pdu) {
+  if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
+  if (answered_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
   answered_ = true;
-  return detail::on_strand(state_->strand, detail::core::answer_op(state_, invoke_id(), std::move(*pdu)));
+  return detail::on_strand(state_->strand, detail::core::answer_op(state_, invoke_id(), std::move(pdu)));
 }
 
 asio::awaitable<result<void>> incoming_request::respond(const mms::confirmed_service_response& response) {

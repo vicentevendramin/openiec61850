@@ -11,7 +11,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <dirent.h>
-#include <malloc.h>
 
 #include <atomic>
 #include <chrono>
@@ -37,22 +36,12 @@
 #include <asio/write.hpp>
 
 #include "../server/server_test_util.hpp"
+#include "../server/stall_proxy.hpp"
 #include "openiec61850/transport/io_runtime.hpp"
 #include "openiec61850/transport/tls.hpp"
 
 #ifdef OPENIEC61850_WITH_TLS
 #include "../transport/tls_certs.hpp"
-#endif
-
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-#define OPENIEC61850_SOAK_SANITIZER 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
-#define OPENIEC61850_SOAK_SANITIZER 1
-#endif
-#endif
-#ifdef OPENIEC61850_SOAK_SANITIZER
-#include <sanitizer/allocator_interface.h>
 #endif
 
 using namespace server_test;
@@ -78,15 +67,6 @@ std::size_t open_descriptors() {
     closedir(d);
   }
   return n;
-}
-
-// Bytes the application holds, so that allocator caches and sanitizer quarantines do not count.
-std::size_t live_bytes() {
-#ifdef OPENIEC61850_SOAK_SANITIZER
-  return __sanitizer_get_current_allocated_bytes();
-#else
-  return mallinfo2().uordblks;
-#endif
 }
 
 struct counters {
@@ -445,9 +425,8 @@ void update_loop(srv::server& s, const references& refs, int seed, std::atomic<b
     }();
     if (ok) stats.updates.fetch_add(1);
     (void)s.association_count();
-    // update() queues on the strand without backpressure: open loop, a sanitizer build falls
-    // behind for good and every association times out. Waiting for the strand keeps the rate at
-    // what the server sustains.
+    // Paced: this soak is about the churn around the updates. Going as fast as update() lets
+    // you is what the slow-reader soak does.
     std::this_thread::sleep_for(2ms);
     if (n % 32 == 0) {
       std::promise<void> drained;
@@ -668,9 +647,182 @@ void soak(const tls_contexts& tls) {
   std::fflush(stdout);
 }
 
+// --- Peers that stop reading, with the application updating as fast as update() lets it
+
+struct slow_counters {
+  std::atomic<std::uint64_t> stalled{0};
+  std::atomic<std::uint64_t> reads{0};
+  std::atomic<std::uint64_t> failed_reads{0};
+  std::atomic<std::int64_t> slowest_read_ms{0};
+  std::atomic<std::uint64_t> applied{0};
+  std::atomic<std::uint64_t> overloaded{0};
+  std::atomic<std::size_t> highest_pending{0};
+};
+
+// A client that enables a report control block and stops reading for good; the server has to get
+// rid of it on its own. One at a time on each control block: the aborted association frees it.
+awaitable<void> stalling_peer(client::client_options options, tcp::endpoint server,
+                              std::string rcb, asio::any_io_executor ex, slow_counters* stats,
+                              std::atomic<bool>* running, srv::server* srv_handle) {
+  while (running->load()) {
+    auto proxy = std::make_unique<stall_proxy>(server);
+    options.association.port = proxy->port();
+    auto r = co_await client::client::connect(ex, options);
+    if (!r) continue;
+    client::report_settings settings;
+    settings.data_set = oref("IED1LD0/LLN0.DSBIG");
+    auto enabled = co_await r->enable_reporting(oref(rcb), settings);
+    if (!enabled) {
+      // The previous association may not be gone from the server yet.
+      r->abort();
+      co_await pause(5ms);
+      continue;
+    }
+    proxy->stall();
+    const auto before = srv_handle->slow_peer_aborts();
+    while (running->load() && srv_handle->slow_peer_aborts() == before) co_await pause(2ms);
+    stats->stalled.fetch_add(1);
+    r->abort();
+    (void)co_await r->wait_closed();
+  }
+}
+
+awaitable<void> steady_reader(client::client_options options, asio::any_io_executor ex,
+                              slow_counters* stats, std::atomic<bool>* running,
+                              model::object_reference ref) {
+  auto r = co_await client::client::connect(ex, options);
+  if (!r) {
+    stats->failed_reads.fetch_add(1);
+    co_return;
+  }
+  while (running->load()) {
+    const auto start = std::chrono::steady_clock::now();
+    auto v = co_await r->read(ref);
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
+    if (took > stats->slowest_read_ms.load()) stats->slowest_read_ms = took;
+    (v ? stats->reads : stats->failed_reads).fetch_add(1);
+    co_await pause(1ms);
+  }
+  (void)co_await r->release();
+}
+
+// Open loop: the three updaters that used to starve the strand of a sanitizer build for good.
+void open_loop(srv::server& s, const references& refs, int seed, std::atomic<bool>& stop,
+               slow_counters& stats) {
+  std::uint64_t n = static_cast<std::uint64_t>(seed);
+  const std::string text(200, 'x');
+  while (!stop.load()) {
+    ++n;
+    const auto done = s.update(refs.str1, mms::data::visible_string(text + std::to_string(n % 1000)));
+    if (done) {
+      stats.applied.fetch_add(1);
+    } else if (done.error() == srv::errc::overloaded) {
+      stats.overloaded.fetch_add(1);
+      std::this_thread::sleep_for(100us);  // a real producer would do something else meanwhile
+    }
+    const auto pending = s.pending_updates();
+    if (pending > stats.highest_pending.load()) stats.highest_pending = pending;
+    std::this_thread::sleep_for(50us);
+  }
+}
+
+void slow_readers(const tls_contexts& tls) {
+  const auto duration = soak_duration() + 2s;
+  transport::io_runtime server_rt;
+  transport::io_runtime client_rt;
+  server_rt.start();
+  client_rt.start();
+  references refs;
+  slow_counters stats;
+  completions pending;
+
+  auto options = server_options_for(pending, tls.server);
+  constexpr std::size_t output_limit = 512 * 1024;
+  options.association.transport.max_output_bytes = output_limit;
+  options.association.transport.write_stall_timeout = 500ms;
+  auto started = srv::server::start(server_rt.get_executor(), make_model(), loopback, options);
+  REQUIRE(started);
+  auto server = std::make_unique<srv::server>(std::move(*started));
+  const auto endpoint = server->local_endpoint();
+  const auto base_bytes = live_bytes();
+
+  std::atomic<bool> running{true};
+  std::atomic<int> live{0};
+  context ctx{client_rt.get_executor(), client_options_for(endpoint.port(), tls.client), refs,
+              nullptr, nullptr, &running, &live};
+  launch(ctx, steady_reader(ctx.options, ctx.ex, &stats, &running, refs.ind1));
+  launch(ctx, steady_reader(ctx.options, ctx.ex, &stats, &running, refs.str1));
+  launch(ctx, stalling_peer(ctx.options, endpoint, "IED1LD0/LLN0.urcb03[RP]", ctx.ex, &stats,
+                            &running, server.get()));
+  launch(ctx, stalling_peer(ctx.options, endpoint, "IED1LD0/LLN0.urcb02[RP]", ctx.ex, &stats,
+                            &running, server.get()));
+
+  std::atomic<bool> stop_updates{false};
+  std::vector<std::thread> updaters;
+  for (int i = 0; i < 3; ++i) {
+    updaters.emplace_back(open_loop, std::ref(*server), std::cref(refs), i, std::ref(stop_updates),
+                          std::ref(stats));
+  }
+
+  std::size_t highest_bytes = 0;
+  const auto end = std::chrono::steady_clock::now() + duration;
+  while (std::chrono::steady_clock::now() < end) {
+    highest_bytes = std::max(highest_bytes, live_bytes());
+    std::this_thread::sleep_for(5ms);
+  }
+
+  // The updaters stop first: an association must not be left to outrun for ever.
+  stop_updates = true;
+  for (auto& t : updaters) t.join();
+  running = false;
+  if (!wait_until([&] { return live.load() == 0; }, hang_limit)) hang("a slow-reader worker");
+  const auto aborted = server->slow_peer_aborts();
+  server->stop();
+  auto stopped = asio::co_spawn(
+      server_rt.get_executor(),
+      [](srv::server* s) -> awaitable<void> { co_await s->wait_stopped(); }(server.get()),
+      asio::use_future);
+  if (stopped.wait_for(hang_limit) != std::future_status::ready) hang("wait_stopped()");
+  stopped.get();
+  server.reset();
+  client_rt.stop();
+  server_rt.stop();
+  client_rt.join();
+  server_rt.join();
+  CHECK_FALSE(client_rt.take_exception());
+  CHECK_FALSE(server_rt.take_exception());
+
+  const auto growth = highest_bytes > base_bytes ? highest_bytes - base_bytes : 0;
+  std::printf(
+      "soak: %llu aborts, %llu stalled peers, %llu reads (slowest %lld ms), %llu updates, %llu "
+      "overloaded, %zu pending at most, %zu KiB at most\n",
+      static_cast<unsigned long long>(aborted),
+      static_cast<unsigned long long>(stats.stalled.load()),
+      static_cast<unsigned long long>(stats.reads.load()),
+      static_cast<long long>(stats.slowest_read_ms.load()),
+      static_cast<unsigned long long>(stats.applied.load()),
+      static_cast<unsigned long long>(stats.overloaded.load()), stats.highest_pending.load(),
+      growth / 1024);
+  std::fflush(stdout);
+
+  CHECK(aborted > 0);
+  CHECK(stats.reads.load() > 0);
+  // Nobody else pays for the stalled peers or the updaters.
+  CHECK(stats.failed_reads.load() == 0);
+  CHECK(stats.slowest_read_ms.load() < 20000);
+  // Plus each updater being refused at that moment, which counts itself for an instant.
+  CHECK(stats.highest_pending.load() <= options.max_pending_updates + 3);
+  // Two stalled associations, their limits, the pending updates: tens of MiB, not a trend.
+  CHECK(growth < 128U * 1024U * 1024U);
+}
+
 }  // namespace
 
 TEST_CASE("Soak: plain TCP", "[soak]") { soak({}); }
+
+TEST_CASE("Soak: peers that stop reading", "[soak]") { slow_readers({}); }
 
 #ifdef OPENIEC61850_WITH_TLS
 TEST_CASE("Soak: TLS", "[soak]") {
@@ -690,5 +842,6 @@ TEST_CASE("Soak: TLS", "[soak]") {
     return *ctx;
   };
   soak({make(server_keys, true), make(client_keys, false)});
+  SECTION("slow readers") { slow_readers({make(server_keys, true), make(client_keys, false)}); }
 }
 #endif

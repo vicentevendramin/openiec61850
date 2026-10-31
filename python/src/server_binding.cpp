@@ -933,6 +933,7 @@ server::server_options server_options_from_py(nb::dict d, hook on_write, hook on
   server::server_options o;
   auto given = [&](const char* k) { return d.contains(k) && !d[k].is_none(); };
   if (given("max_associations")) o.max_associations = nb::cast<std::size_t>(d["max_associations"]);
+  if (given("max_pending_updates")) o.max_pending_updates = nb::cast<std::size_t>(d["max_pending_updates"]);
   if (given("vendor")) o.ident.vendor = nb::cast<std::string>(d["vendor"]);
   if (given("model")) o.ident.model = nb::cast<std::string>(d["model"]);
   if (given("revision")) o.ident.revision = nb::cast<std::string>(d["revision"]);
@@ -1196,6 +1197,8 @@ class native_server {
     return launch(s_->get_executor(), wait_stopped_op(s_), [](bool) { return nb::none(); });
   }
   [[nodiscard]] std::size_t association_count() const noexcept { return s_->association_count(); }
+  [[nodiscard]] std::size_t pending_updates() const noexcept { return s_->pending_updates(); }
+  [[nodiscard]] std::uint64_t slow_peer_aborts() const noexcept { return s_->slow_peer_aborts(); }
   [[nodiscard]] nb::object local_endpoint() const {
     const auto& e = s_->local_endpoint();
     return nb::make_tuple(e.address().to_string(), e.port());
@@ -1349,6 +1352,8 @@ void bind_server(nb::module_& m) {
       .def("stop", &native_server::stop)
       .def("wait_stopped", &native_server::wait_stopped)
       .def_prop_ro("association_count", &native_server::association_count)
+      .def_prop_ro("pending_updates", &native_server::pending_updates)
+      .def_prop_ro("slow_peer_aborts", &native_server::slow_peer_aborts)
       .def_prop_ro("local_endpoint", &native_server::local_endpoint)
       .def("update", &native_server::update, nb::arg("ref"), nb::arg("value"),
            nb::arg("quality").none() = nb::none(), nb::arg("timestamp").none() = nb::none())

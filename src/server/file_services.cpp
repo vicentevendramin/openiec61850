@@ -326,6 +326,15 @@ asio::awaitable<pulled_file> pull_file(std::shared_ptr<server_state> st, std::sh
   co_return out;
 }
 
+// Plain functions: GCC 13 crashes on these braced temporaries inside a coroutine.
+void respond_done(session& s, association::incoming_request& req) {
+  respond(s, req, mms::confirmed_response{req.invoke_id(), mms::obtain_file_response{}});
+}
+
+void respond_error(session& s, association::incoming_request& req, const mms::service_error& e) {
+  respond(s, req, mms::confirmed_error{req.invoke_id(), std::nullopt, e});
+}
+
 asio::awaitable<void> obtain_file(std::shared_ptr<server_state> st, std::shared_ptr<session> s,
                                   association::incoming_request req, std::string destination) {
   const auto& r = std::get<mms::obtain_file_request>(req.service());
@@ -336,9 +345,9 @@ asio::awaitable<void> obtain_file(std::shared_ptr<server_state> st, std::shared_
     }
   }
   if (pulled.error) {
-    s->push(req.respond_error(*pulled.error));
+    respond_error(*s, req, *pulled.error);
   } else {
-    s->push(req.respond(mms::obtain_file_response{}));
+    respond_done(*s, req);
   }
   s->obtaining = false;
   std::erase(st->incoming_files, destination);

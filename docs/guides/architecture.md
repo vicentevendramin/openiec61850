@@ -67,6 +67,14 @@ paths (`*_View` vs `*_Owning`).
   blocking callers.
 - **Server.** The server keeps its model and RCB state on one strand; `update()` and `stop()` are
   safe from any thread, application handlers run on the strand.
+- **Backpressure.** Nothing queues without a bound, and nothing that queues blocks the I/O thread.
+  Output per association is limited by `channel_options::max_output_bytes` (16 MiB) and
+  `write_stall_timeout` (30 s without progress), on both roles and below TLS: past them that
+  association alone ends, because a peer that does not read cannot be waited for on a shared
+  thread. In the server URCB reports go down with the association; BRCBs stop at half the limit
+  and keep their entries in their bounded buffer for the next association. `update()` never blocks
+  nor drops a change it accepted: at `max_pending_updates` (8192) it fails with `errc::overloaded`
+  and the application decides, so that it cannot starve the clients on the strand.
 
 This replaces the blocking-call-plus-callback-threads model used elsewhere: it scales to many
 associations and to many concurrent requests on one association.

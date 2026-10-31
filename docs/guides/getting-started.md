@@ -92,7 +92,12 @@ asyncio.run(main())
 ```
 
 - `update()` / `update_many()` take plain Python values typed from the model, never block and
-  may be called from any thread; `await server.read(ref)` returns the current value.
+  may be called from any thread; `await server.read(ref)` returns the current value. A producer
+  faster than the server gets `ServerOverloaded` at `max_pending_updates` changes pending (nothing
+  applied, nothing else lost): try again later, pacing with `server.pending_updates`.
+- A client that stops reading is aborted, alone, at `max_output_bytes` queued or after
+  `write_stall_timeout` without progress (`ServerIsoParameters`; `server.slow_peer_aborts` counts
+  them). Its URCB reports are lost with the association; BRCB entries wait in the buffer.
 - Hooks (`on_write`, `on_control`, `authorize`) are called on the native I/O thread, which waits
   for their answer: keep them short and non-blocking. For a long Operate, return an awaitable from
   `on_control` (or make it `async def`): it runs on the event loop and its `ControlResult`

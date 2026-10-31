@@ -210,7 +210,18 @@ struct open_file {
   std::uint64_t size = 0;
 };
 
+// An answer or a report waiting for its turn on the wire.
+struct outgoing {
+  asio::awaitable<result<void>> send;
+  std::size_t cost = 0;
+  rcb* entry_of = nullptr;  // the BRCB, on the last PDU of a buffered entry
+};
+
 struct session {
+  // What a queued PDU holds besides its bytes (its coroutine frames), as charged to the limit.
+  // Measured: a little over 600 bytes.
+  static constexpr std::size_t entry_overhead = 1024;
+
   explicit session(const strand_type& s) : wake(s, clock::time_point::max()) {}
 
   std::uint64_t id = 0;
@@ -218,7 +229,11 @@ struct session {
   std::string address;       // peer IP address, textual
   byte_buffer address_bytes;  // Owner value
   std::size_t max_pdu = 0;    // the client's local detail; 0: no limit
-  std::deque<asio::awaitable<result<void>>> outbox;
+  std::deque<outgoing> outbox;
+  std::size_t queued = 0;      // charged to max_queued: the outbox and the PDU being sent
+  std::size_t max_queued = 0;  // channel_options::max_output_bytes; 0: no limit
+  bool reports_paused = false;  // a BRCB stopped at the high-water mark
+  std::map<rcb*, std::size_t> unwritten;  // buffered entries handed over, not written yet
   asio::steady_timer wake;
   bool closed = false;
   std::map<std::string, std::shared_ptr<data_set>, std::less<>> aa_sets;
@@ -226,12 +241,50 @@ struct session {
   std::int32_t next_frsm = 1;
   bool obtaining = false;  // an ObtainFile is in progress
 
-  void push(asio::awaitable<result<void>> a) {
+  // BRCBs stop handing entries over at half the limit, so that a peer that does not read keeps
+  // them in the buffer (bounded by its capacity, where they survive the association) instead of
+  // getting aborted for them; they go on once the queue is down to a quarter.
+  [[nodiscard]] bool reports_blocked() const noexcept {
+    return closed || (max_queued > 0 && queued >= max_queued / 2);
+  }
+  [[nodiscard]] bool reports_can_resume() const noexcept {
+    return reports_paused && queued <= max_queued / 4;
+  }
+
+  // Past the limit the association ends: nothing a stalled peer provokes can grow the queue. The
+  // peer is not reading, so an ABRT would never get there.
+  void push(asio::awaitable<result<void>> a, std::size_t bytes, rcb* entry_of = nullptr) {
     if (closed || !assoc) return;
-    outbox.push_back(std::move(a));
+    const auto cost = bytes + entry_overhead;
+    if (max_queued > 0 && queued > 0 && queued + cost > max_queued) {
+      closed = true;
+      outbox.clear();
+      assoc->close(openiec61850::errc::output_limit_exceeded);
+      return;
+    }
+    queued += cost;
+    if (entry_of != nullptr) ++unwritten[entry_of];
+    outbox.push_back({std::move(a), cost, entry_of});
     wake.cancel();
   }
+
+  void answer(association::incoming_request& req, byte_buffer pdu) {
+    if (closed || !assoc) return;
+    const auto bytes = pdu.size();
+    push(req.answer(std::move(pdu)), bytes);
+  }
+
+  // An already encoded Unconfirmed-PDU.
+  void send_unconfirmed(byte_buffer pdu, rcb* entry_of = nullptr) {
+    if (closed || !assoc || pdu.empty()) return;
+    const auto bytes = pdu.size();
+    push(assoc->send_encoded(std::move(pdu)), bytes, entry_of);
+  }
 };
+
+// Encodes `pdu` and queues it as the answer to `req`. If it cannot be encoded the request is left
+// unanswered, which answers it with a service error when destroyed.
+void respond(session& s, association::incoming_request& req, const mms::mms_pdu& pdu);
 
 // The reply to a confirmed request; owns everything the response views. Not movable.
 struct reply {
@@ -343,6 +396,8 @@ struct server_state : std::enable_shared_from_this<server_state> {
   std::atomic<std::size_t> associations{0};
   std::atomic<std::size_t> live_tasks{0};
   std::atomic<bool> stopped{false};
+  std::atomic<std::size_t> pending_updates{0};  // data_updates posted, not applied yet
+  std::atomic<std::uint64_t> slow_peer_aborts{0};
   std::optional<association::association_listener> listener;
   asio::ip::tcp::endpoint endpoint;
   std::vector<asio::steady_timer*> stop_waiters;
@@ -405,6 +460,10 @@ struct server_state : std::enable_shared_from_this<server_state> {
   void start_integrity(rcb& r);
   void disable(rcb& r);
   void release_session_rcbs(session& s);
+  // The session ends: its BRCBs go back to the entries that were not written.
+  void rewind_unwritten(session& s);
+  // The queue of `s` has drained: its BRCBs go on.
+  void resume_reports(session& s);
   void data_set_deleted(const std::shared_ptr<data_set>& ds);
   [[nodiscard]] report_entry snapshot_all(rcb& r, model::trigger_conditions reason);
 

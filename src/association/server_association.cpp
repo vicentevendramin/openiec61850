@@ -230,7 +230,12 @@ asio::awaitable<result<void>> server_association::send_unconfirmed(const mms::un
   if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
   auto pdu = detail::encode_mms(mms::unconfirmed_pdu{service});
   if (!pdu) return detail::ready(result<void>(pdu.error()));
-  return detail::on_strand(state_->strand, detail::core::send_op(state_, std::move(*pdu)));
+  return send_encoded(std::move(*pdu));
+}
+
+asio::awaitable<result<void>> server_association::send_encoded(byte_buffer pdu) {
+  if (!state_) return detail::ready(result<void>(openiec61850::errc::invalid_state));
+  return detail::on_strand(state_->strand, detail::core::send_op(state_, std::move(pdu)));
 }
 
 void server_association::abort() noexcept {
@@ -238,9 +243,11 @@ void server_association::abort() noexcept {
   asio::dispatch(state_->strand, [s = state_] { s->abort_with(errc::aborted); });
 }
 
-void server_association::close() noexcept {
+void server_association::close() noexcept { close(errc::aborted); }
+
+void server_association::close(std::error_code reason) noexcept {
   if (!state_) return;
-  asio::dispatch(state_->strand, [s = state_] { s->terminate(errc::aborted, false); });
+  asio::dispatch(state_->strand, [s = state_, reason] { s->terminate(reason, false); });
 }
 
 asio::awaitable<std::error_code> server_association::wait_closed() {

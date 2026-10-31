@@ -33,6 +33,7 @@ class category final : public std::error_category {
       case errc::invalid_model: return "invalid data model";
       case errc::not_running: return "server not running";
       case errc::access_denied: return "attribute managed by the server";
+      case errc::overloaded: return "too many updates pending";
     }
     return "unknown server error";
   }
@@ -161,6 +162,11 @@ result<std::shared_ptr<server_state>> make_offline_state(asio::any_io_executor e
   return st;
 }
 
+void respond(session& s, association::incoming_request& req, const mms::mms_pdu& pdu) {
+  byte_buffer bytes;
+  if (mms::encode_pdu(pdu, bytes)) s.answer(req, std::move(bytes));
+}
+
 void task_done(server_state& st) {
   if (st.live_tasks.fetch_sub(1) == 1) {
     for (auto* w : st.stop_waiters) w->cancel();
@@ -177,24 +183,24 @@ void handle_request(const std::shared_ptr<server_state>& state,
   reply out;
   st.dispatch(s, req.service(), out);
   switch (out.type) {
-    case reply::kind::response:
-      if (s.max_pdu > 0) {
-        byte_buffer probe;
-        const auto encoded =
-            mms::encode_pdu(mms::confirmed_response{req.invoke_id(), out.response}, probe);
-        if (encoded && probe.size() > s.max_pdu) {
-          s.push(req.respond_error(mms::service_error(
-              mms::error_class::resource, mms::error_code::resource::capability_unavailable)));
-          return;
-        }
+    case reply::kind::response: {
+      byte_buffer bytes;
+      if (!mms::encode_pdu(mms::confirmed_response{req.invoke_id(), out.response}, bytes)) break;
+      if (s.max_pdu > 0 && bytes.size() > s.max_pdu) {
+        respond(s, req,
+                mms::confirmed_error{req.invoke_id(), std::nullopt,
+                                     mms::service_error(mms::error_class::resource,
+                                                        mms::error_code::resource::capability_unavailable)});
+        break;
       }
-      s.push(req.respond(out.response));
+      s.answer(req, std::move(bytes));
       break;
+    }
     case reply::kind::error:
-      s.push(req.respond_error(out.error));
+      respond(s, req, mms::confirmed_error{req.invoke_id(), std::nullopt, out.error});
       break;
     case reply::kind::reject:
-      s.push(req.reject(out.reject_reason));
+      respond(s, req, mms::reject_pdu{req.invoke_id(), mms::reject_type::confirmed_request, out.reject_reason});
       break;
     case reply::kind::deferred:
       start_obtain_file(state, session_ptr, std::move(req), std::move(out.destination));
@@ -207,10 +213,14 @@ awaitable<void> sender(std::shared_ptr<server_state> st, std::shared_ptr<session
     while (!s->outbox.empty()) {
       auto next = std::move(s->outbox.front());
       s->outbox.pop_front();
-      auto r = co_await std::move(next);
+      auto r = co_await std::move(next.send);
       if (!r) {
         s->closed = true;
         s->outbox.clear();
+      } else if (!s->closed) {
+        s->queued -= next.cost;
+        if (next.entry_of != nullptr) --s->unwritten[next.entry_of];
+        if (s->reports_can_resume()) st->resume_reports(*s);
       }
     }
     if (s->closed) break;
@@ -230,6 +240,7 @@ void session_closed(server_state& st, session& s) {
   for (auto& [name, ds] : s.aa_sets) lists.push_back(ds);
   s.aa_sets.clear();
   for (const auto& ds : lists) st.data_set_deleted(ds);
+  st.rewind_unwritten(s);
   st.release_session_rcbs(s);
   st.sessions.erase(s.id);
   st.associations.fetch_sub(1);
@@ -288,6 +299,7 @@ awaitable<void> connection(std::shared_ptr<server_state> st, asio::ip::tcp::sock
   if (info.negotiated.local_detail_calling && *info.negotiated.local_detail_calling > 0) {
     s->max_pdu = static_cast<std::size_t>(*info.negotiated.local_detail_calling);
   }
+  s->max_queued = st->options.association.transport.max_output_bytes;
   s->assoc.emplace(std::move(*a));
   st->sessions.emplace(s->id, s);
   st->live_tasks.fetch_add(1);
@@ -295,7 +307,13 @@ awaitable<void> connection(std::shared_ptr<server_state> st, asio::ip::tcp::sock
 
   for (;;) {
     auto req = co_await s->assoc->next_request();
-    if (!req) break;
+    if (!req) {
+      if (req.error() == openiec61850::errc::output_limit_exceeded ||
+          req.error() == asio::error::timed_out) {
+        st->slow_peer_aborts.fetch_add(1);
+      }
+      break;
+    }
     handle_request(st, s, std::move(*req));
   }
   session_closed(*st, *s);
@@ -454,7 +472,15 @@ result<void> server::update(std::vector<data_update> batch) {
     if (!r) return r.error();
     items.push_back(std::move(*r));
   }
-  asio::post(state_->strand, [s = state_, items = std::move(items)]() mutable {
+  const auto count = items.size();
+  const auto limit = state_->options.max_pending_updates;
+  const auto before = state_->pending_updates.fetch_add(count, std::memory_order_relaxed);
+  if (limit > 0 && before > 0 && before + count > limit) {
+    state_->pending_updates.fetch_sub(count, std::memory_order_relaxed);
+    return make_error_code(errc::overloaded);
+  }
+  asio::post(state_->strand, [s = state_, items = std::move(items), count]() mutable {
+    s->pending_updates.fetch_sub(count, std::memory_order_relaxed);
     if (s->stopped) return;
     ++s->tick;
     std::vector<detail::assignment> all;
@@ -585,6 +611,14 @@ asio::awaitable<std::vector<goose_control_state>> server::goose_controls() const
 
 std::size_t server::association_count() const noexcept {
   return state_ ? state_->associations.load() : 0;
+}
+
+std::size_t server::pending_updates() const noexcept {
+  return state_ ? state_->pending_updates.load(std::memory_order_relaxed) : 0;
+}
+
+std::uint64_t server::slow_peer_aborts() const noexcept {
+  return state_ ? state_->slow_peer_aborts.load() : 0;
 }
 
 const asio::ip::tcp::endpoint& server::local_endpoint() const noexcept { return state_->endpoint; }

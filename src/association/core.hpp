@@ -133,8 +133,9 @@ class core : public std::enable_shared_from_this<core> {
   void reject(std::optional<std::uint32_t> invoke_id, mms::reject_type type, std::int64_t reason);
 
   // Closes the association with `reason`: everyone waiting is woken up, then the transport is
-  // closed (after the queued output when graceful). Idempotent.
-  void terminate(std::error_code reason, bool graceful);
+  // closed (after the queued output when graceful, for at most `linger` if not zero). Idempotent.
+  void terminate(std::error_code reason, bool graceful,
+                 std::chrono::milliseconds linger = std::chrono::milliseconds::zero());
   // ABRT (P-U-ABORT) if the presentation connection can carry it, then terminate.
   void abort_with(std::error_code reason);
 

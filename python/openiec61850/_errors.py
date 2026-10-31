@@ -11,7 +11,8 @@ Hierarchy::
     │   ├── ConnectionRefused (ConnectionRefusedError)
     │   ├── HostNotFound
     │   ├── ConnectionLost
-    │   │   └── PeerAborted
+    │   │   ├── PeerAborted
+    │   │   └── OutputLimitExceeded    the peer stopped reading and the output limit was reached
     │   ├── ConnectionClosed           released or aborted locally
     │   ├── NotConnected               no association (closed, or recovery in progress)
     │   ├── RecoveryFailed
@@ -21,6 +22,7 @@ Hierarchy::
     │       └── InitiateError
     ├── Timeout (TimeoutError)
     ├── OperationAborted
+    ├── ServerOverloaded               too many updates pending: nothing applied, try again later
     ├── ServiceError                   the server refused the service
     │   ├── ObjectNotFound, AccessDenied, ObjectExists, TemporarilyUnavailable,
     │   │   TypeInconsistent, ValueInvalid, ObjectInvalidated, HardwareFault,
@@ -60,6 +62,7 @@ __all__ = [
     "HostNotFound",
     "ConnectionLost",
     "PeerAborted",
+    "OutputLimitExceeded",
     "ConnectionClosed",
     "NotConnected",
     "RecoveryFailed",
@@ -68,6 +71,7 @@ __all__ = [
     "InitiateError",
     "Timeout",
     "OperationAborted",
+    "ServerOverloaded",
     "ServiceError",
     "ObjectNotFound",
     "AccessDenied",
@@ -331,6 +335,15 @@ class ServerStopped(InvalidOperation):
     """The server has been stopped."""
 
 
+class ServerOverloaded(Iec61850Error):
+    """``max_pending_updates`` changes are waiting to be applied, so this one was refused and
+    nothing of it applied; try again later (see :attr:`Server.pending_updates`)."""
+
+
+class OutputLimitExceeded(ConnectionLost):
+    """The peer stopped reading and the output queued for it exceeded ``max_output_bytes``."""
+
+
 class SclError(Iec61850Error, ValueError):
     """An SCL file could not be turned into a server model.
 
@@ -452,6 +465,7 @@ _CORE = {
     7: ProtocolError,
     8: ValueOutOfRange,
     9: InvalidOperation,
+    10: OutputLimitExceeded,
 }
 
 _ERRNO = {
@@ -473,6 +487,7 @@ _SERVER = {
     4: InvalidModel,
     5: ServerStopped,
     6: AccessDenied,
+    7: ServerOverloaded,
 }
 
 # server::file_errc (server/files.hpp): not_found, access_denied, exists, invalid_name, busy,

@@ -16,6 +16,7 @@ enum class errc {
   nesting_too_deep,    // TLV nesting exceeds the configured limit
   value_out_of_range,  // decoded value does not fit the requested type
   invalid_state,       // local operation not allowed in the current state
+  output_limit_exceeded,  // the output queued for a peer that does not read exceeded the limit
 };
 
 [[nodiscard]] const std::error_category& error_category() noexcept;

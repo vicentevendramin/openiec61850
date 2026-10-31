@@ -128,6 +128,11 @@ class IsoParameters:
     keep_alive: bool | None = None
     no_delay: bool | None = None
     read_buffer_size: int | None = None
+    # Output queued for a peer that does not read: past the limit (bytes, plus about 2 KiB per
+    # pending send) the association ends with OutputLimitExceeded, after the timeout without any
+    # progress (seconds) with Timeout. 0 disables them.
+    max_output_bytes: int | None = None
+    write_stall_timeout: float | None = None
     local_reference: int | None = None
     max_tsdu_size: int | None = None
     max_tpkt_size: int | None = None

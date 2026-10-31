@@ -13,6 +13,26 @@ release may break the API. The release process is in
 
 - TLS: an abort with traffic in flight no longer keeps the socket open for the whole close
   timeout (1 s); the pending read is cancelled before the TLS shutdown.
+- A peer that stops reading no longer grows memory without limit, on either role: the server's
+  queue of answers and reports, the rejects of a request flood and the transport's output buffer
+  were all unbounded (measured: 19 MiB/s with reports enabled, 130 MiB/s with a request flood).
+  New `channel_options::max_output_bytes` (16 MiB) and `write_stall_timeout` (30 s without
+  progress), plain and TLS, in Python on `IsoParameters` and `ServerIsoParameters`: past them the
+  association ends, `errc::output_limit_exceeded` (`OutputLimitExceeded`) or `timed_out`, and the
+  others do not notice.
+- `server::stop()` and `abort()` no longer hang on a peer that does not read: the ABRT gets 1 s.
+
+### Changed
+
+- Reports of an association aborted that way: a URCB loses what was queued and is disabled; a BRCB
+  stops at half the limit, keeps its entries in its buffer and goes back to those not written, so
+  that the next association gets them. `server::slow_peer_aborts()` counts those aborts.
+- `server::update()` fails with `errc::overloaded` (`ServerOverloaded`) with
+  `server_options::max_pending_updates` (8192) changes pending, instead of queueing on the strand
+  shared with the clients without limit. Never blocks, and drops nothing it accepted;
+  `server::pending_updates()` tells how far behind the strand is.
+- `incoming_request::answer()`, `server_association::send_encoded()`: answers encoded by the caller.
+  The server no longer encodes a response twice to check its size.
 
 ### Added
 

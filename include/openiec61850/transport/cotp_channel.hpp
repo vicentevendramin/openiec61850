@@ -33,6 +33,17 @@ struct channel_options {
   bool keep_alive = false;
   // Size of the socket read buffer.
   std::size_t read_buffer_size = 16384;
+  // Output queued for the peer and not yet taken by the socket, plain or TLS, charged as the bytes
+  // plus about 2 KiB per pending send (what a send holds besides its bytes). Beyond it the channel
+  // fails with errc::output_limit_exceeded rather than growing: a peer that stops reading cannot
+  // take more memory than this, whatever it provokes. A send into an empty queue always fits. Zero
+  // disables the limit.
+  std::size_t max_output_bytes = 16 * 1024 * 1024;
+  // Queued output the socket takes none of for this long means a peer that stopped reading: the
+  // channel fails with asio::error::timed_out, within up to twice this time. Any progress restarts
+  // it, so a slow peer is fine. Zero disables it, and then a close that waits for the queued output
+  // (shutdown(), an orderly release) can wait for ever.
+  std::chrono::milliseconds write_stall_timeout{30000};
   // Runs COTP inside TLS (IEC 62351-3): the TLS handshake comes first, right after TCP, and
   // counts against handshake_timeout. Unset is plain RFC 1006.
   std::shared_ptr<tls_context> tls;
@@ -58,7 +69,7 @@ struct channel_factory;
 //
 // Errors: socket errors are passed through (asio::error::eof when the peer closed,
 // connection_reset, timed_out for the configured timeouts, operation_aborted after a local
-// close or a cancelled operation). COTP events map to: refused CR (DR answer, or local
+// close or a cancelled operation, errc::output_limit_exceeded past max_output_bytes). COTP events map to: refused CR (DR answer, or local
 // accept_connection refusal) -> std::errc::connection_refused; ER from the peer ->
 // errc::protocol_violation; a local protocol check -> the cotp error (protocol_violation,
 // malformed_encoding, length_overflow...). Once an error is reported every later send or
@@ -99,7 +110,8 @@ class cotp_channel {
 
   // Queues the TSDU (segmented into DT TPDUs) and completes once it has been written to
   // the socket. Concurrent sends are queued in call order and written back to back, so
-  // any number of them may be outstanding. tsdu must stay valid until completion.
+  // any number of them may be outstanding within max_output_bytes. tsdu must stay valid until
+  // completion.
   // Cancelling a send does not withdraw a TSDU that was already queued.
   [[nodiscard]] asio::awaitable<result<void>> send(byte_view tsdu);
 
@@ -108,8 +120,10 @@ class cotp_channel {
   [[nodiscard]] asio::awaitable<result<byte_buffer>> receive();
 
   // Waits until every queued TSDU has been written, then closes the connection
-  // (class 0 disconnects by closing the network connection, X.224 §6.7.1.4).
-  [[nodiscard]] asio::awaitable<result<void>> shutdown();
+  // (class 0 disconnects by closing the network connection, X.224 §6.7.1.4). With a non-zero
+  // `limit` it closes after that time at the latest (asio::error::timed_out), whatever is left.
+  [[nodiscard]] asio::awaitable<result<void>> shutdown(
+      std::chrono::milliseconds limit = std::chrono::milliseconds::zero());
 
   // Callback forms; handlers run on the strand.
   void async_send(byte_buffer tsdu, std::function<void(result<void>)> handler);

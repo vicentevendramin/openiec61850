@@ -218,9 +218,26 @@ struct server_options {
   // nesting level, services) and decode limits of each association. Its `authorize` hook is the
   // authentication hook: it is called (on the association's strand) for each association within
   // the max_associations limit and may refuse it, e.g. on peer_request().password.
+  //
+  // transport.max_output_bytes bounds the output of each association twice: the answers and
+  // reports queued by the server (charged as their bytes plus 1 KiB each) and what the protocol
+  // layers queue on their own, like the rejects of a request flood; so at most about twice the
+  // limit per association. Past it, or after transport.write_stall_timeout without progress, that
+  // association alone is aborted without an ABRT, which a peer not reading would not get. The
+  // queues of a client that reads slowly drain, so it only suffers if it keeps being outrun.
+  //
+  // Reports of that association: a URCB has no buffer, so what was queued is lost, the URCB is
+  // disabled and its reservation released, as for any lost association. BRCBs stop at half the
+  // limit and keep their entries in their buffer (brcb_buffer_capacity, BufOvfl beyond it), so
+  // they alone never trigger the limit, only the stall timeout; entries queued but not written go
+  // back to the buffer and are sent again when the BRCB is enabled again. A client may see an
+  // entry twice, as when it resumes from an older EntryID.
   association::server_options association;
   // Concurrent associations; further ones are refused. Zero: unlimited.
   std::size_t max_associations = 16;
+  // Changes accepted by update() and not applied yet (the items of a batch count one by one);
+  // beyond it update() fails with errc::overloaded. See update(). Zero: unlimited.
+  std::size_t max_pending_updates = 8192;
   identity ident;
   // Entries kept per BRCB; on overflow the oldest is dropped and the next report sent has
   // BufOvfl = true.
@@ -328,6 +345,14 @@ class server {
   // block attributes, errc::not_running after stop()); the change is then applied on the strand,
   // in call order, and triggers the reports (dchg when the value changed, qchg when a quality
   // changed, dupd always, per the attributes' trigger options).
+  //
+  // Backpressure: update() never blocks and never drops a change it accepted. The strand is shared
+  // with the clients of the server, so an application producing faster than the strand applies
+  // would otherwise delay them for good. When options.max_pending_updates changes are pending it
+  // fails with errc::overloaded instead, applying nothing (a batch is taken or refused whole, and
+  // always fits an empty queue): the caller keeps the state and tries again later, or sends the
+  // latest value only, e.g. pacing itself with pending_updates(). A handler on the strand gets
+  // the same error, as nothing drains while it runs.
   [[nodiscard]] result<void> update(const model::object_reference& ref, mms::data value,
                                     std::optional<model::quality> quality = std::nullopt,
                                     std::optional<model::timestamp> timestamp = std::nullopt);
@@ -353,6 +378,10 @@ class server {
 
   // Any thread.
   [[nodiscard]] std::size_t association_count() const noexcept;
+  // Changes accepted by update() and not applied yet.
+  [[nodiscard]] std::size_t pending_updates() const noexcept;
+  // Associations ended so far because the peer stopped reading (output limit or stall timeout).
+  [[nodiscard]] std::uint64_t slow_peer_aborts() const noexcept;
   [[nodiscard]] const asio::ip::tcp::endpoint& local_endpoint() const noexcept;
   // Immutable: the model structure and the initial values.
   [[nodiscard]] const data_model& model() const noexcept;

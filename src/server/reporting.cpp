@@ -48,13 +48,19 @@ std::optional<std::uint32_t> as_u32(const mms::data& v) {
   return std::nullopt;
 }
 
-std::size_t pdu_size(const std::vector<mms::data>& items) {
+// The report as an Unconfirmed-PDU; empty if it cannot be encoded.
+byte_buffer encode_report(const std::vector<mms::data>& items) {
   std::vector<mms::access_result> results(items.begin(), items.end());
   const mms::information_report ir{
       mms::variable_access_specification::named(mms::object_name::vmd("RPT")), results};
   byte_buffer out;
-  if (!mms::encode_pdu(mms::unconfirmed_pdu{ir}, out)) return std::numeric_limits<std::size_t>::max();
-  return out.size();
+  if (!mms::encode_pdu(mms::unconfirmed_pdu{ir}, out)) out.clear();
+  return out;
+}
+
+std::size_t pdu_size(const std::vector<mms::data>& items) {
+  const auto out = encode_report(items);
+  return out.empty() ? std::numeric_limits<std::size_t>::max() : out.size();
 }
 
 }  // namespace
@@ -436,10 +442,18 @@ void server_state::pump(rcb& r) {
   auto* s = find_session(r.owner);
   if (s == nullptr) return;
   while (r.next_send < r.buffer.size()) {
+    if (s->reports_blocked()) {
+      s->reports_paused = !s->closed;
+      break;
+    }
     const auto& e = r.buffer[r.next_send];
     const bool overflow = r.overflow_next;
     r.overflow_next = false;
     send_report(*s, r, e, overflow);
+    if (s->closed) {  // the entry is still to be delivered
+      r.overflow_next = overflow;
+      break;
+    }
     r.entry = e.id;
     r.time_of_entry = e.time;
     ++r.next_send;
@@ -496,16 +510,14 @@ void server_state::send_report(session& s, rcb& r, const report_entry& e, bool o
     }
     return items;
   };
-  auto send = [&](const std::vector<mms::data>& items) {
-    std::vector<mms::access_result> results(items.begin(), items.end());
-    const mms::information_report ir{
-        mms::variable_access_specification::named(mms::object_name::vmd("RPT")), results};
-    s.push(s.assoc->send_unconfirmed(ir));
+  // The last PDU of a buffered entry stands for the entry.
+  auto send = [&](byte_buffer pdu, bool last) {
+    s.send_unconfirmed(std::move(pdu), last && r.buffered ? &r : nullptr);
   };
 
-  auto whole = build(included_idx, std::nullopt, false);
-  if (s.max_pdu == 0 || pdu_size(whole) <= s.max_pdu) {
-    send(whole);
+  auto whole = encode_report(build(included_idx, std::nullopt, false));
+  if (s.max_pdu == 0 || whole.size() <= s.max_pdu) {
+    send(std::move(whole), true);
     return;
   }
 
@@ -529,9 +541,10 @@ void server_state::send_report(session& s, rcb& r, const report_entry& e, bool o
     used += cost;
   }
   for (std::size_t k = 0; k < segments.size(); ++k) {
-    auto items = build(segments[k], static_cast<std::uint32_t>(k), k + 1 < segments.size());
-    if (pdu_size(items) > s.max_pdu) continue;  // a single member larger than the PDU
-    send(items);
+    const bool more = k + 1 < segments.size();
+    auto pdu = encode_report(build(segments[k], static_cast<std::uint32_t>(k), more));
+    if (pdu.size() > s.max_pdu) continue;  // a single member larger than the PDU
+    send(std::move(pdu), !more);
   }
 }
 
@@ -573,6 +586,25 @@ void server_state::release_session_rcbs(session& s) {
       });
     }
     sync(r);
+  }
+}
+
+void server_state::rewind_unwritten(session& s) {
+  for (const auto& [p, count] : s.unwritten) {
+    auto& r = *p;
+    if (count == 0 || r.owner != s.id) continue;
+    r.next_send -= std::min(count, r.next_send);
+    r.entry = r.next_send > 0 ? r.buffer[r.next_send - 1].id : model::entry_id{};
+    if (r.next_send > 0) r.time_of_entry = r.buffer[r.next_send - 1].time;
+    sync(r);
+  }
+  s.unwritten.clear();
+}
+
+void server_state::resume_reports(session& s) {
+  s.reports_paused = false;
+  for (auto& rp : rcbs) {
+    if (rp->owner == s.id && rp->buffered) pump(*rp);
   }
 }
 

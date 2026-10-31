@@ -119,11 +119,15 @@ class server_association {
   // Sends an Unconfirmed-PDU (e.g. an IEC 61850 report); completes once written.
   [[nodiscard]] asio::awaitable<result<void>> send_unconfirmed(const mms::information_report& report);
   [[nodiscard]] asio::awaitable<result<void>> send_unconfirmed(const mms::unconfirmed_service& service);
+  // The same for an already encoded Unconfirmed-PDU.
+  [[nodiscard]] asio::awaitable<result<void>> send_encoded(byte_buffer pdu);
 
   // A-ABORT, then the transport is closed. Idempotent, any thread.
   void abort() noexcept;
   // Closes the transport at once, without an ABRT (as if the server disappeared). Any thread.
   void close() noexcept;
+  // The same, reporting `reason` as the closing error.
+  void close(std::error_code reason) noexcept;
 
   [[nodiscard]] asio::awaitable<std::error_code> wait_closed();
   [[nodiscard]] association_state state() const noexcept;

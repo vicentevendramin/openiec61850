@@ -196,6 +196,9 @@ class incoming_request {
   // RejectPDU (confirmed-requestPDU) with the given reason (mms::reject_code::confirmed_request).
   [[nodiscard]] asio::awaitable<result<void>> reject(
       std::int64_t reason = mms::reject_code::confirmed_request::other);
+  // For a caller that needs the size of the answer first: an already encoded MMS PDU answering
+  // this request (Confirmed-Response, Confirmed-Error or Reject).
+  [[nodiscard]] asio::awaitable<result<void>> answer(byte_buffer pdu);
 
  private:
   friend class detail::core;

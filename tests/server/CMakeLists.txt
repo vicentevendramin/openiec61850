@@ -8,3 +8,6 @@ target_sources(openiec61850_tests PRIVATE
   test_services_ext.cpp
   test_set_file.cpp
   test_tls.cpp)
+if(UNIX AND NOT APPLE)  # measures the heap with glibc's mallinfo2()
+  target_sources(openiec61850_tests PRIVATE test_backpressure.cpp)
+endif()

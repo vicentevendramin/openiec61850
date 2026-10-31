@@ -38,6 +38,11 @@ namespace {
 
 constexpr auto use_tuple = asio::as_tuple(asio::use_awaitable);
 constexpr std::size_t min_read_buffer_size = 512;
+// What a queued send holds besides its bytes (coroutine frames, timers, handlers), as charged to
+// channel_options::max_output_bytes. Measured: about 2 KiB per send, so that a flood of tiny PDUs
+// costs what the limit says.
+constexpr std::size_t send_overhead = 2048;
+constexpr std::size_t max_transfer_size = 65536;  // of one write to the socket
 #ifdef OPENIEC61850_WITH_TLS
 // How long a release waits for the peer's close_notify.
 constexpr std::chrono::seconds tls_close_timeout{1};
@@ -87,8 +92,11 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
       : strand(std::move(s)),
         socket(std::move(sock)),
         deadline(strand),
+        stall_timer(strand),
         conn(std::move(c)),
-        read_buffer(std::max(o.read_buffer_size, min_read_buffer_size)) {}
+        read_buffer(std::max(o.read_buffer_size, min_read_buffer_size)),
+        max_output(o.max_output_bytes),
+        stall_timeout(o.write_stall_timeout) {}
 
   strand_type strand;
   tcp::socket socket;
@@ -103,6 +111,9 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
   std::optional<tcp::resolver> resolver;
   asio::steady_timer deadline;
   std::uint64_t deadline_phase = 0;
+  asio::steady_timer stall_timer;
+  bool stall_watch = false;
+  std::uint64_t write_progress = 0;  // bumped each time the socket takes more bytes
   cotp::connection conn;
   std::vector<cotp::event> events;
   byte_buffer read_buffer;
@@ -116,6 +127,8 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
   bool writer_active = false;
   bool close_after_flush = false;
   std::vector<send_waiter*> waiters;
+  std::size_t max_output;
+  std::chrono::milliseconds stall_timeout;
 
   std::error_code error;  // terminal
   std::atomic<bool> open{false};
@@ -139,6 +152,24 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
 
   void wake_all() {
     for (auto* w : waiters) w->timer.cancel();
+  }
+
+  // Checked once per period rather than re-armed on every write, which would cost a timer
+  // operation per PDU: a stall is noticed between one and two periods after the last progress, and
+  // an idle channel has no timer pending.
+  void watch_writes() {
+    if (stall_watch || stall_timeout <= std::chrono::milliseconds::zero()) return;
+    stall_watch = true;
+    stall_timer.expires_after(stall_timeout);
+    stall_timer.async_wait([self = shared_from_this(), seen = write_progress](std::error_code ec) {
+      self->stall_watch = false;
+      if (ec || !self->writer_active || !self->socket.is_open()) return;
+      if (self->write_progress == seen) {
+        self->network_error(asio::error::timed_out);
+      } else {
+        self->watch_writes();
+      }
+    });
   }
 
 #ifdef OPENIEC61850_WITH_TLS
@@ -171,19 +202,25 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
   }
 
   awaitable<std::tuple<std::error_code, std::size_t>> write_all(asio::const_buffer data) {
+    // Called before each partial write: asio::transfer_all() that counts the progress.
+    auto progress = [this](const std::error_code& ec, std::size_t) -> std::size_t {
+      ++write_progress;
+      return ec ? 0 : max_transfer_size;
+    };
 #ifdef OPENIEC61850_WITH_TLS
     if (tls) {
       renew_tls_keys(data.size());
-      co_return co_await asio::async_write(*tls, data, use_tuple);
+      co_return co_await asio::async_write(*tls, data, progress, use_tuple);
     }
 #endif
-    co_return co_await asio::async_write(socket, data, use_tuple);
+    co_return co_await asio::async_write(socket, data, progress, use_tuple);
   }
 
   void close_socket() {
     std::error_code ignored;
     if (resolver) resolver->cancel();
     socket.close(ignored);
+    stall_timer.cancel();
     disarm_deadline();
     wake_all();
   }
@@ -193,6 +230,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     if (!error) error = ec;
     open = false;
     conn.close();
+    out.clear();
     close_socket();
   }
 
@@ -215,8 +253,19 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     fail(ec);
   }
 
+  // A TSDU fits an empty queue whatever its size: the limit is on what piles up.
+  [[nodiscard]] bool over_limit(std::size_t more) const noexcept {
+    if (max_output == 0 || (out.empty() && !writer_active)) return false;
+    const auto queued = out.size() + writing.size() + waiters.size() * send_overhead;
+    return queued + more > max_output;
+  }
+
   void enqueue(byte_buffer bytes) {
     if (bytes.empty() || !socket.is_open()) return;
+    if (over_limit(bytes.size())) {
+      fail(errc::output_limit_exceeded);
+      return;
+    }
     enqueued += bytes.size();
     if (out.empty()) {
       out = std::move(bytes);
@@ -228,6 +277,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     }
     if (!writer_active) {
       writer_active = true;
+      watch_writes();
       asio::co_spawn(strand, write_loop(shared_from_this()), asio::detached);
     }
   }
@@ -243,6 +293,7 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
         break;
       }
       self->written = end;
+      ++self->write_progress;
       for (auto* w : self->waiters) {
         if (w->target <= end) w->timer.cancel();
       }
@@ -440,7 +491,9 @@ struct channel_state : std::enable_shared_from_this<channel_state> {
     }
   }
 
-  static awaitable<result<void>> shutdown_op(std::shared_ptr<channel_state> self) {
+  static awaitable<result<void>> shutdown_op(std::shared_ptr<channel_state> self,
+                                             std::chrono::milliseconds limit) {
+    if (!self->error) self->arm_deadline(limit);
     auto r = co_await self->wait_written(self->enqueued);
 #ifdef OPENIEC61850_WITH_TLS
     if (self->tls && !self->error) {
@@ -594,9 +647,9 @@ awaitable<result<byte_buffer>> cotp_channel::receive() {
   return on_strand(state_->strand, channel_state::receive_op(state_));
 }
 
-awaitable<result<void>> cotp_channel::shutdown() {
+awaitable<result<void>> cotp_channel::shutdown(std::chrono::milliseconds limit) {
   if (!state_) return ready<result<void>>(errc::invalid_state);
-  return on_strand(state_->strand, channel_state::shutdown_op(state_));
+  return on_strand(state_->strand, channel_state::shutdown_op(state_, limit));
 }
 
 void cotp_channel::async_send(byte_buffer tsdu, std::function<void(result<void>)> handler) {

@@ -926,6 +926,11 @@ class ServerIsoParameters:
     max_tpkt_size: int | None = None
     local_reference: int | None = None
     read_buffer_size: int | None = None
+    # Output queued per association for a client that does not read: past the limit (bytes, plus
+    # about 1 KiB per queued PDU), or after the timeout without any progress (seconds), that
+    # association alone is aborted. 0 disables them. See ``Server`` for its reports.
+    max_output_bytes: int | None = None
+    write_stall_timeout: float | None = None
     keep_alive: bool | None = None
     no_delay: bool | None = None
     local_detail: int | None = None
@@ -1538,6 +1543,7 @@ class Server:
         password: str | None = None,
         authorize: AuthorizeHook | None = None,
         max_associations: int = 16,
+        max_pending_updates: int = 8192,
         identity: Identity | None = None,
         brcb_buffer_capacity: int = 1024,
         max_data_set_members: int = 128,
@@ -1565,6 +1571,9 @@ class Server:
         accept_connection: Callable[[bytes | None, bytes | None], int | None] | None = None,
     ) -> Server:
         """Listens on ``host:port`` (port 0: ephemeral, see :attr:`local_endpoint`).
+
+        ``max_pending_updates`` bounds the changes accepted by :meth:`update` and not applied yet
+        (0: unlimited); see there.
 
         Hooks (see the module documentation): ``on_write(association, ref, value)`` returns
         None to accept or a :class:`DataAccessError` to refuse a client write to SP, SV, CF, DC,
@@ -1605,6 +1614,7 @@ class Server:
         ident = identity if identity is not None else Identity()
         options = {
             "max_associations": max_associations,
+            "max_pending_updates": int(max_pending_updates),
             "vendor": ident.vendor,
             "model": ident.model,
             "revision": ident.revision,
@@ -1661,6 +1671,17 @@ class Server:
         return int(self._native.association_count)
 
     @property
+    def pending_updates(self) -> int:
+        """Changes accepted by :meth:`update` and not applied yet."""
+        return int(self._native.pending_updates)
+
+    @property
+    def slow_peer_aborts(self) -> int:
+        """Associations ended so far because the client stopped reading (``max_output_bytes`` or
+        ``write_stall_timeout`` of :class:`ServerIsoParameters`)."""
+        return int(self._native.slow_peer_aborts)
+
+    @property
     def local_endpoint(self) -> tuple[str, int]:
         host, port = self._native.local_endpoint
         return (host, port)
@@ -1687,7 +1708,12 @@ class Server:
         change triggers reports per the attributes' trigger options. Raises
         :class:`ObjectNotFound`, :class:`TypeMismatch` (also ``TypeError`` / ``ValueError`` from
         the conversion), :class:`AccessDenied` for control block attributes and
-        :class:`ServerStopped`."""
+        :class:`ServerStopped`.
+
+        A change accepted is never dropped. When the server cannot keep up,
+        ``max_pending_updates`` changes are waiting and this raises :class:`ServerOverloaded`
+        with nothing applied: keep the value and try again later, e.g. pacing the producer with
+        :attr:`pending_updates`."""
         self._native.update(*self._item(ref, value, quality, timestamp))
 
     def update_many(
@@ -1695,7 +1721,8 @@ class Server:
         items: Mapping[Ref, Any] | Iterable[Sequence[Any]],
     ) -> None:
         """Several changes applied in one step (the reports they trigger are generated together).
-        ``items``: a mapping ``{ref: value}`` or ``(ref, value[, quality[, timestamp]])`` tuples."""
+        ``items``: a mapping ``{ref: value}`` or ``(ref, value[, quality[, timestamp]])`` tuples.
+        Taken or refused whole, as in :meth:`update`; each item counts as a pending update."""
         pairs: Iterable[Sequence[Any]] = items.items() if isinstance(items, Mapping) else items
         batch = []
         for it in pairs:

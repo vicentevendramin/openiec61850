@@ -171,7 +171,8 @@ void send_control_report(session& s, const mms::data* error, std::string_view op
   }
   if (vars.empty()) return;
   const mms::information_report ir{mms::variable_access_specification::list(vars), results};
-  s.push(s.assoc->send_unconfirmed(ir));
+  byte_buffer pdu;
+  if (mms::encode_pdu(mms::unconfirmed_pdu{ir}, pdu)) s.send_unconfirmed(std::move(pdu));
 }
 
 void fill_request(const server_state& st, node_id tmpl, const mms::data& value,

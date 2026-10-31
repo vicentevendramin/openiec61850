@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -337,6 +338,125 @@ TEST_CASE("COTP channel closes on a peer protocol error", "[transport]") {
     auto got = co_await server->receive();
     CHECK(got.error() == errc::malformed_encoding);
     CHECK_FALSE(server->is_open());
+  });
+}
+
+namespace {
+
+struct quiet_pair {
+  cotp_channel local;
+  cotp_channel peer;  // never reads
+};
+
+// A plain function: GCC 13 crashes on this braced temporary inside a coroutine.
+quiet_pair make_quiet_pair(cotp_channel local, cotp_channel peer) {
+  return quiet_pair{std::move(local), std::move(peer)};
+}
+
+awaitable<quiet_pair> open_quiet_pair(channel_options options) {
+  auto ex = co_await asio::this_coro::executor;
+  auto listener = cotp_listener::listen(ex, any_loopback);
+  REQUIRE(listener);
+  const auto port = listener->local_endpoint().port();
+  std::optional<result<cotp_channel>> accepted;
+  asio::co_spawn(
+      ex,
+      [](cotp_listener& l, std::optional<result<cotp_channel>>& out) -> awaitable<void> {
+        out.emplace(co_await l.accept());
+      }(*listener, accepted),
+      asio::detached);
+  auto local = co_await cotp_channel::connect(ex, "127.0.0.1", port, std::move(options));
+  REQUIRE(local);
+  auto peer = co_await wait_for(accepted);
+  REQUIRE(peer);
+  co_return make_quiet_pair(std::move(*local), std::move(*peer));
+}
+
+// Sends until one of them fails, none of them waiting for the previous one.
+awaitable<std::error_code> send_until_failure(cotp_channel& c, std::size_t size) {
+  auto failure = std::make_shared<std::error_code>();  // the handlers outlive this coroutine
+  std::size_t sends = 0;
+  while (!*failure && sends < 100000) {
+    c.async_send(pattern(size, 1), [failure](result<void> r) {
+      if (!r) *failure = r.error();
+    });
+    ++sends;
+    co_await yield();
+  }
+  co_return *failure;
+}
+
+}  // namespace
+
+TEST_CASE("COTP channel fails past max_output_bytes", "[transport]") {
+  run([]() -> awaitable<void> {
+    channel_options o;
+    o.max_output_bytes = 256 * 1024;
+    o.write_stall_timeout = 0ms;
+    auto p = co_await open_quiet_pair(o);
+    const auto failure = co_await send_until_failure(p.local, 60000);
+    CHECK(failure == errc::output_limit_exceeded);
+    CHECK_FALSE(p.local.is_open());
+    auto after = co_await p.local.send(pattern(16, 1));
+    REQUIRE_FALSE(after);
+    CHECK(after.error() == errc::output_limit_exceeded);
+  });
+}
+
+TEST_CASE("COTP channel charges tiny TSDUs for what they hold", "[transport]") {
+  run([]() -> awaitable<void> {
+    channel_options o;
+    o.max_output_bytes = 256 * 1024;
+    o.write_stall_timeout = 0ms;
+    auto p = co_await open_quiet_pair(o);
+    // All queued before the first write: their bytes alone are far below the limit.
+    auto failure = std::make_shared<std::error_code>();
+    for (int i = 0; i < 256; ++i) {
+      p.local.async_send(pattern(16, 1), [failure](result<void> r) {
+        if (!r) *failure = r.error();
+      });
+    }
+    while (!*failure) co_await yield();
+    CHECK(*failure == errc::output_limit_exceeded);
+  });
+}
+
+TEST_CASE("COTP channel takes a TSDU above the limit into an empty queue", "[transport]") {
+  run([]() -> awaitable<void> {
+    channel_options o;
+    o.max_output_bytes = 1024;
+    auto p = co_await open_quiet_pair(o);
+    const auto sent = co_await p.local.send(pattern(8192, 1));
+    CHECK(sent);
+    auto got = co_await p.peer.receive();
+    REQUIRE(got);
+    CHECK(got->size() == 8192);
+  });
+}
+
+TEST_CASE("COTP channel fails on a write stall", "[transport]") {
+  run([]() -> awaitable<void> {
+    channel_options o;
+    o.max_output_bytes = 0;
+    o.write_stall_timeout = 100ms;
+    auto p = co_await open_quiet_pair(o);
+    const auto failure = co_await send_until_failure(p.local, 60000);
+    CHECK(failure == asio::error::timed_out);
+    CHECK_FALSE(p.local.is_open());
+  });
+}
+
+TEST_CASE("COTP channel shutdown gives up at its limit", "[transport]") {
+  run([]() -> awaitable<void> {
+    channel_options o;
+    o.max_output_bytes = 0;
+    o.write_stall_timeout = 0ms;
+    auto p = co_await open_quiet_pair(o);
+    for (int i = 0; i < 400; ++i) p.local.async_send(pattern(60000, 1), [](result<void>) {});
+    co_await yield();
+    const auto closed = co_await p.local.shutdown(100ms);
+    REQUIRE_FALSE(closed);
+    CHECK(closed.error() == asio::error::timed_out);
   });
 }
 
