@@ -44,6 +44,16 @@ test:asan-ubsan:
     - cmake --build --preset asan
     - ctest --preset asan
 
+test:tsan:
+  stage: test
+  variables:
+    CXX: clang++
+    TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+  script:
+    - cmake --preset tsan
+    - cmake --build --preset tsan
+    - ctest --preset tsan
+
 test:python:
   stage: test
   variables:

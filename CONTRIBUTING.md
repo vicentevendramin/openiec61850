@@ -16,8 +16,13 @@ Requirements: a C++20 compiler (GCC 13+, Clang 17+ or MSVC 19.38+), CMake 3.25+,
 ```bash
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 cmake --preset asan && cmake --build --preset asan && ctest --preset asan
+cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
 pip install -e ".[test]" && pytest
 ```
+
+ThreadSanitizer suppressions live in `tests/tsan.supp` and are for verified third-party false
+positives only. Outside `ctest --preset tsan`, pass them with
+`TSAN_OPTIONS=suppressions=tests/tsan.supp`.
 
 ## Layout
 

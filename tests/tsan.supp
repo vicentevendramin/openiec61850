@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions, loaded by the tsan test preset. Only verified third-party false
+# positives belong here, never a race in this repository.
+
+# Asio's any_io_executor holds a strand through a reference-counted shared_target_executor.
+# asio::detail::ref_count_down (detail/atomic_count.hpp) decrements with memory_order_release and,
+# on reaching zero, runs std::atomic_thread_fence(memory_order_acquire) before the delete. That is
+# the correct protocol, but TSan does not model atomic_thread_fence: it never sees the acquire, so
+# it reports the delete as racing with the other thread's decrement.
+race:asio::execution::detail::shared_target_executor::~shared_target_executor
