@@ -50,9 +50,11 @@ Hierarchy::
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import errno as _errno
-from typing import Any
+from collections.abc import Awaitable
+from typing import Any, TypeVar
 
 __all__ = [
     "Iec61850Error",
@@ -507,6 +509,18 @@ _BY_CATEGORY: dict[str, dict[int, type[Iec61850Error]]] = {
     "openiec61850.association": _ASSOCIATION,
     "openiec61850": _CORE,
 }
+
+
+_T = TypeVar("_T")
+
+
+async def wait_for(awaitable: Awaitable[_T], timeout: float | None) -> _T:
+    """``asyncio.wait_for`` raising the builtin ``TimeoutError``: on Python 3.10
+    ``asyncio.TimeoutError`` is a different class."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout)
+    except asyncio.TimeoutError as e:
+        raise TimeoutError() from e
 
 
 def error_class_for(category: str, value: int) -> type[Iec61850Error]:

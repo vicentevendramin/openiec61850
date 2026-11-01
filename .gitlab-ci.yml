@@ -66,7 +66,9 @@ test:python:
     # Fail instead of skipping when the fake-server extension is missing.
     OPENIEC61850_REQUIRE_TESTING: "1"
   script:
-    - python3 -m venv .venv
+    # The oldest supported Python: the wheels job covers the newer ones.
+    - python3 -m venv .uv && .uv/bin/pip install -q uv
+    - .uv/bin/uv venv -q --seed --python 3.10 .venv
     - .venv/bin/pip install -q ".[test]" -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON
     - .venv/bin/pytest
 

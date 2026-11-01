@@ -348,7 +348,7 @@ async def test_loopback_filter_injects_loss():
             pub.start()
             first = await kept.get(timeout=2)
             assert first.kind is g.GooseEventKind.MESSAGE
-            with pytest.raises(asyncio.TimeoutError):
+            with pytest.raises(TimeoutError):
                 await lost.get(timeout=0.1)
             pub.stop()
         net.set_filter(None)

@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar, Union
 
 from openiec61850 import _core
+from openiec61850._errors import wait_for
 from openiec61850._types import Timestamp, Validity
 from openiec61850._values import TypeSpec, decode, encode, spec_from_tagged
 
@@ -464,12 +465,12 @@ class _Pump(Generic[T]):
     async def get(self, timeout: float | None = None) -> T:
         """The next item; ``TimeoutError`` after ``timeout`` seconds (nothing is lost),
         ``StopAsyncIteration`` once closed."""
-        return await asyncio.wait_for(self.__anext__(), timeout)
+        return await wait_for(self.__anext__(), timeout)
 
     async def get_batch(self, max_items: int | None = None, timeout: float | None = None) -> list[T]:
         """Everything delivered so far (at least one item, at most ``max_items``); an empty list
         once the stream has ended."""
-        if not await asyncio.wait_for(self._wait(), timeout):
+        if not await wait_for(self._wait(), timeout):
             return []
         n = len(self._items) if max_items is None else min(max_items, len(self._items))
         return [self._items.popleft() for _ in range(n)]

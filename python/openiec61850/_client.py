@@ -14,7 +14,7 @@ from typing import IO, Any, Generic, TypeVar, Union
 
 from openiec61850 import _core
 from openiec61850._control import Control, Originator, _options
-from openiec61850._errors import ConnectionClosed, Iec61850Error, InvalidReference
+from openiec61850._errors import ConnectionClosed, Iec61850Error, InvalidReference, wait_for
 from openiec61850._types import (
     FC,
     BasicType,
@@ -697,7 +697,7 @@ class _Stream(Generic[T]):
 
     async def get(self, timeout: float | None = None) -> T:
         """The next item (``StopAsyncIteration`` once the stream has ended)."""
-        return await asyncio.wait_for(self.__anext__(), timeout)
+        return await wait_for(self.__anext__(), timeout)
 
 
 class ReportStream(_Stream[Report]):

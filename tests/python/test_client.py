@@ -228,7 +228,7 @@ async def test_timeout_and_cancellation(server):
         with pytest.raises(asyncio.CancelledError):
             await task
         # asyncio.wait_for cancels the native request too.
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await asyncio.wait_for(c.read("IED1LD0/MMXU1.TotW.mag.f[MX]"), 0.05)
         server.hold_requests(False)
         # The cancelled requests freed their slots; the association keeps working.
