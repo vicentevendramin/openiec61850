@@ -1,12 +1,12 @@
-# Núcleo em C++20 com bindings nanobind
+# C++20 core with nanobind bindings
 
-O núcleo é escrito em C++20 e exposto ao Python com nanobind, que tem menos overhead por chamada e binários menores que o pybind11.
+The core is written in C++20 and exposed to Python with nanobind, which has less per-call overhead and smaller binaries than pybind11.
 
-## Opções consideradas
+## Considered options
 
-- **Rust + PyO3**: segurança de memória no parser de rede e empacotamento mais simples. Foi preterido pela familiaridade da equipe com C++ e pelo ecossistema de automação, que é majoritariamente C/C++.
-- **Go**: rejeitado como extensão Python. Teríamos dois runtimes no mesmo processo (scheduler Go + GIL), só um runtime Go por processo e callbacks Go→Python caros e cheios de restrições de cgo.
+- **Rust + PyO3**: memory safety in the network parser and simpler packaging. It lost to the team's familiarity with C++ and to the automation ecosystem, which is mostly C/C++.
+- **Go**: rejected as a Python extension. We would have two runtimes in one process (Go scheduler + GIL), only one Go runtime per process, and expensive Go-to-Python callbacks full of cgo restrictions.
 
-## Consequências
+## Consequences
 
-Como a segurança de memória não vem do compilador, o decodificador BER/MMS precisa de fuzzing contínuo e de sanitizers (ASan/UBSan) no CI desde o primeiro dia.
+Since memory safety does not come from the compiler, the BER/MMS decoder needs continuous fuzzing and sanitizers (ASan/UBSan) in CI from day one.

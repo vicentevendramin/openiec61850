@@ -1,8 +1,8 @@
-# Implementação clean-room sob Apache-2.0
+# Clean-room implementation under Apache-2.0
 
-A libiec61850 (MZ Automation) é GPLv3 ou comercial. A openiec61850 é implementada só a partir do texto da norma IEC 61850 (e das normas ISO/MMS referenciadas), sem ler nem portar código da libiec61850, e é licenciada como Apache-2.0. Assim ela pode ser usada em produtos fechados, que é o principal diferencial frente à libiec61850.
+libiec61850 (MZ Automation) is GPLv3 or commercial. openiec61850 is implemented only from the text of the IEC 61850 standard (and the ISO/MMS standards it references), without reading or porting libiec61850 code, and is licensed under Apache-2.0. It can therefore be used in closed products, which is its main difference from libiec61850.
 
-## Consequências
+## Consequences
 
-- Contribuidores não podem copiar trechos nem "traduzir" funções da libiec61850.
-- Rodar binários da libiec61850 como par de teste de interoperabilidade e nos benchmarks é permitido, já que é execução, não derivação de código.
+- Contributors cannot copy excerpts from libiec61850 or "translate" its functions.
+- Running libiec61850 binaries as an interoperability test peer and in benchmarks is allowed, since that is execution, not derivation of code.

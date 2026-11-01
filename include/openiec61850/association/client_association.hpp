@@ -65,7 +65,7 @@ namespace detail {
 struct client_state;
 }
 
-// The initiator (Cliente) side of an MMS association over the ISO stack of IEC 61850-8-1:
+// The initiator (Client) side of an MMS association over the ISO stack of IEC 61850-8-1:
 // TCP/RFC 1006 + COTP class 0 + session kernel + presentation kernel + ACSE + MMS.
 //
 // Confirmed requests may be issued concurrently from any number of coroutines (ADR 0004). Each

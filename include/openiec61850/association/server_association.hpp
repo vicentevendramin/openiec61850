@@ -86,7 +86,7 @@ namespace detail {
 struct server_state;
 }
 
-// The responder (Servidor) side of an MMS association. Threading as client_association.
+// The responder (Server) side of an MMS association. Threading as client_association.
 class server_association {
  public:
   using executor_type = transport::cotp_channel::executor_type;

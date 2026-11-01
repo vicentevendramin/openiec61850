@@ -6,7 +6,7 @@ interop tests, and the command-line tools used for interop debugging.
 
 ## Benchmarks (`benchmarks/`)
 
-The suite is the start of the *Benchmark de referência* (GLOSSARY): the official measure of
+The suite is the start of the *Reference benchmark* (GLOSSARY): the official measure of
 "fast". It uses Google Benchmark, which comes from the `benchmarks` vcpkg feature. It builds only
 with `OPENIEC61850_BUILD_BENCHMARKS=ON`, so the default, `release`, `asan` and `fuzz` builds never
 see it.
@@ -64,7 +64,7 @@ Guidelines:
 - CI (`analysis:bench-smoke`) runs only a short smoke run and keeps `bench-results/smoke.json` as an
   artifact. Shared runners are too noisy to catch regressions.
 
-### Benchmark de referência (`benchmarks/reference/`)
+### Reference benchmark (`benchmarks/reference/`)
 
 `run.sh` compares openiec61850 with libiec61850 on one machine, without Docker or sudo. It downloads
 and builds libiec61850, builds our server and a load generator (both Release, with the same stated

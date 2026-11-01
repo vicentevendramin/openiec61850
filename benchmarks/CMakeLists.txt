@@ -1,4 +1,4 @@
-# Google Benchmark suite (GLOSSARY "Benchmark de referência"). Built only with
+# Google Benchmark suite (GLOSSARY "Reference benchmark"). Built only with
 # OPENIEC61850_BUILD_BENCHMARKS=ON (the `bench` preset); never part of the default build.
 find_package(benchmark CONFIG REQUIRED)
 

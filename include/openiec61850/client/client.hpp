@@ -29,7 +29,7 @@ namespace detail {
 struct client_state;
 }
 
-// The IEC 61850 ACSI Cliente over MMS (IEC 61850-7-2 services mapped per IEC 61850-8-1).
+// The IEC 61850 ACSI Client over MMS (IEC 61850-7-2 services mapped per IEC 61850-8-1).
 //
 // API shape (ADR 0002, binding parity): every argument is taken by value and every result owns
 // its data, so an operation may be started from any thread and its result handed to another

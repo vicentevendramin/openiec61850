@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark de referência (GLOSSARY, ADR 0008): openiec61850 against libiec61850 on this machine,
+# Reference benchmark (GLOSSARY, ADR 0008): openiec61850 against libiec61850 on this machine,
 # over TCP loopback, without Docker or sudo. Method and limits: docs/guides/contributing.md.
 #
 # Clean-room rule (ADR 0001): libiec61850 is only downloaded, built by its own build system and

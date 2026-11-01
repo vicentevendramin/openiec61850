@@ -1,4 +1,4 @@
-# Benchmark de referência: provisional results
+# Reference benchmark: provisional results
 
 **These are not reference numbers.** The host was shared with other CPU-heavy jobs during the run
 (load average about 8, up to 19 foreign cores), and 72 of 203 samples are flagged noisy. Rerun on a

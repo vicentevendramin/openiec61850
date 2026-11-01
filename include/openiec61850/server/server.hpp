@@ -31,7 +31,7 @@
 #include "openiec61850/server/files.hpp"
 #include "openiec61850/server/model.hpp"
 
-// The IEC 61850 ACSI Servidor over MMS (IEC 61850-7-2 services mapped per IEC 61850-8-1).
+// The IEC 61850 ACSI Server over MMS (IEC 61850-7-2 services mapped per IEC 61850-8-1).
 //
 // Services: Identify; GetNameList (domains, named variables, named variable lists, with
 // continuation); Read / Write of any variable (an LN, an FC of an LN, a DO, a DA or an RCB, array

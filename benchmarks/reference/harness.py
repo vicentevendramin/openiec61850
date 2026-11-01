@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark de referência harness, started by run.sh. Standard library only.
+"""Reference benchmark harness, started by run.sh. Standard library only.
 
 Every round restarts both servers, then runs every cell against both, in turns, with the order
 swapped on odd rounds so that neither gets the quieter half of a round. All samples are kept:

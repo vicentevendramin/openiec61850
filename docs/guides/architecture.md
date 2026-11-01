@@ -10,13 +10,13 @@ own public headers (`include/openiec61850/<component>/`), sources, tests and fuz
             Python asyncio API (python/openiec61850, nanobind)   ── binding parity, ADR 0002
                                    │
    ┌───────────────────────────────┴───────────────────────────────┐
-   │ client/      ACSI Cliente: directory, data access, data sets, │ IEC 61850-7-2 / 8-1
-   │ server/      reporting (RCBs), control; ACSI Servidor         │
+   │ client/      ACSI Client: directory, data access, data sets,  │ IEC 61850-7-2 / 8-1
+   │ server/      reporting (RCBs), control; ACSI Server           │
    ├───────────────────────────────────────────────────────────────┤
    │ model/  scl/ object references, FCs, MMS name mapping,        │ IEC 61850-7-x / -6
    │              basic types, quality, timestamps; SCL parser     │
    ├───────────────────────────────────────────────────────────────┤
-   │ association/ client_association / server_association:        │ the "Associação"
+   │ association/ client_association / server_association:        │ the "Association"
    │              connect, Initiate negotiation, request slots,    │
    │              invoke IDs, release/abort                        │
    ├───────────────────────────────────────────────────────────────┤

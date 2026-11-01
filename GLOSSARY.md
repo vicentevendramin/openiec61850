@@ -1,97 +1,97 @@
 # openiec61850
 
-Biblioteca clean-room da norma IEC 61850 com núcleo nativo e API Python de primeira classe.
+Clean-room library of the IEC 61850 standard with a native core and a first-class Python API.
 
-## Linguagem
+## Language
 
-### Projeto
+### Project
 
-**Paridade de binding**:
-Garantia de que toda funcionalidade pública do núcleo nativo existe também na API Python, sem nada exclusivo do nativo.
-_Evite_: "100% de compatibilidade", compatibilidade pybind
+**Binding parity**:
+The guarantee that every public feature of the native core also exists in the Python API, with nothing exclusive to the native side.
+_Avoid_: "100% compatibility", pybind compatibility
 
-**Camada de compatibilidade pyiec61850**:
-Pacote separado e opcional que imita a API do binding SWIG da libiec61850 para migrar código legado; não faz parte do núcleo.
-_Evite_: modo compatível, drop-in
+**pyiec61850 compatibility layer**:
+A separate, optional package that imitates the API of libiec61850's SWIG binding to migrate legacy code; it is not part of the core.
+_Avoid_: compatible mode, drop-in
 
-**Benchmark de referência**:
-Medição comparativa entre openiec61850 e libiec61850 na mesma máquina, que serve como critério oficial de "performático".
-_Evite_: teste de performance (genérico)
+**Reference benchmark**:
+A comparative measurement between openiec61850 and libiec61850 on the same machine, which serves as the official criterion for "high performance".
+_Avoid_: performance test (generic)
 
-**Release alfa**:
-Versão pública 0.x publicada depois de cumprir os critérios de release, com API instável e sem declaração de conformidade com a norma.
-_Evite_: pronta, estável, certificada
+**Alpha release**:
+A public 0.x version published after meeting the release criteria, with an unstable API and no claim of conformance to the standard.
+_Avoid_: ready, stable, certified
 
-### Papéis de comunicação
+### Communication roles
 
-**Cliente**:
-Papel ACSI que estabelece uma associação com um Servidor via MMS sobre a pilha ISO/TCP e invoca serviços nele.
-_Evite_: master, assinante
+**Client**:
+ACSI role that establishes an association with a Server through MMS over the ISO/TCP stack and invokes services on it.
+_Avoid_: master, subscriber
 
-**Servidor**:
-Papel ACSI exercido por um IED que expõe seu modelo de dados e atende a serviços de Clientes via MMS.
-_Evite_: slave, publicador
+**Server**:
+ACSI role performed by an IED that exposes its data model and serves the requests of Clients through MMS.
+_Avoid_: slave, publisher
 
-**Assinante**:
-Papel que recebe mensagens multicast de camada 2 (GOOSE ou SV) de um Publicador, sem associação.
-_Evite_: cliente GOOSE, subscriber de MMS
+**Subscriber**:
+Role that receives layer 2 multicast messages (GOOSE or SV) from a Publisher, without an association.
+_Avoid_: GOOSE client, MMS subscriber
 
-**Publicador**:
-Papel que emite mensagens multicast GOOSE ou SV.
-_Evite_: servidor GOOSE
+**Publisher**:
+Role that sends GOOSE or SV multicast messages.
+_Avoid_: GOOSE server
 
-**Associação**:
-Sessão lógica estabelecida entre um Cliente e um Servidor, dentro da qual os serviços são invocados.
-_Evite_: conexão (quando se fala do nível ACSI)
+**Association**:
+Logical session established between a Client and a Server, within which services are invoked.
+_Avoid_: connection (when speaking at the ACSI level)
 
-**Camada ACSI**:
-Nível da API que fala em termos da IEC 61850 (Associação, LD/LN/DO/DA, RCB, controle, setting groups etc.).
-_Evite_: API de alto nível
+**ACSI layer**:
+API level that speaks in IEC 61850 terms (Association, LD/LN/DO/DA, RCB, control, setting groups and so on).
+_Avoid_: high-level API
 
-**Camada MMS genérica**:
-Nível da API que fala em termos da ISO 9506 (domínios, variáveis nomeadas, GetNameList, Read/Write), sem semântica IEC 61850; é pública para diagnóstico e para Servidores não conformes.
-_Evite_: API de baixo nível, raw MMS
+**Generic MMS layer**:
+API level that speaks in ISO 9506 terms (domains, named variables, GetNameList, Read/Write), without IEC 61850 semantics; it is public for diagnostics and for non-conforming Servers.
+_Avoid_: low-level API, raw MMS
 
-### Modelo de dados no Cliente
+### Data model in the Client
 
-**Valor MMS**:
-Representação genérica e sem tipo de modelo de um dado trafegado em MMS (estrutura, array, inteiro, float, bit-string, UtcTime etc.).
-_Evite_: MmsValue (nome da libiec61850)
+**MMS value**:
+Generic representation, without model type, of a data item carried over MMS (structure, array, integer, float, bit-string, UtcTime and so on).
+_Avoid_: MmsValue (the libiec61850 name)
 
-**Modelo descoberto**:
-Árvore navegável do modelo de dados de um Servidor (LD/LN/DO/DA), construída em tempo de execução por meio dos serviços de diretório e de definição.
-_Evite_: modelo dinâmico, cache
+**Discovered model**:
+Navigable tree of a Server's data model (LD/LN/DO/DA), built at run time through the directory and definition services.
+_Avoid_: dynamic model, cache
 
-**Modelo SCL**:
-Modelo de dados de um Servidor obtido offline de um arquivo SCL (ICD/CID/SCD), em vez da descoberta online.
-_Evite_: modelo estático
+**SCL model**:
+A Server's data model obtained offline from an SCL file (ICD/CID/SCD), instead of online discovery.
+_Avoid_: static model
 
 **Quality**:
-Atributo de qualidade associado a um dado (validade, fonte, teste, operador bloqueado etc.), conforme a IEC 61850-7-3.
-_Evite_: status, flags
+Quality attribute associated with a data item (validity, source, test, operator blocked and so on), per IEC 61850-7-3.
+_Avoid_: status, flags
 
 **Timestamp**:
-Instante UtcTime da IEC 61850 com fração de segundo e qualidade de tempo (precisão, leap second, sincronismo).
-_Evite_: datetime, hora
+IEC 61850 UtcTime instant with a fraction of a second and time quality (accuracy, leap second, synchronisation).
+_Avoid_: datetime, time
 
 ### Reporting
 
 **RCB**:
-Bloco de controle de report no Servidor que define o que é reportado ao Cliente e como; pode ser bufferizado (BRCB) ou não bufferizado (URCB).
-_Evite_: subscription, assinatura de report
+Report control block in the Server that defines what is reported to the Client and how; it can be buffered (BRCB) or unbuffered (URCB).
+_Avoid_: subscription, report subscription
 
 **Report**:
-Mensagem não solicitada que o Servidor envia ao Cliente quando um RCB habilitado é disparado.
-_Evite_: evento, notificação
+Unsolicited message that the Server sends to the Client when an enabled RCB is triggered.
+_Avoid_: event, notification
 
 **EntryID**:
-Identificador de uma entrada no buffer de um BRCB, usado para retomar o fluxo de reports sem perda após uma interrupção.
-_Evite_: sequence number (SqNum é outra coisa)
+Identifier of an entry in a BRCB's buffer, used to resume the flow of reports without loss after an interruption.
+_Avoid_: sequence number (SqNum is something else)
 
-**Restauração de associação**:
-Recuperação automática, e opcional, de uma Associação perdida: reconexão e reabilitação dos RCBs, com retomada dos BRCBs a partir do último EntryID recebido.
-_Evite_: auto-reconnect (que sugere só reconexão TCP)
+**Association recovery**:
+Automatic and optional recovery of a lost Association: reconnection and re-enabling of the RCBs, resuming BRCBs from the last EntryID received.
+_Avoid_: auto-reconnect (which suggests only a TCP reconnection)
 
-**Edição do Servidor**:
-Edição da IEC 61850 (Ed.1, Ed.2 ou Ed.2.1) que o Servidor implementa e que altera a semântica de alguns serviços e blocos de controle.
-_Evite_: versão
+**Server edition**:
+Edition of IEC 61850 (Ed.1, Ed.2 or Ed.2.1) that the Server implements, which changes the semantics of some services and control blocks.
+_Avoid_: version

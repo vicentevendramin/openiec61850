@@ -35,7 +35,7 @@
 
 namespace openiec61850::model {
 
-// Edition of IEC 61850 implemented by a server (see GLOSSARY "Edição do Servidor").
+// Edition of IEC 61850 implemented by a server (see GLOSSARY "Server edition").
 enum class edition : std::uint8_t { ed1 = 1, ed2 = 2, ed2_1 = 3 };
 
 // Size limits that depend on the edition.

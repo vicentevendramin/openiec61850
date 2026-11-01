@@ -1,4 +1,4 @@
-// Load generator of the Benchmark de referência: reads one object through the openiec61850 client
+// Load generator of the Reference benchmark: reads one object through the openiec61850 client
 // over loopback and prints a single JSON object. It does not know which server it talks to, so the
 // same binary and the same settings measure both peers.
 //

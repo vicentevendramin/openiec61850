@@ -29,7 +29,7 @@ namespace openiec61850::client {
 // ---------------------------------------------------------------------------------------------
 // Connection
 
-// Association recovery (GLOSSARY "Restauração de associação"). When the association is lost (not
+// Association recovery (GLOSSARY "Association recovery"). When the association is lost (not
 // released or aborted locally), the client reconnects with the same parameters, re-enables the
 // RCBs it had enabled with the same settings and, for BRCBs, writes the last EntryID received
 // before RptEna so the stream resumes after it without loss. Requests pending at the time of the
@@ -49,7 +49,7 @@ struct recovery_options {
 struct client_options {
   // Host, port, ISO selectors, AP titles, password, Initiate proposal and timeouts.
   association::association_params association;
-  // Edition of the server (GLOSSARY "Edição do Servidor"): name length limits used when mapping
+  // Edition of the server (GLOSSARY "Server edition"): name length limits used when mapping
   // and parsing references. Auto-detection is not implemented.
   model::edition edition = model::edition::ed2;
   // Strict [prefix]LNClass[inst] LN names when parsing references received from the server.

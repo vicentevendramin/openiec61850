@@ -1,4 +1,4 @@
-# Benchmark de referência (GLOSSARY): standalone Release build of openiec61850-server and of the
+# Reference benchmark (GLOSSARY): standalone Release build of openiec61850-server and of the
 # load generator, so the default build is not touched. Driven by run.sh.
 cmake_minimum_required(VERSION 3.25)
 

@@ -108,7 +108,7 @@ package:wheels:
   artifacts:
     paths: [wheelhouse/]
 
-# Google Benchmark suite (benchmarks/, GLOSSARY "Benchmark de referência"). Smoke run on every
+# Google Benchmark suite (benchmarks/, GLOSSARY "Reference benchmark"). Smoke run on every
 # pipeline (short min time: catches crashes and fixture errors, not regressions); the JSON is kept
 # as an artifact. Reference numbers are recorded on a quiet machine, see docs/guides/contributing.md.
 analysis:bench-smoke:
