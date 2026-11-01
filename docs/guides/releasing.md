@@ -147,7 +147,7 @@ the version it cannot be replaced: fix forward with X.Y.Z+1.
 ### One-time setup
 
 - **GitLab push mirror** (Settings > Repository > Mirroring repositories): push to
-  `https://github.com/<owner>/openiec61850.git` with a fine-grained GitHub token limited to that
+  `https://github.com/vicentevendramin/openiec61850.git` with a fine-grained GitHub token limited to that
   repository (contents: read/write, workflows: read/write), stored only in GitLab. Mirror all
   branches and tags; "keep divergent refs" off.
 - **GitHub**: protect `main` and `v*` tags so that only the mirror token can push; create the
@@ -178,7 +178,7 @@ GitHub goes through this flow:
    pipeline runs there, interop included, on code that has already been reviewed.
 4. **Merge on GitLab** keeping the contributor as the commit author (rebase or fast-forward; no
    squash that rewrites authorship, or add a `Co-authored-by:` trailer if squashing). Add
-   `Closes <owner>/openiec61850#<N>` to the merge commit or the last commit message.
+   `Closes vicentevendramin/openiec61850#<N>` to the merge commit or the last commit message.
 5. **Mirror back.** The push mirror updates GitHub `main`. If the PR commits landed unchanged,
    GitHub marks the PR as merged; otherwise close it with a comment linking the commit.
 

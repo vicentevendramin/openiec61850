@@ -1,7 +1,7 @@
 # Overlay port that builds the checkout this file lives in:
 #   vcpkg install openiec61850 --overlay-ports=<repo>/packaging/vcpkg
 # A port for the vcpkg registry would fetch a release tag instead:
-#   vcpkg_from_github(OUT_SOURCE_PATH SOURCE_PATH REPO <owner>/openiec61850 REF "v${VERSION}"
+#   vcpkg_from_github(OUT_SOURCE_PATH SOURCE_PATH REPO vicentevendramin/openiec61850 REF "v${VERSION}"
 #                     SHA512 <sha512 of the tag archive>)
 get_filename_component(SOURCE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 

@@ -25,6 +25,11 @@ classifiers = [
   "Topic :: System :: Networking",
 ]
 
+[project.urls]
+Homepage = "https://github.com/vicentevendramin/openiec61850"
+Issues = "https://github.com/vicentevendramin/openiec61850/issues"
+Changelog = "https://github.com/vicentevendramin/openiec61850/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.24", "cryptography>=42"]
 
