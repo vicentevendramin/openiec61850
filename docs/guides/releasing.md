@@ -135,8 +135,8 @@ of the tree:
    (Linux wheels, homelab runner with Docker) and `release:gitlab` (GitLab release linking both
    artifacts). These are the reference artifacts; nothing is uploaded to PyPI from GitLab.
 4. The push mirror sends the tag to GitHub, which runs `.github/workflows/release.yml`: sdist
-   (version check again), wheels for Linux x86_64/aarch64, macOS arm64 and Windows AMD64, then
-   the `pypi` job (waits for the `pypi` environment approval) publishes with trusted publishing,
+   (version check again), wheels for Linux x86_64/aarch64, macOS arm64 and Windows AMD64 (only
+   Linux blocks a release, ADR 0008), then the `pypi` job (waits for the `pypi` environment approval) publishes with trusted publishing,
    and `github-release` creates the GitHub release with the CHANGELOG section and the files.
 5. Verify: `pip install openiec61850==X.Y.Z` in a clean venv, `python -c "import openiec61850;
    print(openiec61850.__version__)"`.

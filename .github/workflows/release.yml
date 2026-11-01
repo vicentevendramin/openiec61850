@@ -34,12 +34,16 @@ jobs:
   wheels:
     name: wheels (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # ADR 0008: Linux blocks a release, macOS and Windows do not.
+    continue-on-error: ${{ matrix.optional }}
     strategy:
       fail-fast: false
       matrix:
-        # Linux x86_64 is the only platform validated locally; aarch64, macOS arm64 and Windows
-        # AMD64 use the same pyproject.toml configuration but have not been run yet.
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14, windows-2022]
+        include:
+          - {os: ubuntu-24.04, optional: false}
+          - {os: ubuntu-24.04-arm, optional: false}
+          - {os: macos-15, optional: true}
+          - {os: windows-2022, optional: true}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
