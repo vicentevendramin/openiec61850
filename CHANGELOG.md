@@ -9,6 +9,8 @@ release may break the API. The release process is in
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-01
+
 ### Fixed
 
 - TLS: an abort with traffic in flight no longer keeps the socket open for the whole close
