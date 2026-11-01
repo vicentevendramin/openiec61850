@@ -65,7 +65,6 @@ bool run_until(asio::io_context& ctx, Pred done, std::chrono::milliseconds limit
 // Receives frames on `l` forever into `out` (with their arrival time).
 struct capture {
   std::vector<openiec61850::byte_buffer> frames;
-  std::vector<std::chrono::steady_clock::time_point> times;
 };
 
 inline asio::awaitable<void> capture_loop(std::shared_ptr<goose::link> l,
@@ -75,7 +74,6 @@ inline asio::awaitable<void> capture_loop(std::shared_ptr<goose::link> l,
     auto n = co_await l->receive(buf);
     if (!n) co_return;
     out->frames.emplace_back(buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
-    out->times.push_back(std::chrono::steady_clock::now());
   }
 }
 

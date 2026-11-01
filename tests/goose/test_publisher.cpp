@@ -47,6 +47,13 @@ TEST_CASE("Publisher sends events and retransmissions on a loopback link", "[goo
   auto tx = net->attach(ctx.get_executor(), goose_test::mac_a);
   auto rx = net->attach(ctx.get_executor(), goose_test::mac_b);
   auto cap = goose_test::start_capture(ctx, rx);
+  // Taken when sending: on a loaded machine a frame can wait before the capture sees it, which
+  // would shorten the gap to the next one.
+  std::vector<std::chrono::steady_clock::time_point> sent;
+  net->set_filter([&sent](openiec61850::byte_view, const goose::mac_address& to) {
+    if (to == goose_test::mac_b) sent.push_back(std::chrono::steady_clock::now());
+    return true;
+  });
 
   goose::publisher_config c;
   c.gocb_ref = "IED1LD0/LLN0$GO$gcb01";
@@ -75,8 +82,9 @@ TEST_CASE("Publisher sends events and retransmissions on a loopback link", "[goo
     const auto next = goose::retransmission_interval(expected_sq + 1, 4ms, 32ms);
     CHECK(m->pdu.time_allowed_to_live == 2 * next.count());
     if (i > 0) {
-      // Never earlier than scheduled (loose upper bound for loaded CI machines).
-      const auto gap = cap->times[i] - cap->times[i - 1];
+      // Never earlier than scheduled.
+      REQUIRE(i < sent.size());
+      const auto gap = sent[i] - sent[i - 1];
       const auto planned = goose::retransmission_interval(expected_sq, 4ms, 32ms);
       CHECK(gap >= planned - 1ms);
     }
@@ -85,7 +93,6 @@ TEST_CASE("Publisher sends events and retransmissions on a loopback link", "[goo
 
   // A new state.
   cap->frames.clear();
-  cap->times.clear();
   const auto when = model::timestamp::from_time_point(
       std::chrono::sys_seconds{std::chrono::seconds{1'700'000'000}});
   REQUIRE((*pub)->publish({mms::data::boolean(true)}, *when));
