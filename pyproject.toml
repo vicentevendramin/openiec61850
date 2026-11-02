@@ -98,4 +98,5 @@ environment = { VCPKG_ROOT = "$VCPKG_INSTALLATION_ROOT" }
 # Link the vcpkg dependencies statically into the extension on Windows (no DLLs to bundle).
 [[tool.scikit-build.overrides]]
 if.platform-system = "win32"
+inherit.cmake.define = "append"  # replaces the defines of the wheel build otherwise
 cmake.define.VCPKG_TARGET_TRIPLET = "x64-windows-static-md"

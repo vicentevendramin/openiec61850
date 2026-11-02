@@ -114,6 +114,13 @@ jobs:
           tail -n 40 build.log
           exit "${status}"
       - name: Test
+        shell: bash
         env:
           OPENIEC61850_REQUIRE_TESTING: "1"
-        run: python -m pytest -q
+        run: |
+          status=0
+          python -m pytest -q --tb=line > test.log 2>&1 || status=$?
+          { grep -E '^(FAILED|ERROR) |^[^ ]+:[0-9]+: ' test.log || true; } | sort -u | head -n 10 \
+            | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error::${line}"; done
+          tail -n 30 test.log
+          exit "${status}"

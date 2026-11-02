@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -41,14 +42,17 @@ std::string quoted(std::string_view s) {
 }
 
 std::string utc(const mms::utc_time& t) {
-  const auto secs = static_cast<std::time_t>(t.seconds);
-  std::tm tm{};
-  gmtime_r(&secs, &tm);
+  using namespace std::chrono;
+  const sys_seconds secs{seconds{t.seconds}};
+  const auto day = floor<days>(secs);
+  const year_month_day date{day};
+  const hh_mm_ss time{secs - day};
   char buf[64];
   const auto ms = (std::uint64_t{t.fraction} * 1000U) >> 24;
-  std::snprintf(buf, sizeof buf, "%04d-%02d-%02dT%02d:%02d:%02d.%03uZ", tm.tm_year + 1900,
-                tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
-                static_cast<unsigned>(ms));
+  std::snprintf(buf, sizeof buf, "%04d-%02u-%02uT%02d:%02d:%02d.%03uZ", static_cast<int>(date.year()),
+                static_cast<unsigned>(date.month()), static_cast<unsigned>(date.day()),
+                static_cast<int>(time.hours().count()), static_cast<int>(time.minutes().count()),
+                static_cast<int>(time.seconds().count()), static_cast<unsigned>(ms));
   return buf;
 }
 
