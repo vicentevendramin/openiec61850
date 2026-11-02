@@ -158,7 +158,7 @@ class cotp_channel {
 // acceptor lives on its own strand, coroutine methods hop onto it, close() is any-thread.
 class cotp_listener {
  public:
-  // Opens, binds (SO_REUSEADDR) and listens. Use port 0 for an ephemeral port.
+  // Opens, binds (SO_REUSEADDR, except on Windows) and listens. Use port 0 for an ephemeral port.
   [[nodiscard]] static result<cotp_listener> listen(asio::any_io_executor ex,
                                                     const asio::ip::tcp::endpoint& endpoint,
                                                     int backlog = asio::socket_base::max_listen_connections);

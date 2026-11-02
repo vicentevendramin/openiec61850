@@ -98,7 +98,8 @@ async def test_goose_pub_sub():
     tx = net.attach("00-11-22-33-44-55")
     rx = net.attach("00-11-22-33-44-66")
     assert tx.address == "00-11-22-33-44-55"
-    cfg = g.GoosePublisherConfig(gocb_ref=GOCB, dat_set=DS, go_id="GO1", app_id=0x1000, min_time=4, max_time=200)
+    # min_time gives a TAL well above the 15 ms timer resolution of Windows.
+    cfg = g.GoosePublisherConfig(gocb_ref=GOCB, dat_set=DS, go_id="GO1", app_id=0x1000, min_time=50, max_time=200)
     async with g.Receiver(rx) as receiver:
         sub = receiver.subscribe(gocb_ref=GOCB, app_id=0x1000, dat_set=DS, go_id="GO1", num_entries=2)
         with g.GoosePublisher(tx, cfg, [False, iec.Int32(7)]) as pub:

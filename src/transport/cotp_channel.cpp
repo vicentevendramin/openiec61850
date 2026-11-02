@@ -722,7 +722,10 @@ result<cotp_listener> cotp_listener::listen(asio::any_io_executor ex, const tcp:
   auto& a = state->acceptor;
   std::error_code ec;
   if (a.open(endpoint.protocol(), ec); ec) return ec;
+#if !defined(_WIN32)
+  // On Windows this option would instead let a second listener take over a port in use.
   if (a.set_option(tcp::acceptor::reuse_address(true), ec); ec) return ec;
+#endif
   if (a.bind(endpoint, ec); ec) return ec;
   if (a.listen(backlog, ec); ec) return ec;
   state->local = a.local_endpoint(ec);

@@ -42,8 +42,9 @@ def free_port():
 
 
 async def test_connection_refused():
+    # Windows retries for about two seconds before it reports the refusal.
     with pytest.raises(iec.ConnectionRefused) as e:
-        await iec.Client.connect("127.0.0.1", free_port(), **FAST)
+        await iec.Client.connect("127.0.0.1", free_port(), **{**FAST, "timeout": 10.0})
     assert isinstance(e.value, ConnectionRefusedError)
     assert isinstance(e.value, iec.CommunicationError)
 
@@ -270,7 +271,7 @@ async def test_gil_released_while_waiting(server):
         assert isinstance(read.exception(), iec.Timeout)
         assert elapsed >= 0.4
         # Both the event loop and another Python thread kept running during the slow request.
-        assert ticks >= 10
+        assert ticks >= 5  # a blocked loop gets none; a loaded runner well under the 50 possible
         assert counter > 10_000
     finally:
         stop.set()

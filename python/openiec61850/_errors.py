@@ -53,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import errno as _errno
+import sys
 from collections.abc import Awaitable
 from typing import Any, TypeVar
 
@@ -480,6 +481,10 @@ _ERRNO = {
     _errno.ENOTCONN: ConnectionLost,
     _errno.ESHUTDOWN: ConnectionLost,
 }
+
+if sys.platform == "win32":
+    # std::errc values of MSVC: Python's errno names hold the WinSock codes there.
+    _ERRNO.update({107: ConnectionRefused, 138: Timeout, 105: OperationAborted, 108: ConnectionLost, 106: ConnectionLost, 126: ConnectionLost})
 
 # server::errc (server/error.hpp)
 _SERVER = {
