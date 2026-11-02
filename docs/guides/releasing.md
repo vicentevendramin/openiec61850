@@ -35,7 +35,7 @@ bin/openiec61850-server, bin/openiec61850-client
 ```
 
 ```cmake
-find_package(openiec61850 0.1 CONFIG REQUIRED)
+find_package(openiec61850 0.2 CONFIG REQUIRED)
 target_link_libraries(app PRIVATE openiec61850::openiec61850)
 ```
 

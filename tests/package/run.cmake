@@ -38,6 +38,7 @@ set(ENV{CMAKE_PREFIX_PATH} "${prefixes}")
 run("${CMAKE_COMMAND}" -S "${SOURCE_DIR}/tests/package" -B "${WORK_DIR}/build" -G "${GENERATOR}"
     "-DCMAKE_CXX_COMPILER=${CXX_COMPILER}"
     "-DCMAKE_CXX_FLAGS=${CXX_FLAGS}"
-    "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}")
+    "-DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+    "-DEXPECTED_VERSION=${VERSION}")
 run("${CMAKE_COMMAND}" --build "${WORK_DIR}/build")
 run("${WORK_DIR}/build/consumer" "${VERSION}" "${MODEL}")
