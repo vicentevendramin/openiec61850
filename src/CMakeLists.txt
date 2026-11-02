@@ -7,6 +7,14 @@ target_include_directories(openiec61850 PUBLIC
 target_compile_features(openiec61850 PUBLIC cxx_std_20)
 target_link_libraries(openiec61850 PUBLIC asio::asio PRIVATE pugixml::pugixml)
 target_compile_definitions(openiec61850 PUBLIC ASIO_NO_DEPRECATED)
+if(WIN32)
+  # Asio pulls in <windows.h>: keep its min/max macros out of std::numeric_limits, and name the
+  # oldest Windows supported instead of Asio's guess.
+  target_compile_definitions(openiec61850 PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+endif()
+if(MSVC)
+  target_compile_options(openiec61850 PUBLIC /bigobj)  # coroutine-heavy translation units
+endif()
 if(OPENIEC61850_ENABLE_TLS)
   target_link_libraries(openiec61850 PUBLIC OpenSSL::SSL OpenSSL::Crypto)
   target_compile_definitions(openiec61850 PUBLIC OPENIEC61850_WITH_TLS=1)

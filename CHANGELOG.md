@@ -12,6 +12,8 @@ release may break the API. The release process is in
 ### Fixed
 
 - SCL float values build on macOS, whose libc++ has no floating-point `std::from_chars`.
+- Builds on Windows: the SCL `s_addr` members are now `short_addr`, since Winsock defines `s_addr`
+  as a macro. C++ code that read them must use the new name.
 
 ## [0.1.0] - 2026-11-01
 

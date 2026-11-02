@@ -516,7 +516,7 @@ void parser::parse_data_instance(xml_node n, const ns_scope& s, data_instance& o
                                  std::size_t depth) {
   out.name = required(n, "name");
   out.desc = attr(n, "desc");
-  out.s_addr = attr(n, "sAddr");
+  out.short_addr = attr(n, "sAddr");
   out.ix = optional_number<std::uint32_t>(n, "ix");
   out.line = line(n);
   if (too_deep(n, depth)) return;
@@ -529,7 +529,7 @@ void parser::parse_data_instance(xml_node n, const ns_scope& s, data_instance& o
       attribute_instance a;
       a.name = required(c, "name");
       a.desc = attr(c, "desc");
-      a.s_addr = attr(c, "sAddr");
+      a.short_addr = attr(c, "sAddr");
       a.ix = optional_number<std::uint32_t>(c, "ix");
       a.line = line(c);
       if (has_attr(c, "valKind")) {
@@ -573,7 +573,7 @@ void parser::parse_attribute_def(xml_node n, const ns_scope& s, attribute_def& o
     }
   }
   out.val_import = boolean(n, "valImport", false);
-  out.s_addr = attr(n, "sAddr");
+  out.short_addr = attr(n, "sAddr");
   parse_values(n, s, out.values);
 }
 

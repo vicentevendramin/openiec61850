@@ -105,7 +105,7 @@ TEST_CASE("Instantiate the Ed.1 ICD", "[scl]") {
   CHECK(f.type == basic_type::float32);
   CHECK(f.fc == fc::MX);
   CHECK(f.triggers.data_change());
-  CHECK(f.s_addr == "ai:ia");
+  CHECK(f.short_addr == "ai:ia");
 
   // Arrays are described once with their size.
   const auto& hst = node_at(ied, "TEMPLATECTRL/GGIO1.Hist.hstVal");
@@ -150,7 +150,7 @@ TEST_CASE("Initial values merge templates and instance overrides", "[scl]") {
 
   const auto& ind1 = node_at(ied, "TEMPLATECTRL/GGIO1.Ind1.stVal");
   CHECK(std::get<bool>(ind1.values.at(0).parsed));
-  CHECK(ind1.s_addr == "di:1");
+  CHECK(ind1.short_addr == "di:1");
   CHECK(node_at(ied, "TEMPLATECTRL/GGIO1.Ind1").desc == "Spare input 1");
   CHECK(node_at(ied, "TEMPLATECTRL/GGIO1.Ind2.stVal").values.empty());
 
@@ -218,7 +218,7 @@ TEST_CASE("Instantiate the Ed.2 CID", "[scl]") {
   // SDOs and DAs keep their interleaved declaration order.
   CHECK(child_names(node_at(ied, "Bay1Prot/MMXU1.PhV")) ==
         std::vector<std::string>{"phsA", "q", "phsB", "phsC", "neut"});
-  CHECK(node_at(ied, "Bay1Prot/MMXU1.PhV.phsA.cVal.mag.f").s_addr == "ai:va");
+  CHECK(node_at(ied, "Bay1Prot/MMXU1.PhV.phsA.cVal.mag.f").short_addr == "ai:va");
 
   // DOI override of a template value.
   const auto& db = node_at(ied, "Bay1Prot/MMXU1.Hz.db");

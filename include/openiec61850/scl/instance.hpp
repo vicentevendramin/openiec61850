@@ -60,7 +60,7 @@ struct data_node {
   std::uint32_t size = 0;                 // maximum length of string types
   model::trigger_conditions triggers;     // dchg / qchg / dupd
   value_kind kind_of_value = value_kind::set;
-  std::string s_addr;
+  std::string short_addr;
   std::vector<initial_value> values;
 
   std::vector<data_node> children;

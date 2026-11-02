@@ -148,7 +148,7 @@ struct attribute_def {
   value_kind kind = value_kind::set;
   bool val_import = false;
   std::vector<value> values;
-  std::string s_addr;
+  std::string short_addr;
   std::uint32_t position = 0;  // declaration order among the SDOs and DAs of the DOType
   std::uint32_t line = 0;
 };
@@ -313,7 +313,7 @@ struct setting_control {
 struct attribute_instance {
   std::string name;
   std::string desc;
-  std::string s_addr;
+  std::string short_addr;
   std::optional<value_kind> kind;
   std::optional<std::uint32_t> ix;  // array element
   std::vector<value> values;
@@ -324,7 +324,7 @@ struct attribute_instance {
 struct data_instance {
   std::string name;
   std::string desc;
-  std::string s_addr;  // SDI only
+  std::string short_addr;  // SDI only
   std::optional<std::uint32_t> ix;
   std::vector<data_instance> sub_instances;
   std::vector<attribute_instance> attributes;

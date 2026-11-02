@@ -307,7 +307,7 @@ class builder {
     n.type = info->type;
     n.size = info->size;
     n.kind_of_value = a.kind;
-    n.s_addr = a.s_addr;
+    n.short_addr = a.short_addr;
     n.triggers = inherited;
     using model::trigger;
     if (a.dchg) n.triggers.set(trigger::data_change);
@@ -375,7 +375,7 @@ class builder {
                 "SDI " + in_quotes(child_path) + " does not name a sub-data object or structure");
         continue;
       }
-      if (!sdi.s_addr.empty()) child->s_addr = sdi.s_addr;
+      if (!sdi.short_addr.empty()) child->short_addr = sdi.short_addr;
       if (!sdi.desc.empty()) child->desc = sdi.desc;
       if (sdi.ix && *sdi.ix >= child->count) {
         warning(code::unresolved_reference, sdi.line,
@@ -399,7 +399,7 @@ class builder {
                 "DAI " + in_quotes(child_path) + " does not name a data attribute");
         continue;
       }
-      if (!dai.s_addr.empty()) child->s_addr = dai.s_addr;
+      if (!dai.short_addr.empty()) child->short_addr = dai.short_addr;
       if (!dai.desc.empty()) child->desc = dai.desc;
       if (dai.kind) child->kind_of_value = *dai.kind;
       if (dai.values.empty()) continue;
