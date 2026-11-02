@@ -1,6 +1,7 @@
 # Public checks for pull requests on the GitHub mirror (ADR 0006). The full CI (sanitizers,
 # fuzzing, benchmarks, libiec61850 interop) runs on the homelab GitLab; this workflow only gives
-# external contributors fast feedback: build + C++ tests + Python tests on Linux.
+# external contributors fast feedback: build + C++ tests + Python tests on Linux, and the same
+# Python build on macOS and Windows, which do not block a release (ADR 0008).
 name: ci
 
 on:
@@ -67,3 +68,48 @@ jobs:
         run: |
           python -m pip install -q ".[test]" -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON
           python -m pytest -q
+
+  portable:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/vcpkg
+          key: vcpkg-py-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-py-${{ runner.os }}-
+      - name: Install vcpkg (manifest baseline)
+        shell: bash
+        run: |
+          mkdir -p .cache/vcpkg
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+          else
+            bash packaging/cibuildwheel/install-vcpkg.sh "$RUNNER_TEMP/vcpkg"
+            echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          fi
+      # Keeps going after a failure and turns the first compiler errors into annotations, which
+      # can be read without opening the log.
+      - name: Build
+        shell: bash
+        run: |
+          status=0
+          python -m pip install -v ".[test]" -Cbuild.tool-args=-k0 \
+            -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON > build.log 2>&1 || status=$?
+          grep -E '(fatal )?error( [A-Z]+[0-9]+)?:|CMake Error|Could NOT find' build.log | sort -u | head -n 10 \
+            | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error::${line}"; done
+          tail -n 40 build.log
+          exit "${status}"
+      - name: Test
+        env:
+          OPENIEC61850_REQUIRE_TESTING: "1"
+        run: python -m pytest -q
