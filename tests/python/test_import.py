@@ -2,7 +2,7 @@ import openiec61850
 
 
 def test_version():
-    assert openiec61850.__version__ == "0.1.0"
+    assert openiec61850.__version__ == "0.2.0"
 
 
 def test_public_names_exist():

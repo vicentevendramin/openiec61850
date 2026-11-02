@@ -9,13 +9,29 @@ release may break the API. The release process is in
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+
+### Added
+
+- Python wheels for macOS arm64 and Windows AMD64, for CPython 3.10 to 3.13.
+
+### Changed
+
+- C++ API: the SCL `s_addr` members are now `short_addr`, since Winsock defines `s_addr` as a
+  macro. C++ code that read them must use the new name. The Python API does not change.
+
 ### Fixed
 
 - SCL float values build on macOS, whose libc++ has no floating-point `std::from_chars`.
-- Builds on Windows: the SCL `s_addr` members are now `short_addr`, since Winsock defines `s_addr`
-  as a macro. C++ code that read them must use the new name.
+- Builds with MSVC: POSIX and libstdc++ time calls were replaced.
 - Windows listeners no longer set `SO_REUSEADDR`, which allowed binding a port already in use, and
   refused connections raise `ConnectionRefused` there.
+
+### Known limitations
+
+The notes of 0.1.0 still apply, except for the wheels above. macOS and Windows are built and
+tested on GitHub Actions only, and their job does not block a release. Wheel tests skip those that
+need the fake server, which release wheels do not contain.
 
 ## [0.1.0] - 2026-11-01
 

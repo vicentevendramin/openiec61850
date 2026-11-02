@@ -83,8 +83,9 @@ no 32-bit.
   `auditwheel show`.
 - macOS (arm64, `MACOSX_DEPLOYMENT_TARGET=11.0`) and Windows (AMD64, triplet
   `x64-windows-static-md` so no DLL needs bundling, vcpkg from the runner's
-  `VCPKG_INSTALLATION_ROOT`): **configured but never run yet**. Expect to fix them on the first
-  GitHub `release` workflow run (use `workflow_dispatch` for a dry run that publishes nothing).
+  `VCPKG_INSTALLATION_ROOT`): built and tested by the GitHub `release` workflow only. Use its
+  `workflow_dispatch` for a dry run that publishes nothing, and read each job: these two are
+  optional, so the run reports success even when they fail.
 - The test-only `openiec61850._testing` extension is never built
   (`OPENIEC61850_BUILD_PYTHON_TESTING=OFF`). The wheel `test-command` runs `tests/python`: the
   tests that need the fake server skip, the rest (import, types, values, server API without a

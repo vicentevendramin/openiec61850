@@ -1,6 +1,6 @@
 {
   "name": "openiec61850",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Clean-room IEC 61850 (MMS client/server, GOOSE, Sampled Values) in C++20",
   "license": "Apache-2.0",
   "supports": "!uwp",

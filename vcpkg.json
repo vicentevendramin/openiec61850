@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "openiec61850",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "builtin-baseline": "a073c28e52d920cb2465a17512324b3b6684d03a",
   "dependencies": [
