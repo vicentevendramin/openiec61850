@@ -217,8 +217,9 @@ async def test_start_stop():
     await c.wait_closed()
     with pytest.raises(iec.ServerStopped):
         s.update(f"{LD}/GGIO1.Ind1.stVal", True)
+    # Windows retries for about two seconds before it reports the refusal.
     with pytest.raises(iec.CommunicationError):
-        await iec.Client.connect("127.0.0.1", port, **FAST)
+        await iec.Client.connect("127.0.0.1", port, **{**FAST, "timeout": 10.0})
     s.stop()  # idempotent
 
     async with await iec.Server.start(MODEL, "127.0.0.1", 0, max_associations=1) as s2:
