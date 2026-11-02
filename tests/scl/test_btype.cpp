@@ -76,6 +76,10 @@ TEST_CASE("Val text converts to the attribute type", "[scl]") {
   CHECK(std::isinf(std::get<double>(*scl::parse_value(basic_type::float32, "INF"))));
   CHECK(std::isnan(std::get<double>(*scl::parse_value(basic_type::float32, "NaN"))));
   CHECK(scl::parse_value(basic_type::float32, "1e39").error() == errc::value_out_of_range);
+  CHECK(scl::parse_value(basic_type::float64, "1e999").error() == errc::value_out_of_range);
+  CHECK(scl::parse_value(basic_type::float64, "-1e999").error() == errc::value_out_of_range);
+  CHECK(scl::parse_value(basic_type::float64, "1.5x").error() == errc::malformed_encoding);
+  CHECK(scl::parse_value(basic_type::float64, "abc").error() == errc::malformed_encoding);
   CHECK(scl::parse_value(basic_type::float32, "1,5").error() == errc::malformed_encoding);
 
   scl::enum_type e{"E", "", {{-3, "m", ""}, {0, "", ""}, {3, "k", ""}}, 0};

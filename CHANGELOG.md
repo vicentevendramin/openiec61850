@@ -9,6 +9,10 @@ release may break the API. The release process is in
 
 ## [Unreleased]
 
+### Fixed
+
+- SCL float values build on macOS, whose libc++ has no floating-point `std::from_chars`.
+
 ## [0.1.0] - 2026-11-01
 
 ### Fixed

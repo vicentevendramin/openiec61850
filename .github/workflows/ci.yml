@@ -103,7 +103,9 @@ jobs:
         shell: bash
         run: |
           status=0
-          python -m pip install -v ".[test]" -Cbuild.tool-args=-k0 \
+          keep_going=()
+          [[ "$RUNNER_OS" == Windows ]] || keep_going=(-Cbuild.tool-args=-k0)  # Ninja only
+          python -m pip install -v ".[test]" "${keep_going[@]}" \
             -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON > build.log 2>&1 || status=$?
           grep -E '(fatal )?error( [A-Z]+[0-9]+)?:|CMake Error|Could NOT find' build.log | sort -u | head -n 10 \
             | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error::${line}"; done

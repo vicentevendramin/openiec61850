@@ -4,6 +4,9 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <locale>
+#include <sstream>
+#include <string>
 #include <utility>
 
 #include "text.hpp"
@@ -99,11 +102,21 @@ result<scalar> parse_float(std::string_view text, bool single) {
   if (t == "NaN") return scalar{std::numeric_limits<double>::quiet_NaN()};
   if (t.empty()) return errc::malformed_encoding;
   double v = 0;
+#if defined(__cpp_lib_to_chars)
   const auto* end = t.data() + t.size();
   const auto [p, ec] = std::from_chars(t.data(), end, v);
   if (p != end) return errc::malformed_encoding;
   if (ec == std::errc::result_out_of_range) return errc::value_out_of_range;
   if (ec != std::errc{}) return errc::malformed_encoding;
+#else
+  // libc++ has no floating-point from_chars. The classic locale keeps "." as the separator.
+  std::istringstream in{std::string(t)};
+  in.imbue(std::locale::classic());
+  in >> v;
+  const bool overflow = in.fail() && std::isinf(std::numeric_limits<double>::max() * v);
+  if (overflow) return errc::value_out_of_range;
+  if (in.fail() || in.peek() != std::char_traits<char>::eof()) return errc::malformed_encoding;
+#endif
   if (single && std::isfinite(v) && std::fabs(v) > static_cast<double>(std::numeric_limits<float>::max())) {
     return errc::value_out_of_range;
   }
