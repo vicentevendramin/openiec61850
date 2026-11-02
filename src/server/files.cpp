@@ -155,7 +155,12 @@ std::optional<std::chrono::system_clock::time_point> modified_of(const fs::path&
   std::error_code ec;
   const auto t = fs::last_write_time(p, ec);
   if (ec) return std::nullopt;
-  return std::chrono::time_point_cast<std::chrono::system_clock::duration>(std::chrono::file_clock::to_sys(t));
+#if defined(_MSC_VER)  // has no file_clock::to_sys
+  const auto system = std::chrono::clock_cast<std::chrono::system_clock>(t);
+#else  // libc++ has no clock_cast
+  const auto system = std::chrono::file_clock::to_sys(t);
+#endif
+  return std::chrono::time_point_cast<std::chrono::system_clock::duration>(system);
 }
 
 bool inside(const fs::path& root, const fs::path& p) {

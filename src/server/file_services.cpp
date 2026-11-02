@@ -70,12 +70,15 @@ void fail_obtain(reply& out, std::int64_t code, bool source) {
 }
 
 std::string generalized_time(std::chrono::system_clock::time_point t) {
-  const std::time_t tt = std::chrono::system_clock::to_time_t(t);
-  std::tm tm{};
-  gmtime_r(&tt, &tm);
-  char buf[32];
-  std::snprintf(buf, sizeof buf, "%04d%02d%02d%02d%02d%02dZ", tm.tm_year + 1900, tm.tm_mon + 1,
-                tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+  using namespace std::chrono;
+  const auto day = floor<days>(t);
+  const year_month_day date{day};
+  const hh_mm_ss time{floor<seconds>(t - day)};
+  char buf[64];
+  std::snprintf(buf, sizeof buf, "%04d%02u%02u%02d%02d%02dZ", static_cast<int>(date.year()),
+                static_cast<unsigned>(date.month()), static_cast<unsigned>(date.day()),
+                static_cast<int>(time.hours().count()), static_cast<int>(time.minutes().count()),
+                static_cast<int>(time.seconds().count()));
   return buf;
 }
 

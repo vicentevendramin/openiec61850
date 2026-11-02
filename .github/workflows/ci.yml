@@ -108,7 +108,7 @@ jobs:
           python -m pip install -v ".[test]" "${keep_going[@]}" \
             -Ccmake.define.OPENIEC61850_BUILD_PYTHON_TESTING=ON > build.log 2>&1 || status=$?
           # One error per file: annotations are capped at ten per step.
-          grep -E '(fatal )?error( [A-Z]+[0-9]+)?:|CMake Error|Could NOT find|Undefined symbols|^ *ld: |FAILED:' build.log \
+          { grep -E '(fatal )?error( [A-Z]+[0-9]+)?:|CMake Error|Could NOT find|Undefined symbols|^ *ld: |FAILED:' build.log || true; } \
             | awk '{k=$0; sub(/[(:][0-9]+.*/, "", k); if (!seen[k]++) print}' | head -n 10 \
             | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error::${line}"; done
           tail -n 40 build.log
